@@ -61,6 +61,21 @@ EXTRACTION_SCHEMA = {
                 "required": ["test_name", "value"],
             },
         },
+        "measurements": {
+            "type": "array",
+            "description": "For imaging/radiology reports (CT, MRI, ultrasound, X-ray, DEXA) or any report with quantitative anatomical measurements — organ sizes, cyst/nodule/lesion dimensions, etc. Empty for ordinary blood/urine panels.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "What was measured, WITH its location, e.g. 'Spleen length', 'Right adnexal cyst', 'Thyroid nodule (left lobe)'"},
+                    "value": {"type": "number"},
+                    "unit": {"type": "string", "description": "e.g. cm, mm"},
+                    "flag": {"type": "string", "description": "enlarged/abnormal/normal if the report indicates; empty otherwise"},
+                    "category": {"type": "string", "description": "Modality + region, e.g. 'Imaging - CT Abdomen/Pelvis', 'Imaging - MRI Brain', 'Imaging - Thyroid Ultrasound'"},
+                },
+                "required": ["name", "value"],
+            },
+        },
     },
     "required": ["doc_type", "summary", "lab_results"],
 }
@@ -68,12 +83,13 @@ EXTRACTION_SCHEMA = {
 EXTRACTION_PROMPT = """You are extracting structured data from a personal medical document for the patient's own health tracker.
 
 Carefully read the document image(s) and extract:
-1. doc_type, the primary record_date, and a short plain-language summary.
-2. EVERY quantitative lab result you can find: test name (canonicalized — e.g. "Hemoglobin A1c" -> "HbA1c"), numeric value, unit, reference range bounds if printed, flag (high/low/normal/critical) if indicated, collection date, and panel/category.
+1. doc_type (lab_report, imaging_report, visit_summary, other), the primary record_date, and a short plain-language summary. For an imaging or radiology report, the summary should capture the key findings and the impression.
+2. lab_results: EVERY quantitative blood/urine lab result — test name (canonicalized, e.g. "Hemoglobin A1c" -> "HbA1c"), numeric value, unit, reference range bounds if printed, flag (high/low/normal/critical) if indicated, collection date, and panel/category.
+3. measurements: for imaging/radiology reports (CT, MRI, ultrasound, X-ray, DEXA) OR any report with quantitative anatomical measurements, capture each one — organ sizes, cyst/nodule/lesion/mass dimensions — as name (WITH anatomical location), numeric value, unit (cm/mm), a flag if the report calls it enlarged/abnormal, and a category like "Imaging - CT Abdomen/Pelvis". Leave measurements empty for ordinary blood/urine panels.
 
 Rules:
 - Numbers only in "value" (strip comparison signs; for "<0.1" use 0.1 and flag as reported).
-- Skip qualitative results (e.g. "negative") unless they carry a number.
+- Skip qualitative-only results (e.g. "negative", "not detected") unless they carry a number.
 - Do not invent values or reference ranges that are not visible.
 """
 
@@ -117,7 +133,7 @@ async def _extract_document(page_paths: list[Path]) -> dict:
     Resilient: a batch is retried once, and a persistently-failing batch (e.g.
     the local model returns non-JSON for one page) is skipped so the rest of a
     long document still extracts. Raises only if EVERY batch fails."""
-    merged: dict = {"doc_type": "", "record_date": "", "summary": "", "lab_results": []}
+    merged: dict = {"doc_type": "", "record_date": "", "summary": "", "lab_results": [], "measurements": []}
     batches = [page_paths[i : i + PAGE_BATCH] for i in range(0, len(page_paths), PAGE_BATCH)]
     failed = 0
     last_err: Exception | None = None
@@ -140,6 +156,7 @@ async def _extract_document(page_paths: list[Path]) -> dict:
         if not merged["summary"] and part.get("summary"):
             merged["summary"] = part["summary"]
         merged["lab_results"].extend(part.get("lab_results") or [])
+        merged["measurements"].extend(part.get("measurements") or [])
     if failed == len(batches):
         raise last_err or RuntimeError("extraction failed for every page batch")
     merged["_batches_failed"] = failed
@@ -240,6 +257,38 @@ async def _extract_and_store(record: dict, stored: Path, suffix: str) -> dict:
                 "owner_email": OWNER_EMAIL,
             }
         )
+    # Imaging/anatomical measurements → tracked LabResults (so organ/lesion sizes
+    # trend over follow-up scans), deduped alongside the blood/urine results.
+    flag_map = {"enlarged": "high", "elevated": "high", "large": "high", "small": "low", "decreased": "low"}
+    for m in extracted.get("measurements") or []:
+        if not m.get("name") or m.get("value") is None:
+            continue
+        try:
+            value = float(m["value"])
+        except (TypeError, ValueError):
+            continue
+        name = str(m["name"]).strip()
+        collected = extracted.get("record_date") or ""
+        key = (name.lower(), collected, round(value, 4))
+        if key in seen:
+            continue
+        seen.add(key)
+        raw_flag = (m.get("flag") or "").strip().lower()
+        results.append(
+            {
+                "test_name": name,
+                "value": value,
+                "unit": (m.get("unit") or "").strip(),
+                "reference_low": None,
+                "reference_high": None,
+                "flag": flag_map.get(raw_flag, raw_flag),
+                "collected_date": collected,
+                "category": (m.get("category") or "Imaging").strip(),
+                "record_id": record["id"],
+                "owner_email": OWNER_EMAIL,
+            }
+        )
+
     # Replace any prior labs for this record so reprocessing is idempotent.
     for old in db.query_entities("LabResult", {"record_id": record["id"], "owner_email": OWNER_EMAIL}):
         db.delete_entity("LabResult", old["id"])
