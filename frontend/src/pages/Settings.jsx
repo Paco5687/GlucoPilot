@@ -7,6 +7,7 @@ import { Settings as SettingsIcon, Loader2, KeyRound, Save, CheckCircle2 } from 
 import { toast } from "sonner";
 import ProviderAccess from "@/components/settings/ProviderAccess";
 import InsuranceSettings from "@/components/settings/InsuranceSettings";
+import ProfileSettings from "@/components/settings/ProfileSettings";
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -122,6 +123,8 @@ export default function Settings() {
         </div>
         <SettingsIcon className="w-6 h-6 text-primary" />
       </div>
+
+      <ProfileSettings />
 
       <InsuranceSettings />
 

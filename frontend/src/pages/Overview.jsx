@@ -95,6 +95,33 @@ export default function Overview() {
             </div>
           )}
 
+          {summary.metrics && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              {[
+                { label: "Time in range", value: summary.metrics.tir, unit: "%", round: 0 },
+                { label: "Avg glucose", value: summary.metrics.avg, unit: "mg/dL", round: 0 },
+                { label: "GMI", value: summary.metrics.gmi, unit: "%", round: 1 },
+                { label: "HRV", value: summary.metrics.hrv, unit: "ms", round: 0 },
+                { label: "Resting HR", value: summary.metrics.resting_hr, unit: "bpm", round: 0 },
+                { label: "BMI", value: summary.metrics.bmi, unit: "", round: 1 },
+              ].filter((m) => m.value != null).map((m) => (
+                <div key={m.label} className="bg-card rounded-xl border border-border p-3">
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{m.label}</div>
+                  <div className="text-lg font-semibold tabular-nums">
+                    {m.round ? Number(m.value).toFixed(m.round) : Math.round(m.value)}
+                    {m.unit && <span className="text-[10px] text-muted-foreground ml-0.5">{m.unit}</span>}
+                  </div>
+                </div>
+              ))}
+              {summary.metrics.labs_out_of_range > 0 && (
+                <div className="bg-card rounded-xl border border-border p-3">
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Labs out of range</div>
+                  <div className="text-lg font-semibold tabular-nums text-red-600">{summary.metrics.labs_out_of_range}</div>
+                </div>
+              )}
+            </div>
+          )}
+
           {summary.observations?.length > 0 && (
             <div className="space-y-3">
               <h2 className="font-semibold text-base flex items-center gap-2"><Link2 className="w-4 h-4 text-primary" /> Connections worth noticing</h2>
