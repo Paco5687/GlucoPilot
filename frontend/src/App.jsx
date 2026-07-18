@@ -18,6 +18,7 @@ import Explorer from './pages/Explorer';
 import Insights from './pages/Insights';
 import Wearables from './pages/Wearables';
 import Overview from './pages/Overview';
+import Insulin from './pages/Insulin';
 import Records from './pages/Records';
 import Report from './pages/Report';
 import Settings from './pages/Settings';
@@ -49,6 +50,7 @@ const AuthenticatedApp = () => {
         <Route path="/insights" element={<Insights />} />
         <Route path="/wearables" element={<Wearables />} />
         <Route path="/overview" element={<Overview />} />
+        <Route path="/insulin" element={<Insulin />} />
         <Route path="/records" element={<Records />} />
         <Route path="/report" element={<Report />} />
         <Route path="/settings" element={<Settings />} />
