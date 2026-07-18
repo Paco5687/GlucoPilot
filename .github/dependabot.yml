@@ -1,14 +1,31 @@
 version: 2
 updates:
+  # Python deps — group all minor/patch bumps into one PR; majors stay separate.
   - package-ecosystem: pip
     directory: "/"
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python:
+        update-types: ["minor", "patch"]
+
+  # Frontend deps — same grouping.
   - package-ecosystem: npm
     directory: "/frontend"
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      frontend:
+        update-types: ["minor", "patch"]
+
+  # GitHub Actions — low risk; group everything (incl. majors) into one PR.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        update-types: ["minor", "patch", "major"]
