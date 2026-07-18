@@ -10,7 +10,7 @@ data/
 # Personal data / imports (never commit health data)
 legacy/
 import/
-records/
+/records/
 *.csv
 data.json
 
