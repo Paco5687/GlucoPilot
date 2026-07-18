@@ -17,6 +17,7 @@ import PeriodTracker from './pages/PeriodTracker';
 import Explorer from './pages/Explorer';
 import Insights from './pages/Insights';
 import Wearables from './pages/Wearables';
+import Overview from './pages/Overview';
 import Records from './pages/Records';
 import Report from './pages/Report';
 import Settings from './pages/Settings';
@@ -47,6 +48,7 @@ const AuthenticatedApp = () => {
         <Route path="/period" element={<PeriodTracker />} />
         <Route path="/insights" element={<Insights />} />
         <Route path="/wearables" element={<Wearables />} />
+        <Route path="/overview" element={<Overview />} />
         <Route path="/records" element={<Records />} />
         <Route path="/report" element={<Report />} />
         <Route path="/settings" element={<Settings />} />
