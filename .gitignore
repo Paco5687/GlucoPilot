@@ -1,0 +1,32 @@
+# Secrets & runtime
+.env
+*.sqlite3
+*.db
+run/
+data/
+*cookies*
+.creds_cache
+
+# Personal data / imports (never commit health data)
+legacy/
+import/
+records/
+*.csv
+data.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Editor / OS
+.claude/
+.DS_Store
+*.log

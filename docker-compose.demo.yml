@@ -1,0 +1,24 @@
+# Demo instance — synthetic seeded data, no login required, isolated volume.
+# Runs alongside the real deployment without touching its data.
+#
+#   docker compose -f docker-compose.demo.yml up -d --build
+#   # then browse http://localhost:8100  (or tunnel: ssh -L 8100:localhost:8100 <host>)
+#
+# NEVER point DEMO_MODE at a volume holding real data — it auto-authenticates.
+services:
+  glucopilot-demo:
+    build: .
+    restart: unless-stopped
+    environment:
+      - DEMO_MODE=true
+      - APP_SECRET_KEY=demo-not-secret
+      - APP_PUBLIC_URL=http://localhost:8100
+      - SYNC_ENABLED=false
+      - APP_TIMEZONE=America/New_York
+    volumes:
+      - glucopilot_demo_data:/data
+    ports:
+      - "127.0.0.1:8100:8000"
+
+volumes:
+  glucopilot_demo_data:

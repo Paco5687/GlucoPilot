@@ -1,0 +1,104 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-inter: 'Inter', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+
+    --background: 195 20% 97%;
+    --foreground: 210 25% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 210 25% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 210 25% 10%;
+    --primary: 168 80% 30%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 195 15% 93%;
+    --secondary-foreground: 210 25% 15%;
+    --muted: 195 15% 93%;
+    --muted-foreground: 210 10% 50%;
+    --accent: 195 15% 90%;
+    --accent-foreground: 210 25% 15%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 195 15% 88%;
+    --input: 195 15% 88%;
+    --ring: 168 80% 30%;
+    --radius: 0.75rem;
+
+    --glucose-low: 0 72% 51%;
+    --glucose-in-range: 152 69% 40%;
+    --glucose-high: 38 92% 50%;
+    --glucose-very-high: 0 72% 51%;
+
+    --chart-1: 168 80% 30%;
+    --chart-2: 152 69% 40%;
+    --chart-3: 38 92% 50%;
+    --chart-4: 0 72% 51%;
+    --chart-5: 210 25% 60%;
+
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 210 25% 15%;
+    --sidebar-primary: 168 80% 30%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 195 15% 95%;
+    --sidebar-accent-foreground: 210 25% 15%;
+    --sidebar-border: 195 15% 88%;
+    --sidebar-ring: 168 80% 30%;
+  }
+
+  .dark {
+    --background: 210 25% 8%;
+    --foreground: 195 15% 93%;
+    --card: 210 25% 12%;
+    --card-foreground: 195 15% 93%;
+    --popover: 210 25% 12%;
+    --popover-foreground: 195 15% 93%;
+    --primary: 168 70% 40%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 210 20% 16%;
+    --secondary-foreground: 195 15% 90%;
+    --muted: 210 20% 16%;
+    --muted-foreground: 195 10% 55%;
+    --accent: 210 20% 18%;
+    --accent-foreground: 195 15% 90%;
+    --destructive: 0 62% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 210 20% 18%;
+    --input: 210 20% 18%;
+    --ring: 168 70% 40%;
+
+    --glucose-low: 0 62% 50%;
+    --glucose-in-range: 152 60% 45%;
+    --glucose-high: 38 80% 55%;
+    --glucose-very-high: 0 62% 50%;
+
+    --chart-1: 168 70% 40%;
+    --chart-2: 152 60% 45%;
+    --chart-3: 38 80% 55%;
+    --chart-4: 0 62% 50%;
+    --chart-5: 210 20% 50%;
+
+    --sidebar-background: 210 25% 10%;
+    --sidebar-foreground: 195 15% 90%;
+    --sidebar-primary: 168 70% 40%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 210 20% 15%;
+    --sidebar-accent-foreground: 195 15% 90%;
+    --sidebar-border: 210 20% 18%;
+    --sidebar-ring: 168 70% 40%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground font-inter;
+  }
+}

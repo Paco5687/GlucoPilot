@@ -1,0 +1,38 @@
+services:
+  glucopilot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    extra_hosts:
+      # Lets the container reach host-local services (e.g. a local LLM).
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - glucopilot_data:/data
+      # Optional: Unix sockets to host-local LLM servers (see docs/LOCAL_MODELS.md).
+      # Create ./run and drop the proxied sockets there, or remove this line.
+      - ./run:/run/glucopilot
+      # Optional: mount a folder of exports for one-time imports, e.g.
+      #   docker compose exec glucopilot python -m server.import_base44_export /import/GlucoseReading_export.csv
+      # - ./import:/import:ro
+    networks:
+      - proxy
+    labels:
+      # Traefik example. Adapt to your reverse proxy, or drop these and publish
+      # a port directly (see docs/DEPLOY.md).
+      - traefik.enable=true
+      - traefik.docker.network=${TRAEFIK_NETWORK:-proxy}
+      - traefik.http.routers.glucopilot.rule=Host(`${TRAEFIK_HOST}`)
+      - traefik.http.routers.glucopilot.entrypoints=${TRAEFIK_ENTRYPOINT}
+      - traefik.http.routers.glucopilot.tls=true
+      - traefik.http.routers.glucopilot.tls.certresolver=${TRAEFIK_CERTRESOLVER}
+      - traefik.http.services.glucopilot.loadbalancer.server.port=8000
+
+volumes:
+  glucopilot_data:
+
+networks:
+  # Your reverse proxy's external network. Set TRAEFIK_NETWORK in .env to match.
+  proxy:
+    external: true
+    name: ${TRAEFIK_NETWORK:-proxy}
