@@ -2,10 +2,11 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { base44 } from "@/api/base44Client";
 import { useViewingData } from "@/hooks/useViewingData";
 import { Button } from "@/components/ui/button";
-import { Loader2, RefreshCw, Heart, Moon, Droplets, Wind, Footprints, Flame } from "lucide-react";
+import { Loader2, RefreshCw, Heart, Moon, Droplets, Wind, Footprints, Flame, Activity } from "lucide-react";
 import { toast } from "sonner";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import LiveHeartRate from "../components/dashboard/LiveHeartRate";
+import GlucoseHeartRateOverlay from "../components/dashboard/GlucoseHeartRateOverlay";
 
 const RANGES = [
   { key: 30, label: "30d" },
@@ -16,6 +17,7 @@ const RANGES = [
 // One series per chart; thin marks, recessive grid, direct tooltip.
 const METRICS = [
   { key: "resting_heart_rate", label: "Resting Heart Rate", unit: "bpm", color: "#f43f5e", icon: Heart, round: 0 },
+  { key: "hrv", label: "Heart Rate Variability", unit: "ms", color: "#8b5cf6", icon: Activity, round: 1 },
   { key: "sleep_hours", label: "Sleep", unit: "h", color: "#6366f1", icon: Moon, round: 1 },
   { key: "spo2_avg", label: "SpO₂ (overnight avg)", unit: "%", color: "#0ea5e9", icon: Droplets, round: 1, domain: [90, 100] },
   { key: "breathing_rate", label: "Respiratory Rate", unit: "br/min", color: "#14b8a6", icon: Wind, round: 1 },
@@ -125,6 +127,18 @@ export default function Wearables() {
     setBusy(false);
   }
 
+  async function handleHrBackfill() {
+    setBusy(true);
+    toast.info("Backfilling 7 days of minute-level heart rate — this can take a minute…");
+    try {
+      const res = await base44.functions.invoke("googleHealth", { action: "sync_hr", minutes: 7 * 1440 });
+      toast.success(`Heart rate: ${res.data.created} new minute-readings`);
+    } catch (err) {
+      toast.error(err?.response?.data?.error || err.message || "HR backfill failed");
+    }
+    setBusy(false);
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
@@ -152,6 +166,9 @@ export default function Wearables() {
               <Button variant="outline" size="sm" onClick={() => handleSync(365)} disabled={busy} className="gap-1.5 text-xs">
                 Backfill 1y
               </Button>
+              <Button variant="outline" size="sm" onClick={handleHrBackfill} disabled={busy} className="gap-1.5 text-xs">
+                Backfill HR 7d
+              </Button>
             </>
           )}
         </div>
@@ -175,6 +192,7 @@ export default function Wearables() {
       ) : (
         <div className="space-y-4">
           <LiveHeartRate />
+          <GlucoseHeartRateOverlay />
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {METRICS.map((m) => (
               <MetricCard key={m.key} metric={m} rows={windowed} />

@@ -103,6 +103,14 @@ def _correlation_candidates(glucose: dict, oura_by_day: dict) -> list[dict[str, 
         ("breathing_rate", "Breathing rate (Fitbit)", "cv", "glucose variability", "variability", False),
         ("skin_temp_deviation", "Skin temp deviation (Fitbit)", "avg", "average glucose", "general", False),
         ("sleep_efficiency_fitbit", "Sleep efficiency (Fitbit)", "tir", "time in range", "time_in_range", True),
+        # Heart rate / HRV (Google Health via Fitbit). HRV rises with recovery,
+        # so higher HRV is expected to line up with better control.
+        ("hrv", "Heart rate variability (Fitbit)", "tir", "time in range", "time_in_range", True),
+        ("hrv", "Heart rate variability (Fitbit)", "cv", "glucose variability", "variability", False),
+        ("hrv", "Heart rate variability (Fitbit)", "avg", "average glucose", "general", False),
+        ("nonrem_heart_rate", "Nightly heart rate (Fitbit)", "avg", "average glucose", "general", False),
+        ("avg_heart_rate", "Average heart rate (Fitbit)", "avg", "average glucose", "general", False),
+        ("avg_heart_rate", "Average heart rate (Fitbit)", "tir", "time in range", "time_in_range", True),
     ]
     out = []
     for oura_field, oura_label, g_field, g_label, category, positive_good in axes:
@@ -159,9 +167,28 @@ async def analyze() -> dict[str, Any]:
             ("sleep_efficiency", "sleep_efficiency_fitbit"),
             ("steps", "activity_steps"),  # fallback if Oura steps absent
             ("spo2_avg", "spo2_average"),
+            ("hrv", "hrv"),
+            ("nonrem_heart_rate", "nonrem_heart_rate"),
         ):
             if f.get(src_key) is not None and merged.get(dst_key) is None:
                 merged[dst_key] = f[src_key]
+
+    # Daily average HR from the intraday minute-buckets (FitbitHeartRate). Only
+    # covers recent/backfilled days, so it joins in once ≥MIN_PAIRS accrue.
+    hr_by_day: dict[str, list[float]] = {}
+    for hr in db.query_entities(
+        "FitbitHeartRate",
+        {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since.isoformat().replace("+00:00", "Z")}},
+        "timestamp",
+        200000,
+    ):
+        ts = _parse_ts(hr.get("timestamp"))
+        if ts is None or hr.get("bpm") is None:
+            continue
+        hr_by_day.setdefault(ts.astimezone(tz).date().isoformat(), []).append(float(hr["bpm"]))
+    for day, bpms in hr_by_day.items():
+        if len(bpms) >= 60:  # ≥1h of minute-buckets → a representative daily mean
+            oura_by_day.setdefault(day, {}).setdefault("avg_heart_rate", round(sum(bpms) / len(bpms), 1))
 
     period_rows = db.query_entities("PeriodLog", {"owner_email": OWNER_EMAIL}, "-date", 400)
     phase_days: dict[str, set[str]] = {}
