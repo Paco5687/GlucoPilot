@@ -3,10 +3,13 @@ import {
   LayoutDashboard, LineChart, Brain, GitCompare, MessageSquare, Plug, Menu, X, Shield,
   Heart, LogOut, Settings, Lightbulb, FolderHeart, FileText, Eye,
 } from "lucide-react";
+import { Bug } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/AuthContext";
+import { pushTrail } from "@/lib/navTrail";
+import BugReportModal from "@/components/BugReportModal";
 
 // Grouped navigation. adminOnly items are hidden from read-only provider sessions.
 const navGroups = [
@@ -65,7 +68,12 @@ export default function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const { logout, isAdmin, isProvider, user } = useAuth();
   const isDemo = user?.demo;
+  const [bugOpen, setBugOpen] = useState(false);
   const close = () => setMobileOpen(false);
+
+  useEffect(() => {
+    pushTrail(location.pathname);
+  }, [location.pathname]);
 
   const groups = navGroups
     .map((g) => ({ ...g, items: g.items.filter((i) => !i.adminOnly || isAdmin) }))
@@ -132,6 +140,12 @@ export default function Layout() {
             <span className="truncate">{user?.full_name || "Signed in"}</span>
           </div>
           <button
+            onClick={() => { setBugOpen(true); close(); }}
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          >
+            <Bug className="w-4 h-4" /> Report a bug
+          </button>
+          <button
             onClick={logout}
             className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
           >
@@ -139,6 +153,8 @@ export default function Layout() {
           </button>
         </div>
       </aside>
+
+      <BugReportModal open={bugOpen} onClose={() => setBugOpen(false)} />
 
       {/* Mobile backdrop */}
       {mobileOpen && <div className="fixed inset-0 z-40 bg-black/40 lg:hidden" onClick={close} />}

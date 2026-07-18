@@ -50,3 +50,12 @@ def test_provider_config_roundtrip(client):
 
 def test_unknown_entity_rejected(client):
     assert client.post("/api/entities/NotAThing/query", json={}).status_code == 404
+
+
+def test_bug_report_fallback(client):
+    # No GitHub token configured → returns a pre-filled new-issue URL.
+    r = client.post("/api/bug-report", json={"description": "test bug", "context": {"page": "/dashboard"}})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is False and "/issues/new" in data["fallback_url"]
+    assert client.post("/api/bug-report", json={"description": " "}).status_code == 400

@@ -317,6 +317,45 @@ export default function Settings() {
         </div>
       </Section>
 
+      <Section
+        title="Bug reports (GitHub)"
+        description="The in-app 'Report a bug' button files a GitHub issue. Add a token with issue (and Projects, if used) permissions. Without a token, the button opens a pre-filled issue in the reporter's own GitHub instead."
+      >
+        <SecretField
+          label="GitHub token"
+          name="github_token"
+          meta={data.secrets.github_token}
+          value={secretInputs.github_token || ""}
+          onChange={(v) => setSecret("github_token", v)}
+          help="Fine-grained token with Issues: read/write (and Projects: read/write to auto-add to a board)."
+        />
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div>
+            <Label htmlFor="github_repo" className="text-xs">Repository (owner/name)</Label>
+            <Input
+              id="github_repo"
+              className="mt-1 font-mono text-xs"
+              placeholder="Paco5687/GlucoPilot"
+              value={values.github_repo || ""}
+              onChange={(e) => setValue("github_repo", e.target.value)}
+            />
+          </div>
+          <div>
+            <Label htmlFor="github_project_number" className="text-xs">Project number (optional)</Label>
+            <Input
+              id="github_project_number"
+              className="mt-1 font-mono text-xs"
+              placeholder="e.g. 3"
+              value={values.github_project_number || ""}
+              onChange={(e) => setValue("github_project_number", e.target.value)}
+            />
+          </div>
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Project number is in the board's URL (…/projects/<b>N</b>). New issues are added to it automatically.
+        </p>
+      </Section>
+
       <ProviderAccess />
 
       <Section
