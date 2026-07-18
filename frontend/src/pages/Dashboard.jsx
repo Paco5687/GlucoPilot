@@ -13,6 +13,7 @@ import DayOfWeekChart from "../components/dashboard/DayOfWeekChart";
 import OuraPanel from "../components/dashboard/OuraPanel";
 import WearablesPanel from "../components/dashboard/WearablesPanel";
 import LiveHeartRate from "../components/dashboard/LiveHeartRate";
+import FingerstickLogger from "../components/dashboard/FingerstickLogger";
 import GlucoseOuraOverlay from "../components/dashboard/GlucoseOuraOverlay";
 import CorrelationCards from "../components/dashboard/CorrelationCards";
 import TimeRangePicker, { RANGES } from "../components/dashboard/TimeRangePicker";
@@ -26,6 +27,7 @@ export default function Dashboard() {
   const [ouraData, setOuraData] = useState([]);
   const [ouraHR, setOuraHR] = useState([]);
   const [wearables, setWearables] = useState([]);
+  const [fingersticks, setFingersticks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [range, setRange] = useState("3h");
   const [customRange, setCustomRange] = useState(null);
@@ -43,6 +45,15 @@ export default function Dashboard() {
     const w = await fetchEntity("FitbitDaily", "-date", 120, { source: "google_health" });
     setWearables(w);
   }, [isViewingShared, viewingEmail]);
+
+  const loadFingersticks = useCallback(async () => {
+    try {
+      const res = await base44.functions.invoke("fingerstick", { action: "list", days: 120 });
+      setFingersticks(res.data?.readings || []);
+    } catch {
+      setFingersticks([]);
+    }
+  }, []);
 
   const loadOuraHR = useCallback(async () => {
     // Only fetch HR data for the selected time range to avoid huge payloads
@@ -78,12 +89,13 @@ export default function Dashboard() {
       fetchEntity("PeriodLog", "-date", 500),
       loadOura(),
       loadWearables(),
+      loadFingersticks(),
     ]);
     setReadings(r);
     setTreatments(t);
     setPeriodLogs(p);
     setLoading(false);
-  }, [isViewingShared, viewingEmail, loadOura, loadWearables]);
+  }, [isViewingShared, viewingEmail, loadOura, loadWearables, loadFingersticks]);
 
   useEffect(() => {
     setLoading(true);
@@ -195,7 +207,9 @@ export default function Dashboard() {
 
       {wearables.length > 0 && <LiveHeartRate />}
 
-      <GlucoseChart readings={filteredReadings.length ? filteredReadings : readings.slice(0, 288)} treatments={filteredTreatments} periodLogs={periodLogs} />
+      <GlucoseChart readings={filteredReadings.length ? filteredReadings : readings.slice(0, 288)} treatments={filteredTreatments} periodLogs={periodLogs} fingersticks={fingersticks} />
+
+      {!isViewingShared && <FingerstickLogger onAdded={loadFingersticks} />}
 
       <TreatmentTimeline treatments={filteredTreatments} />
 
