@@ -11,6 +11,7 @@ import DailyAverageChart from "../components/dashboard/DailyAverageChart";
 import HeatmapChart from "../components/dashboard/HeatmapChart";
 import DayOfWeekChart from "../components/dashboard/DayOfWeekChart";
 import OuraPanel from "../components/dashboard/OuraPanel";
+import WearablesPanel from "../components/dashboard/WearablesPanel";
 import GlucoseOuraOverlay from "../components/dashboard/GlucoseOuraOverlay";
 import CorrelationCards from "../components/dashboard/CorrelationCards";
 import TimeRangePicker, { RANGES } from "../components/dashboard/TimeRangePicker";
@@ -23,6 +24,7 @@ export default function Dashboard() {
   const [periodLogs, setPeriodLogs] = useState([]);
   const [ouraData, setOuraData] = useState([]);
   const [ouraHR, setOuraHR] = useState([]);
+  const [wearables, setWearables] = useState([]);
   const [loading, setLoading] = useState(true);
   const [range, setRange] = useState("3h");
   const [customRange, setCustomRange] = useState(null);
@@ -34,6 +36,11 @@ export default function Dashboard() {
   const loadOura = useCallback(async () => {
     const o = await fetchEntity("OuraDaily", "-date", 90);
     setOuraData(o);
+  }, [isViewingShared, viewingEmail]);
+
+  const loadWearables = useCallback(async () => {
+    const w = await fetchEntity("FitbitDaily", "-date", 120, { source: "google_health" });
+    setWearables(w);
   }, [isViewingShared, viewingEmail]);
 
   const loadOuraHR = useCallback(async () => {
@@ -69,12 +76,13 @@ export default function Dashboard() {
       fetchEntity("Treatment", "-timestamp", 5000),
       fetchEntity("PeriodLog", "-date", 500),
       loadOura(),
+      loadWearables(),
     ]);
     setReadings(r);
     setTreatments(t);
     setPeriodLogs(p);
     setLoading(false);
-  }, [isViewingShared, viewingEmail, loadOura]);
+  }, [isViewingShared, viewingEmail, loadOura, loadWearables]);
 
   useEffect(() => {
     setLoading(true);
@@ -191,6 +199,8 @@ export default function Dashboard() {
       <TreatmentSummaryCards treatments={filteredTreatments} />
 
       <OuraPanel data={filteredOura} heartRateData={ouraHR} isViewingShared={isViewingShared} onRefresh={loadOura} />
+
+      <WearablesPanel data={wearables} isViewingShared={isViewingShared} onRefresh={loadWearables} />
 
       {filteredOura.length > 0 && (
         <>
