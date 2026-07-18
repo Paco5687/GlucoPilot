@@ -17,8 +17,9 @@ the next tick. Disable with SYNC_ENABLED=false.
 import asyncio
 import logging
 import time
+from datetime import datetime, timezone
 
-from . import cycle_inference, db, dexcom, dexcom_share, fitbit, glooko, google_health, nightscout, oura, tandem
+from . import cycle_inference, db, dexcom, dexcom_share, fitbit, glooko, google_health, health_summary, nightscout, oura, tandem
 from .config import OWNER_EMAIL, env_bool
 
 log = logging.getLogger("glucopilot.scheduler")
@@ -48,7 +49,30 @@ _last_run = {
     "google_health": 0.0,
     "google_health_hr": 0.0,
     "cycle_inference": 0.0,
+    "health_summary": 0.0,
 }
+
+HEALTH_SUMMARY_INTERVAL = 7 * 24 * 3600  # weekly, tracked by wall-clock (survives restarts)
+HEALTH_SUMMARY_RETRY = 3600  # in-process throttle so a failing run doesn't hammer the 27B model
+
+
+def _health_summary_due() -> bool:
+    last = db.config_value("health_summary_last_run")
+    if not last:
+        return True  # bootstrap the first summary
+    try:
+        last_dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return (datetime.now(timezone.utc) - last_dt).total_seconds() >= HEALTH_SUMMARY_INTERVAL
+
+
+def _has_summary_data() -> bool:
+    return bool(
+        db.query_entities("LabResult", {"owner_email": OWNER_EMAIL}, "collected_date", 1)
+        or _dexcom_connected()
+        or _nightscout_connected()
+    )
 
 
 def _google_health_connected() -> bool:
@@ -159,6 +183,14 @@ async def _tick() -> None:
             await cycle_inference.infer()
         except Exception as err:
             log.warning("cycle inference failed: %s", err)
+
+    if now - _last_run["health_summary"] >= HEALTH_SUMMARY_RETRY and _health_summary_due() and _has_summary_data():
+        _last_run["health_summary"] = now
+        try:
+            await health_summary.generate()
+            log.info("health summary regenerated")
+        except Exception as err:
+            log.warning("health summary failed: %s", err)
 
 
 def _sync_enabled() -> bool:
