@@ -179,22 +179,67 @@ def _in_window(d: str | None, start: str, end: str) -> bool:
     return bool(d and start <= d < end)
 
 
+async def _list_interval(
+    client: httpx.AsyncClient, token: str, data_type: str, value_key: str, start: str, max_pages: int = 80
+) -> list[tuple[str, dict]]:
+    """Page a per-minute interval dataType NEWEST-FIRST (the default order),
+    stopping once points fall before ``start``. Returns (local_date, value)
+    pairs. Interval types (steps, active-minutes) have no reliable server-side
+    time filter — every filter-field spelling 400s — so we page and early-break
+    instead. Date comes from the point's own civilStartTime (no tz math)."""
+    base = f"{API}/users/me/dataTypes/{data_type}/dataPoints"
+    out: list[tuple[str, dict]] = []
+    page_token: str | None = None
+    tz = _tz()
+    for _ in range(max_pages):
+        params: dict[str, Any] = {"pageSize": 1000}
+        if page_token:
+            params["pageToken"] = page_token
+        res = await client.get(base, params=params, headers={"Authorization": f"Bearer {token}"})
+        if res.status_code >= 400:
+            log.warning("google health %s failed: %s %s", data_type, res.status_code, res.text[:200])
+            return out
+        data = res.json()
+        stop = False
+        for p in data.get("dataPoints", []):
+            v = p.get(value_key) or {}
+            interval = v.get("interval") or {}
+            d = _date_obj(((interval.get("civilStartTime") or {}).get("date")) or {}) or _local_date(
+                interval.get("startTime") or "", tz
+            )
+            if d and d < start:
+                stop = True  # newest-first, so everything after this is older too
+                continue
+            out.append((d, v))
+        page_token = data.get("nextPageToken")
+        if stop or not page_token:
+            break
+    return out
+
+
 async def _fetch_steps(client, token, by_day, day, s, e, tz):
-    for p in await _list_points(client, token, "steps", s, e, "steps.interval.start_time"):
-        v = p.get("steps") or {}
-        d = _local_date(((v.get("interval") or {}).get("startTime")) or "", tz)
+    for d, v in await _list_interval(client, token, "steps", "steps", s):
         if _in_window(d, s, e) and v.get("count") is not None:
             day(d)["steps"] = day(d).get("steps", 0) + int(v["count"])
 
 
 async def _fetch_active_minutes(client, token, by_day, day, s, e, tz):
-    # Filter prefix is the camelCase *value field* name (activeMinutes), not the
-    # hyphenated dataType id — a hyphenated filter field 400s.
-    for p in await _list_points(client, token, "active-minutes", s, e, "activeMinutes.interval.start_time"):
-        v = p.get("activeMinutes") or {}
-        d = _local_date(((v.get("interval") or {}).get("startTime")) or "", tz)
-        if _in_window(d, s, e) and v.get("activeMinutes") is not None:
-            day(d)["active_minutes"] = day(d).get("active_minutes", 0) + int(v["activeMinutes"])
+    # There's no total field — active minutes are split into activeMinutesByActivityLevel
+    # ({activityLevel, activeMinutes-as-string}). Sum the non-light levels so this
+    # matches Fitbit's "active minutes" (fairly+very active); LIGHT ~= all wear time.
+    for d, v in await _list_interval(client, token, "active-minutes", "activeMinutes", s):
+        if not _in_window(d, s, e):
+            continue
+        mins = 0
+        for lvl in v.get("activeMinutesByActivityLevel") or []:
+            if (lvl.get("activityLevel") or "").upper() in ("LIGHT", "SEDENTARY"):
+                continue
+            try:
+                mins += int(lvl.get("activeMinutes") or 0)
+            except (TypeError, ValueError):
+                continue
+        if mins:
+            day(d)["active_minutes"] = day(d).get("active_minutes", 0) + mins
 
 
 async def _fetch_resting_hr(client, token, by_day, day, s, e, tz):
