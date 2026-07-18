@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import db, report
+from . import db, profile, report
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value, set_config_value
 from .llm import invoke_llm
@@ -36,7 +36,7 @@ SUMMARY_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "Short, concrete (e.g. 'Higher HRV weeks track with steadier glucose')"},
-                    "detail": {"type": "string", "description": "2-3 sentences with the actual numbers, plain language, and a gentle note that correlation isn't causation."},
+                    "detail": {"type": "string", "description": "2-4 sentences, plain and direct, citing the actual numbers. State the fact/indicator; no hedging boilerplate."},
                     "domains": {"type": "array", "items": {"type": "string"}, "description": "e.g. ['glucose','wearables'], ['labs','cycle'], ['imaging']"},
                 },
                 "required": ["title", "detail"],
@@ -106,8 +106,10 @@ def _build_context() -> dict[str, Any]:
     glucose = report._glucose(tz, since_iso)
     cycle = report._cycle(tz, since_iso, glucose)
     flagged, trends = _labs_snapshot()
+    prof = profile.get_profile()
     return {
         "window_days": WINDOW_DAYS,
+        "profile": {k: prof.get(k) for k in ("age", "sex", "bmi", "weight_kg")} if prof.get("age") or prof.get("bmi") else None,
         "glucose": {k: glucose.get(k) for k in ("available", "tir", "avg", "gmi", "cv", "days")} if glucose.get("available") else None,
         "cycle": {"cycles": cycle.get("cycles_detected"), "avg_length": cycle.get("avg_cycle_length"),
                   "per_phase": cycle.get("per_phase")} if cycle.get("available") else None,
@@ -122,19 +124,35 @@ def _build_context() -> dict[str, Any]:
 async def generate() -> dict[str, Any]:
     context = _build_context()
     prompt = (
-        "You are a health-data analyst (NOT a physician) writing an overall picture for a person "
-        "with Type 1 diabetes who tracks a great deal of data. Using the multi-domain snapshot below, "
-        "write an OBSERVATIONAL summary that spots INTERESTING CONNECTIONS across domains — places where "
-        "glucose, labs (blood/urine/neurotransmitter/gut/imaging), menstrual cycle, and wearables (HRV, "
-        "resting HR, sleep) line up or move together. Cite the actual numbers. Do NOT diagnose or name "
-        "diseases; frame anything actionable as 'worth discussing with your care team'. Correlation is not "
-        "causation — say so where relevant. Prefer a few high-signal observations over many weak ones.\n\n"
+        "You are a health-data analyst writing the overall picture for a person with Type 1 diabetes who "
+        "tracks a great deal of data. Using the multi-domain snapshot below, write a substantive, specific "
+        "summary that spots INTERESTING CONNECTIONS and POTENTIAL INDICATORS across domains — where glucose, "
+        "labs (blood/urine/neurotransmitter/gut/imaging), menstrual cycle, wearables (HRV, resting HR, sleep), "
+        "and body profile line up or move together.\n\n"
+        "Style:\n"
+        "- State the facts and potential indicators plainly and directly. Cite the ACTUAL numbers every time.\n"
+        "- Do NOT add hedging boilerplate like 'correlation is not causation' or 'this is not a diagnosis' — "
+        "the reader already knows that. Just point out what the data shows.\n"
+        "- Be specific and concrete, not vague. Name the analytes/metrics involved.\n"
+        "- Aim for 6-9 genuinely distinct observations, richest/most-actionable first. Also give a fuller "
+        "'working' (on track) list and a 'watch' list.\n\n"
         f"DATA SNAPSHOT (last {WINDOW_DAYS} days where applicable):\n{json.dumps(context, indent=2, default=str)}"
     )
     result = await invoke_llm(prompt, response_json_schema=SUMMARY_SCHEMA, max_tokens=3000, tier="quality")
 
+    # Compact metric strip for the page header (computed, not LLM-generated).
+    g = context.get("glucose") or {}
+    w = context.get("wearables") or {}
+    p = context.get("profile") or {}
+    metrics = {
+        "tir": g.get("tir"), "avg": g.get("avg"), "gmi": g.get("gmi"), "cv": g.get("cv"),
+        "hrv": (w.get("hrv") or {}).get("recent"),
+        "resting_hr": (w.get("resting_heart_rate") or {}).get("recent"),
+        "bmi": p.get("bmi"), "age": p.get("age"),
+        "labs_out_of_range": len(context.get("labs_out_of_range") or []),
+    }
     now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-    payload = {"generated_at": now, "data": json.dumps(result), "owner_email": OWNER_EMAIL}
+    payload = {"generated_at": now, "data": json.dumps({**(result or {}), "metrics": metrics}), "owner_email": OWNER_EMAIL}
     for old in db.query_entities("HealthSummary", {"owner_email": OWNER_EMAIL}):
         db.delete_entity("HealthSummary", old["id"])
     db.create_entity("HealthSummary", payload)
