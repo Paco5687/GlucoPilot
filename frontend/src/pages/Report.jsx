@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle } from "lucide-react";
+import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, Line, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
 } from "recharts";
@@ -189,6 +189,37 @@ export default function Report() {
           Generated {new Date(report.generated_at).toLocaleDateString()}
         </div>
       </div>
+
+      {/* Insurance (prints at the top for the front desk) */}
+      {report.insurance?.available && (
+        <div className="report-section report-card rounded-xl border border-border p-4">
+          <h2 className="font-semibold text-sm mb-2 flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-primary" /> Health Insurance
+          </h2>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-1.5 text-sm">
+            {[
+              ["Carrier", report.insurance.carrier],
+              ["Plan", [report.insurance.plan_name, report.insurance.plan_type].filter(Boolean).join(" · ")],
+              ["Member", report.insurance.member_name],
+              ["Member ID", report.insurance.member_id],
+              ["Group", report.insurance.group_number],
+              ["Member services", report.insurance.customer_service_phone],
+              ["RxBIN", report.insurance.rx_bin],
+              ["RxPCN", report.insurance.rx_pcn],
+              ["RxGroup", report.insurance.rx_group],
+              ["Effective", report.insurance.effective_date],
+            ]
+              .filter(([, v]) => v)
+              .map(([label, v]) => (
+                <div key={label}>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+                  <div className="font-medium tabular-nums">{v}</div>
+                </div>
+              ))}
+          </div>
+          {report.insurance.notes && <p className="text-xs text-muted-foreground mt-2">{report.insurance.notes}</p>}
+        </div>
+      )}
 
       {/* Narrative */}
       {n && (
