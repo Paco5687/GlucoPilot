@@ -287,6 +287,20 @@ async def _fetch_respiratory_rate(client, token, by_day, day, s, e, tz):
             day(d)["breathing_rate"] = round(float(v["breathsPerMinute"]), 1)
 
 
+async def _fetch_hrv(client, token, by_day, day, s, e, tz):
+    # HRV is the strongest wearable signal for cross-domain analysis (autonomic
+    # stress/recovery). Daily-keyed, so it backfills a full year cheaply.
+    for p in await _list_points(client, token, "daily-heart-rate-variability", s, e):
+        v = p.get("dailyHeartRateVariability") or {}
+        d = _date_obj(v.get("date") or {})
+        if not _in_window(d, s, e):
+            continue
+        if v.get("averageHeartRateVariabilityMilliseconds") is not None:
+            day(d)["hrv"] = round(float(v["averageHeartRateVariabilityMilliseconds"]), 1)
+        if v.get("nonRemHeartRateBeatsPerMinute") is not None:
+            day(d)["nonrem_heart_rate"] = int(float(v["nonRemHeartRateBeatsPerMinute"]))
+
+
 _FETCHERS: list[Callable] = [
     _fetch_steps,
     _fetch_active_minutes,
@@ -294,6 +308,7 @@ _FETCHERS: list[Callable] = [
     _fetch_spo2,
     _fetch_sleep,
     _fetch_respiratory_rate,
+    _fetch_hrv,
     # Calories and skin-temperature: no valid Google Health dataType id found
     # via probe (tried total-/active-/energy-expended, skin-/body-/core-temperature
     # and daily- variants — all INVALID_ARGUMENT). Temperature is covered by Oura.
@@ -329,11 +344,15 @@ async def _sync_heart_rate(minutes: int = 180) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(minutes=minutes)
     buckets: dict[str, int] = {}
-    async with httpx.AsyncClient(timeout=90) as client:
+    # heart-rate has no server-side time filter, so we page newest-first and
+    # early-break at the cutoff. Small windows stop after ~1 page; a multi-day
+    # backfill needs a high cap (raised proportionally to the window).
+    max_pages = 30 if minutes <= 240 else 300
+    async with httpx.AsyncClient(timeout=120) as client:
         token = await _access_token(client)
         base = f"{API}/users/me/dataTypes/heart-rate/dataPoints"
         page_token: str | None = None
-        for _ in range(30):
+        for _ in range(max_pages):
             params: dict[str, Any] = {"pageSize": 1000}
             if page_token:
                 params["pageToken"] = page_token

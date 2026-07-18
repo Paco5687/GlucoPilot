@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { base44 } from "@/api/base44Client";
 import { Button } from "@/components/ui/button";
-import { Loader2, RefreshCw, Heart, Moon, Droplets, Wind, Footprints, Flame, ArrowRight, ArrowUp, ArrowDown } from "lucide-react";
+import { Loader2, RefreshCw, Heart, Moon, Droplets, Wind, Footprints, Flame, Activity, ArrowRight, ArrowUp, ArrowDown } from "lucide-react";
 
 function Tile({ icon: Icon, label, value, unit, detail, color, bg, delta }) {
   if (value == null) return null;
@@ -59,6 +59,7 @@ export default function WearablesPanel({ data, isViewingShared, onRefresh }) {
     l && l.prev != null ? Number((l.value - l.prev).toFixed(round)) : null;
 
   const rhr = findLatest("resting_heart_rate");
+  const hrv = findLatest("hrv");
   const sleep = findLatest("sleep_minutes");
   const spo2 = findLatest("spo2_avg");
   const resp = findLatest("breathing_rate");
@@ -91,6 +92,8 @@ export default function WearablesPanel({ data, isViewingShared, onRefresh }) {
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
         <Tile icon={Heart} label="Resting HR" value={rhr?.value} unit="bpm" delta={delta(rhr)}
           color="text-rose-500" bg="bg-rose-500/10" />
+        <Tile icon={Activity} label="HRV" value={hrv?.value} unit="ms" delta={delta(hrv, 1)}
+          detail={hrv ? "overnight avg" : null} color="text-violet-500" bg="bg-violet-500/10" />
         <Tile icon={Moon} label="Sleep" value={sleep ? (sleep.value / 60).toFixed(1) : null} unit="h"
           detail={sleep ? `${sleep.value} min` : null} color="text-indigo-500" bg="bg-indigo-500/10" />
         <Tile icon={Droplets} label="SpO₂" value={spo2?.value} unit="%" delta={delta(spo2, 1)}
