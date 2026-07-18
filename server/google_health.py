@@ -188,7 +188,9 @@ async def _fetch_steps(client, token, by_day, day, s, e, tz):
 
 
 async def _fetch_active_minutes(client, token, by_day, day, s, e, tz):
-    for p in await _list_points(client, token, "active-minutes", s, e, "active-minutes.interval.start_time"):
+    # Filter prefix is the camelCase *value field* name (activeMinutes), not the
+    # hyphenated dataType id — a hyphenated filter field 400s.
+    for p in await _list_points(client, token, "active-minutes", s, e, "activeMinutes.interval.start_time"):
         v = p.get("activeMinutes") or {}
         d = _local_date(((v.get("interval") or {}).get("startTime")) or "", tz)
         if _in_window(d, s, e) and v.get("activeMinutes") is not None:
@@ -232,13 +234,24 @@ async def _fetch_sleep(client, token, by_day, day, s, e, tz):
                 day(d)["sleep_efficiency"] = round(int(asleep) / int(in_bed) * 100)
 
 
+async def _fetch_respiratory_rate(client, token, by_day, day, s, e, tz):
+    for p in await _list_points(client, token, "daily-respiratory-rate", s, e):
+        v = p.get("dailyRespiratoryRate") or {}
+        d = _date_obj(v.get("date") or {})
+        if _in_window(d, s, e) and v.get("breathsPerMinute") is not None:
+            day(d)["breathing_rate"] = round(float(v["breathsPerMinute"]), 1)
+
+
 _FETCHERS: list[Callable] = [
     _fetch_steps,
     _fetch_active_minutes,
     _fetch_resting_hr,
     _fetch_spo2,
     _fetch_sleep,
-    # TODO after live probe: calories, respiratory rate, skin-temp deviation.
+    _fetch_respiratory_rate,
+    # Calories and skin-temperature: no valid Google Health dataType id found
+    # via probe (tried total-/active-/energy-expended, skin-/body-/core-temperature
+    # and daily- variants — all INVALID_ARGUMENT). Temperature is covered by Oura.
 ]
 
 
