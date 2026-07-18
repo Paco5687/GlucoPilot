@@ -405,7 +405,8 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
     action = body.get("action")
 
     if action == "sync_hr":
-        return await _sync_heart_rate(min(int(body.get("minutes") or 180), 1440))
+        # up to 14 days for an intraday HR backfill; routine polls pass ~30 min
+        return await _sync_heart_rate(min(int(body.get("minutes") or 180), 14 * 1440))
 
     if action == "get_client_id":
         return {"client_id": config_value("google_health_client_id"), "scopes": SCOPES}
