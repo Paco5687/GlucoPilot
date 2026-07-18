@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo } from "react";
 import { base44 } from "@/api/base44Client";
 import { useAuth } from "@/lib/AuthContext";
+import { Button } from "@/components/ui/button";
 import SafetyBanner from "../components/SafetyBanner";
 import RecordUploadQueue from "../components/records/RecordUploadQueue";
 import {
-  FolderHeart, Loader2, FileText, Trash2, ExternalLink, AlertTriangle, FlaskConical,
+  FolderHeart, Loader2, FileText, Trash2, ExternalLink, AlertTriangle, FlaskConical, RefreshCw,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -106,6 +107,9 @@ export default function Records() {
   const [records, setRecords] = useState([]);
   const [labs, setLabs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [reprocessingId, setReprocessingId] = useState(null);
+  const [retryingAll, setRetryingAll] = useState(false);
+  const failedCount = records.filter((r) => r.status === "failed").length;
 
   useEffect(() => {
     load();
@@ -124,6 +128,45 @@ export default function Records() {
       // keep whatever we had
     }
     setLoading(false);
+  }
+
+  async function reprocessOne(rec) {
+    const res = await fetch(`/api/records/${rec.id}/reprocess`, { method: "POST", credentials: "same-origin" });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(data?.detail || `Reprocess failed (${res.status})`);
+    return data;
+  }
+
+  async function handleReprocess(rec) {
+    setReprocessingId(rec.id);
+    try {
+      const data = await reprocessOne(rec);
+      toast.success(`Reprocessed "${rec.filename}" — ${data.lab_results} lab${data.lab_results === 1 ? "" : "s"}`);
+      await load();
+    } catch (err) {
+      toast.error(err.message || "Reprocess failed");
+    }
+    setReprocessingId(null);
+  }
+
+  async function handleRetryAllFailed() {
+    const failed = records.filter((r) => r.status === "failed");
+    if (!failed.length) return;
+    setRetryingAll(true);
+    let ok = 0;
+    for (const rec of failed) {
+      setReprocessingId(rec.id);
+      try {
+        await reprocessOne(rec);
+        ok += 1;
+      } catch {
+        // leave it failed; continue with the rest
+      }
+    }
+    setReprocessingId(null);
+    setRetryingAll(false);
+    toast[ok === failed.length ? "success" : "info"](`Reprocessed ${ok}/${failed.length} failed document${failed.length === 1 ? "" : "s"}`);
+    await load();
   }
 
   async function handleDelete(rec) {
@@ -195,9 +238,17 @@ export default function Records() {
 
       {/* Documents */}
       <div className="space-y-3">
-        <h2 className="font-semibold text-base flex items-center gap-2">
-          <FileText className="w-4 h-4 text-primary" /> Documents
-        </h2>
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="font-semibold text-base flex items-center gap-2">
+            <FileText className="w-4 h-4 text-primary" /> Documents
+          </h2>
+          {isAdmin && failedCount > 0 && (
+            <Button variant="outline" size="sm" onClick={handleRetryAllFailed} disabled={retryingAll} className="gap-1.5 text-xs">
+              {retryingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+              Retry all failed ({failedCount})
+            </Button>
+          )}
+        </div>
         {loading ? (
           <div className="flex items-center gap-2 text-muted-foreground text-sm">
             <Loader2 className="w-4 h-4 animate-spin" /> Loading…
@@ -225,6 +276,16 @@ export default function Records() {
                 )}
               </div>
               <div className="flex items-center gap-1 flex-shrink-0">
+                {isAdmin && rec.status === "failed" && (
+                  <button
+                    onClick={() => handleReprocess(rec)}
+                    disabled={reprocessingId === rec.id}
+                    className="p-2 rounded-lg hover:bg-accent text-primary disabled:opacity-50"
+                    title="Retry extraction"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${reprocessingId === rec.id ? "animate-spin" : ""}`} />
+                  </button>
+                )}
                 <a href={`/api/records/file/${rec.id}`} target="_blank" rel="noreferrer" className="p-2 rounded-lg hover:bg-accent text-muted-foreground" title="Open original">
                   <ExternalLink className="w-4 h-4" />
                 </a>

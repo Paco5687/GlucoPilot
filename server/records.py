@@ -35,7 +35,7 @@ router = APIRouter(dependencies=[Depends(require_login)])
 RECORDS_DIR = DATA_DIR / "records"
 ALLOWED_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
 MAX_PAGES = 40  # full multi-page records (25-30pp are common); beyond this we truncate + note
-PAGE_BATCH = 6  # pages per vision-model call — batching avoids blowing the local model's context/VRAM
+PAGE_BATCH = 4  # pages per vision-model call — the local vLLM caps images at 4 per prompt
 MAX_FILE_MB = 60
 
 EXTRACTION_SCHEMA = {
@@ -170,64 +170,94 @@ async def upload(file: UploadFile):
     )
 
     try:
-        if suffix == ".pdf":
-            page_paths = await asyncio.to_thread(_pdf_to_images, stored)
-            if not page_paths:
-                raise RuntimeError("PDF rendered no pages")
-        else:
-            page_paths = [stored]
-        extracted = await _extract_document(page_paths)
-
-        results = []
-        seen = set()
-        for lab in extracted.get("lab_results") or []:
-            if not lab.get("test_name") or lab.get("value") is None:
-                continue
-            try:
-                value = float(lab["value"])
-            except (TypeError, ValueError):
-                continue
-            test_name = str(lab["test_name"]).strip()
-            collected = lab.get("collected_date") or extracted.get("record_date") or ""
-            # A test can repeat across batched pages (summary + detail) — keep one.
-            key = (test_name.lower(), collected, round(value, 4))
-            if key in seen:
-                continue
-            seen.add(key)
-            results.append(
-                {
-                    "test_name": test_name,
-                    "value": value,
-                    "unit": (lab.get("unit") or "").strip(),
-                    "reference_low": lab.get("reference_low"),
-                    "reference_high": lab.get("reference_high"),
-                    "flag": (lab.get("flag") or "").lower(),
-                    "collected_date": collected,
-                    "category": (lab.get("category") or "").strip(),
-                    "record_id": record["id"],
-                    "owner_email": OWNER_EMAIL,
-                }
-            )
-        if results:
-            db.bulk_create_entities("LabResult", results)
-
-        record = db.update_entity(
-            "MedicalRecord",
-            record["id"],
-            {
-                "status": "processed",
-                "doc_type": extracted.get("doc_type") or "other",
-                "record_date": extracted.get("record_date") or "",
-                "summary": extracted.get("summary") or "",
-                "page_count": len(page_paths),
-                "lab_count": len(results),
-            },
-        )
-        return {"ok": True, "record": record, "lab_results": len(results)}
+        record = await _extract_and_store(record, stored, suffix)
+        return {"ok": True, "record": record, "lab_results": record.get("lab_count", 0)}
     except Exception as err:
         log.exception("record extraction failed")
         db.update_entity("MedicalRecord", record["id"], {"status": "failed", "error": str(err)[:300]})
         raise HTTPException(status_code=502, detail=f"Extraction failed: {err}")
+
+
+async def _extract_and_store(record: dict, stored: Path, suffix: str) -> dict:
+    """Render → batched vision extraction → replace this record's LabResults →
+    mark processed. Raises on failure; callers mark the record failed. Reused by
+    upload and reprocess (reprocess re-runs on the already-stored file)."""
+    if suffix == ".pdf":
+        page_paths = await asyncio.to_thread(_pdf_to_images, stored)
+        if not page_paths:
+            raise RuntimeError("PDF rendered no pages")
+    else:
+        page_paths = [stored]
+    extracted = await _extract_document(page_paths)
+
+    results = []
+    seen = set()
+    for lab in extracted.get("lab_results") or []:
+        if not lab.get("test_name") or lab.get("value") is None:
+            continue
+        try:
+            value = float(lab["value"])
+        except (TypeError, ValueError):
+            continue
+        test_name = str(lab["test_name"]).strip()
+        collected = lab.get("collected_date") or extracted.get("record_date") or ""
+        # A test can repeat across batched pages (summary + detail) — keep one.
+        key = (test_name.lower(), collected, round(value, 4))
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(
+            {
+                "test_name": test_name,
+                "value": value,
+                "unit": (lab.get("unit") or "").strip(),
+                "reference_low": lab.get("reference_low"),
+                "reference_high": lab.get("reference_high"),
+                "flag": (lab.get("flag") or "").lower(),
+                "collected_date": collected,
+                "category": (lab.get("category") or "").strip(),
+                "record_id": record["id"],
+                "owner_email": OWNER_EMAIL,
+            }
+        )
+    # Replace any prior labs for this record so reprocessing is idempotent.
+    for old in db.query_entities("LabResult", {"record_id": record["id"], "owner_email": OWNER_EMAIL}):
+        db.delete_entity("LabResult", old["id"])
+    if results:
+        db.bulk_create_entities("LabResult", results)
+
+    return db.update_entity(
+        "MedicalRecord",
+        record["id"],
+        {
+            "status": "processed",
+            "doc_type": extracted.get("doc_type") or "other",
+            "record_date": extracted.get("record_date") or "",
+            "summary": extracted.get("summary") or "",
+            "page_count": len(page_paths),
+            "lab_count": len(results),
+            "error": "",
+        },
+    )
+
+
+@router.post("/api/records/{rid}/reprocess", dependencies=[Depends(require_admin)])
+async def reprocess(rid: str):
+    rows = db.query_entities("MedicalRecord", {"id": rid, "owner_email": OWNER_EMAIL}, limit=1)
+    if not rows:
+        raise HTTPException(status_code=404, detail="Record not found")
+    record = rows[0]
+    stored = RECORDS_DIR / (record.get("stored_as") or "")
+    if not record.get("stored_as") or not stored.is_file():
+        raise HTTPException(status_code=404, detail="Stored file missing — please re-upload this document.")
+    db.update_entity("MedicalRecord", rid, {"status": "processing"})
+    try:
+        record = await _extract_and_store(record, stored, stored.suffix.lower())
+        return {"ok": True, "record": record, "lab_results": record.get("lab_count", 0)}
+    except Exception as err:
+        log.exception("record reprocess failed")
+        db.update_entity("MedicalRecord", rid, {"status": "failed", "error": str(err)[:300]})
+        raise HTTPException(status_code=502, detail=f"Reprocess failed: {err}")
 
 
 @router.get("/api/records/file/{rid}")
