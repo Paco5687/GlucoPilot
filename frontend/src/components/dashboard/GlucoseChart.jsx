@@ -3,9 +3,28 @@ import { format, differenceInHours, parseISO } from "date-fns";
 
 function CustomTooltip({ active, payload }) {
   if (!active || !payload?.length) return null;
-  const d = payload[0].payload;
+  const d = payload.find((p) => p.payload?.isFingerstick)?.payload || payload[0].payload;
   const ts = d.timestamp ? new Date(d.timestamp) : null;
   if (!ts || isNaN(ts.getTime())) return null;
+  if (d.isFingerstick) {
+    const up = d.delta > 0;
+    return (
+      <div className="bg-card border border-border rounded-lg shadow-lg p-3 text-sm">
+        <p className="font-mono font-bold text-lg">🩸 {d.fingerstick} <span className="text-xs text-muted-foreground">mg/dL fingerstick</span></p>
+        <p className="text-muted-foreground text-xs">{format(ts, "MMM d, h:mm a")}</p>
+        {d.cgm_value != null ? (
+          <p className="text-xs mt-1">
+            CGM read <b>{d.cgm_value}</b> ·{" "}
+            <span className={Math.abs(d.delta) >= 20 ? "text-red-600 font-medium" : "text-muted-foreground"}>
+              Δ {up ? "+" : ""}{d.delta} {up ? "(CGM high)" : "(CGM low)"}
+            </span>
+          </p>
+        ) : (
+          <p className="text-xs mt-1 text-muted-foreground">no CGM reading nearby</p>
+        )}
+      </div>
+    );
+  }
   return (
     <div className="bg-card border border-border rounded-lg shadow-lg p-3 text-sm">
       <p className="font-mono font-bold text-lg">{d.value} <span className="text-xs text-muted-foreground">mg/dL</span></p>
@@ -27,7 +46,7 @@ const PHASE_COLORS = {
   luteal: "rgba(245, 158, 11, 0.06)",
 };
 
-export default function GlucoseChart({ readings, treatments, periodLogs }) {
+export default function GlucoseChart({ readings, treatments, periodLogs, fingersticks }) {
   if (!readings.length) return null;
 
   const allSorted = [...readings].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
@@ -111,6 +130,22 @@ export default function GlucoseChart({ readings, treatments, periodLogs }) {
     value: 0,
   }));
 
+  // Fingerstick "correction points" — plotted at the meter value (on the y-axis),
+  // overlaid on the CGM trace to mark where the graph disagreed. Never replaces it.
+  const chartStart = sorted[0]?.time;
+  const chartEnd = sorted[sorted.length - 1]?.time;
+  const fingerstickMarkers = (fingersticks || [])
+    .map((f) => ({
+      time: new Date(f.timestamp).getTime(),
+      value: f.value,
+      timestamp: f.timestamp,
+      isFingerstick: true,
+      fingerstick: f.value,
+      cgm_value: f.cgm_value,
+      delta: f.delta,
+    }))
+    .filter((m) => !Number.isNaN(m.time) && (chartStart == null || (m.time >= chartStart && m.time <= chartEnd)));
+
   return (
     <div className="bg-card rounded-xl border border-border p-4">
       <div className="flex items-center justify-between mb-4">
@@ -130,6 +165,9 @@ export default function GlucoseChart({ readings, treatments, periodLogs }) {
           </span>
           <span className="flex items-center gap-1">
             <span className="w-2 h-2 rounded-full bg-orange-500" /> Carbs
+          </span>
+          <span className="flex items-center gap-1">
+            <span className="w-2 h-2 rotate-45 bg-fuchsia-600" /> Fingerstick
           </span>
         </div>
       </div>
@@ -191,6 +229,16 @@ export default function GlucoseChart({ readings, treatments, periodLogs }) {
             dataKey="markerY"
             fill="hsl(25, 95%, 53%)"
             opacity={0.7}
+            legendType="none"
+            isAnimationActive={false}
+          />
+          <Scatter
+            data={fingerstickMarkers}
+            dataKey="value"
+            shape="diamond"
+            fill="hsl(292, 84%, 48%)"
+            stroke="hsl(0, 0%, 100%)"
+            strokeWidth={1}
             legendType="none"
             isAnimationActive={false}
           />
