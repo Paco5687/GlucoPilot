@@ -342,6 +342,8 @@ async def visit_report(body: ReportBody):
     wellness = _wellness(days)
     labs = _labs()
 
+    from . import insurance
+
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "days": days,
@@ -352,6 +354,7 @@ async def visit_report(body: ReportBody):
         "cycle": cycle,
         "wellness": wellness,
         "labs": labs,
+        "insurance": insurance.report_block(),
     }
     payload["narrative"] = await _narrative(payload)
     if payload["narrative"] is None and DEMO_MODE:
