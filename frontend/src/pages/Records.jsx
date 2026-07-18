@@ -1,106 +1,12 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { base44 } from "@/api/base44Client";
 import { useAuth } from "@/lib/AuthContext";
 import { Button } from "@/components/ui/button";
 import SafetyBanner from "../components/SafetyBanner";
 import RecordUploadQueue from "../components/records/RecordUploadQueue";
-import {
-  FolderHeart, Loader2, FileText, Trash2, ExternalLink, AlertTriangle, FlaskConical, RefreshCw,
-} from "lucide-react";
+import LabsView from "../components/records/LabsView";
+import { FolderHeart, Loader2, FileText, Trash2, ExternalLink, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
-import {
-  ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, ReferenceArea, CartesianGrid,
-} from "recharts";
-
-function LabTrend({ name, points }) {
-  // One analyte per chart (small multiples) — single series, own axis.
-  const data = points.map((p) => ({
-    date: p.collected_date,
-    value: p.value,
-    flag: p.flag,
-    unit: p.unit,
-  }));
-  const latest = points[points.length - 1];
-  const refLow = points.find((p) => p.reference_low != null)?.reference_low;
-  const refHigh = points.find((p) => p.reference_high != null)?.reference_high;
-  const outOfRange = latest.flag && latest.flag !== "normal" && latest.flag !== "";
-
-  const values = points.map((p) => p.value).concat(refLow ?? [], refHigh ?? []);
-  const min = Math.min(...values), max = Math.max(...values);
-  const pad = (max - min) * 0.15 || Math.abs(max) * 0.1 || 1;
-
-  return (
-    <div className="bg-card rounded-xl border border-border p-4">
-      <div className="flex items-start justify-between gap-2 mb-1">
-        <div>
-          <h4 className="font-semibold text-sm">{name}</h4>
-          <p className="text-xs text-muted-foreground">
-            {points.length} result{points.length === 1 ? "" : "s"}
-            {refLow != null && refHigh != null ? ` · ref ${refLow}–${refHigh} ${latest.unit || ""}` : ""}
-          </p>
-        </div>
-        <div className="text-right">
-          <div className="text-lg font-bold tabular-nums">
-            {latest.value}
-            <span className="text-xs font-normal text-muted-foreground ml-1">{latest.unit}</span>
-          </div>
-          {outOfRange && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium bg-red-100 text-red-700 inline-flex items-center gap-1">
-              <AlertTriangle className="w-3 h-3" /> {latest.flag}
-            </span>
-          )}
-        </div>
-      </div>
-      {points.length >= 2 ? (
-        <div className="h-28">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={data} margin={{ top: 6, right: 6, bottom: 0, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-              {refLow != null && refHigh != null && (
-                <ReferenceArea y1={refLow} y2={refHigh} fill="hsl(var(--primary))" fillOpacity={0.07} stroke="none" />
-              )}
-              <XAxis dataKey="date" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} />
-              <YAxis
-                domain={[Math.floor((min - pad) * 100) / 100, Math.ceil((max + pad) * 100) / 100]}
-                tick={{ fontSize: 10 }}
-                stroke="hsl(var(--muted-foreground))"
-                tickLine={false}
-                width={44}
-              />
-              <Tooltip
-                formatter={(v, _n, item) => [`${v} ${item?.payload?.unit || ""}${item?.payload?.flag && item.payload.flag !== "normal" ? ` (${item.payload.flag})` : ""}`, name]}
-                labelFormatter={(l) => l}
-                contentStyle={{ fontSize: 12, borderRadius: 8 }}
-              />
-              <Line
-                type="monotone"
-                dataKey="value"
-                stroke="hsl(var(--primary))"
-                strokeWidth={2}
-                dot={({ cx, cy, payload, index }) => {
-                  const bad = payload.flag && payload.flag !== "normal" && payload.flag !== "";
-                  return (
-                    <circle
-                      key={index}
-                      cx={cx}
-                      cy={cy}
-                      r={4}
-                      fill={bad ? "#dc2626" : "hsl(var(--primary))"}
-                      stroke="hsl(var(--card))"
-                      strokeWidth={2}
-                    />
-                  );
-                }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      ) : (
-        <p className="text-xs text-muted-foreground italic">One result so far — a trend appears after the next upload.</p>
-      )}
-    </div>
-  );
-}
 
 export default function Records() {
   const { isAdmin } = useAuth();
@@ -181,24 +87,6 @@ export default function Records() {
     }
   }
 
-  const trendsByCategory = useMemo(() => {
-    const byTest = new Map();
-    for (const lab of labs) {
-      if (lab.value == null || !lab.test_name) continue;
-      const key = lab.test_name;
-      if (!byTest.has(key)) byTest.set(key, []);
-      byTest.get(key).push(lab);
-    }
-    const categories = new Map();
-    for (const [test, points] of byTest) {
-      points.sort((a, b) => String(a.collected_date).localeCompare(String(b.collected_date)));
-      const cat = points[points.length - 1].category || "Other";
-      if (!categories.has(cat)) categories.set(cat, []);
-      categories.get(cat).push([test, points]);
-    }
-    return [...categories.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [labs]);
-
   return (
     <div className="space-y-6">
       <SafetyBanner />
@@ -217,24 +105,8 @@ export default function Records() {
       {/* Upload queue (admin only) */}
       {isAdmin && <RecordUploadQueue onComplete={load} />}
 
-      {/* Lab trends */}
-      {trendsByCategory.length > 0 && (
-        <div className="space-y-5">
-          <h2 className="font-semibold text-base flex items-center gap-2">
-            <FlaskConical className="w-4 h-4 text-primary" /> Lab trends
-          </h2>
-          {trendsByCategory.map(([category, tests]) => (
-            <div key={category}>
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">{category}</h3>
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {tests.map(([test, points]) => (
-                  <LabTrend key={test} name={test} points={points} />
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      {/* Lab trends — switchable Index / Charts / Matrix views with filters */}
+      <LabsView labs={labs} />
 
       {/* Documents */}
       <div className="space-y-3">
