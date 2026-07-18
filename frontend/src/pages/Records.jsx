@@ -1,10 +1,10 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { base44 } from "@/api/base44Client";
 import { useAuth } from "@/lib/AuthContext";
-import { Button } from "@/components/ui/button";
 import SafetyBanner from "../components/SafetyBanner";
+import RecordUploadQueue from "../components/records/RecordUploadQueue";
 import {
-  FolderHeart, Loader2, Upload, FileText, Trash2, ExternalLink, AlertTriangle, FlaskConical,
+  FolderHeart, Loader2, FileText, Trash2, ExternalLink, AlertTriangle, FlaskConical,
 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -106,8 +106,6 @@ export default function Records() {
   const [records, setRecords] = useState([]);
   const [labs, setLabs] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const fileRef = useRef(null);
 
   useEffect(() => {
     load();
@@ -126,24 +124,6 @@ export default function Records() {
       // keep whatever we had
     }
     setLoading(false);
-  }
-
-  async function handleUpload(file) {
-    if (!file) return;
-    setUploading(true);
-    try {
-      const form = new FormData();
-      form.append("file", file);
-      const res = await fetch("/api/records/upload", { method: "POST", body: form, credentials: "same-origin" });
-      const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.detail || `Upload failed (${res.status})`);
-      toast.success(`Processed "${file.name}" — ${data.lab_results} lab result${data.lab_results === 1 ? "" : "s"} extracted`);
-      await load();
-    } catch (err) {
-      toast.error(err.message || "Upload failed");
-    }
-    setUploading(false);
-    if (fileRef.current) fileRef.current.value = "";
   }
 
   async function handleDelete(rec) {
@@ -191,25 +171,8 @@ export default function Records() {
         <FolderHeart className="w-6 h-6 text-primary" />
       </div>
 
-      {/* Upload (admin only) */}
-      {isAdmin && (
-        <div className="bg-card rounded-xl border border-dashed border-border p-6 text-center">
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".pdf,.png,.jpg,.jpeg,.webp"
-            className="hidden"
-            onChange={(e) => handleUpload(e.target.files?.[0])}
-          />
-          <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
-          <p className="text-sm text-muted-foreground mb-3">PDF, PNG, or JPG — lab reports, visit summaries, imaging reports.</p>
-          <Button onClick={() => fileRef.current?.click()} disabled={uploading} className="gap-2">
-            {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-            {uploading ? "Extracting…" : "Upload a record"}
-          </Button>
-          {uploading && <p className="text-xs text-muted-foreground mt-2">Reading the document with the AI model — this can take a minute.</p>}
-        </div>
-      )}
+      {/* Upload queue (admin only) */}
+      {isAdmin && <RecordUploadQueue onComplete={load} />}
 
       {/* Lab trends */}
       {trendsByCategory.length > 0 && (
