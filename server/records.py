@@ -34,8 +34,9 @@ router = APIRouter(dependencies=[Depends(require_login)])
 
 RECORDS_DIR = DATA_DIR / "records"
 ALLOWED_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
-MAX_PAGES = 8
-MAX_FILE_MB = 25
+MAX_PAGES = 40  # full multi-page records (25-30pp are common); beyond this we truncate + note
+PAGE_BATCH = 6  # pages per vision-model call — batching avoids blowing the local model's context/VRAM
+MAX_FILE_MB = 60
 
 EXTRACTION_SCHEMA = {
     "type": "object",
@@ -84,7 +85,7 @@ def _pdf_to_images(pdf_path: Path) -> list[Path]:
             ["pdftoppm", "-png", "-r", "150", "-l", str(MAX_PAGES), str(pdf_path), str(prefix)],
             check=True,
             capture_output=True,
-            timeout=120,
+            timeout=300,
         )
         pages = sorted(Path(tmp).glob("page*.png"))
         out = []
@@ -105,6 +106,25 @@ def _encode_images(paths: list[Path]) -> list[str]:
 
 async def _extract(images: list[str]) -> dict:
     return await invoke_llm(EXTRACTION_PROMPT, response_json_schema=EXTRACTION_SCHEMA, max_tokens=6000, images=images)
+
+
+async def _extract_document(page_paths: list[Path]) -> dict:
+    """Extract a whole document. Long records (25-30+ pages) are processed in
+    page batches so each vision call stays within the local model's context,
+    then merged. doc_type/date/summary come from the first batch that yields
+    them; lab_results accumulate across all batches (deduped later)."""
+    merged: dict = {"doc_type": "", "record_date": "", "summary": "", "lab_results": []}
+    for i in range(0, len(page_paths), PAGE_BATCH):
+        batch = page_paths[i : i + PAGE_BATCH]
+        part = await _extract(_encode_images(batch))
+        if not merged["doc_type"] and part.get("doc_type"):
+            merged["doc_type"] = part["doc_type"]
+        if not merged["record_date"] and part.get("record_date"):
+            merged["record_date"] = part["record_date"]
+        if not merged["summary"] and part.get("summary"):
+            merged["summary"] = part["summary"]
+        merged["lab_results"].extend(part.get("lab_results") or [])
+    return merged
 
 
 @router.post("/api/records/upload", dependencies=[Depends(require_admin)])
@@ -156,22 +176,33 @@ async def upload(file: UploadFile):
                 raise RuntimeError("PDF rendered no pages")
         else:
             page_paths = [stored]
-        images = _encode_images(page_paths)
-        extracted = await _extract(images)
+        extracted = await _extract_document(page_paths)
 
         results = []
+        seen = set()
         for lab in extracted.get("lab_results") or []:
             if not lab.get("test_name") or lab.get("value") is None:
                 continue
+            try:
+                value = float(lab["value"])
+            except (TypeError, ValueError):
+                continue
+            test_name = str(lab["test_name"]).strip()
+            collected = lab.get("collected_date") or extracted.get("record_date") or ""
+            # A test can repeat across batched pages (summary + detail) — keep one.
+            key = (test_name.lower(), collected, round(value, 4))
+            if key in seen:
+                continue
+            seen.add(key)
             results.append(
                 {
-                    "test_name": str(lab["test_name"]).strip(),
-                    "value": float(lab["value"]),
+                    "test_name": test_name,
+                    "value": value,
                     "unit": (lab.get("unit") or "").strip(),
                     "reference_low": lab.get("reference_low"),
                     "reference_high": lab.get("reference_high"),
                     "flag": (lab.get("flag") or "").lower(),
-                    "collected_date": lab.get("collected_date") or extracted.get("record_date") or "",
+                    "collected_date": collected,
                     "category": (lab.get("category") or "").strip(),
                     "record_id": record["id"],
                     "owner_email": OWNER_EMAIL,
