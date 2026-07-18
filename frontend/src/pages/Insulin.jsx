@@ -28,16 +28,27 @@ function daysAgo(iso) {
   return Math.round((Date.now() - new Date(iso + "T12:00:00").getTime()) / 86400000);
 }
 
+const CONSISTENCY = {
+  "highly variable": { cls: "text-rose-600", bg: "bg-rose-500/10" },
+  variable: { cls: "text-amber-600", bg: "bg-amber-500/10" },
+  consistent: { cls: "text-emerald-600", bg: "bg-emerald-500/10" },
+};
+
 export default function Insulin() {
   const [r, setR] = useState(null);
+  const [absn, setAbsn] = useState(null);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await base44.functions.invoke("insulin", { action: "resistance" });
+      const [res, ab] = await Promise.all([
+        base44.functions.invoke("insulin", { action: "resistance" }),
+        base44.functions.invoke("insulin", { action: "absorption" }),
+      ]);
       setR(res.data);
-    } catch { setR(null); }
+      setAbsn(ab.data);
+    } catch { setR(null); setAbsn(null); }
     setLoading(false);
   }, []);
   useEffect(() => { load(); }, [load]);
@@ -110,6 +121,35 @@ export default function Insulin() {
               </div>
               <p className="text-[11px] text-muted-foreground mt-2">Higher = more insulin needed per kg in that phase (luteal-phase resistance is common in T1D).</p>
             </div>
+          )}
+
+          {absn?.available && (
+            <div className="space-y-3">
+              <h2 className="font-semibold text-base">Insulin absorption &amp; response</h2>
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className={`rounded-xl border border-border p-5 ${(CONSISTENCY[absn.consistency] || {}).bg}`}>
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Response consistency</div>
+                  <div className={`text-2xl font-bold mt-1 capitalize ${(CONSISTENCY[absn.consistency] || {}).cls}`}>{absn.consistency}</div>
+                  <div className="text-sm text-muted-foreground mt-1">variability (CV) <b className="tabular-nums">{absn.cv_pct}%</b></div>
+                  <div className="text-[11px] text-muted-foreground mt-2">
+                    Across {absn.n} clean correction boluses (no carbs/stacking). High variability = the same dose can act very differently.
+                  </div>
+                </div>
+                <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <Stat label="Typical drop" value={absn.median_drop_per_unit} unit="mg/dL/U" sub="median" />
+                  <Stat label="Average drop" value={absn.mean_drop_per_unit} unit="mg/dL/U" sub="mean" />
+                  <Stat label="Range" value={`${absn.min_drop_per_unit}–${absn.max_drop_per_unit}`} sub="mg/dL per unit" />
+                  <Stat label="Expected (ISF)" value={absn.expected_isf} unit="mg/dL/U" sub="1800 rule" />
+                </div>
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                Measured as the glucose fall over {absn.window_days === 120 ? "the ~2 hours" : "2 hours"} after each correction, per unit.
+                A wide range / high CV points to inconsistent absorption or timing — worth watching for site issues, activity, or stress around those doses.
+              </p>
+            </div>
+          )}
+          {absn && !absn.available && r?.available && (
+            <p className="text-xs text-muted-foreground">Absorption analysis: {absn.reason}</p>
           )}
         </>
       )}

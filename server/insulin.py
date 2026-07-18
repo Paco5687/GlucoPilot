@@ -14,15 +14,25 @@ with complete pump data (Glooko-only stretches have no basal) — so we surface
 `data_through` prominently.
 """
 
+import bisect
 import logging
 import re
-from statistics import mean
+from datetime import datetime, timedelta, timezone
+from statistics import mean, median, pstdev
 from typing import Any
 
 from . import db, profile
 from .config import OWNER_EMAIL
 
 log = logging.getLogger("glucopilot.insulin")
+
+# Absorption analysis tunables
+ABS_WINDOW_DAYS = 120
+RESPONSE_MIN = 120        # look for the post-dose low within this many minutes
+CARB_GUARD_MIN = 20       # exclude boluses with carbs within ±this (meal-related)
+STACK_GUARD_PRE_MIN = 30  # exclude if another dose sits in [-this, +RESPONSE_MIN]
+MIN_UNITS = 0.5
+MIN_START_GLUCOSE = 100   # need room to fall to see a correction's effect
 
 _TOTAL_RE = re.compile(r"total:\s*([\d.]+)", re.I)
 _BASAL_RE = re.compile(r"basal:\s*([\d.]+)", re.I)
@@ -125,7 +135,104 @@ def estimate() -> dict[str, Any]:
     }
 
 
+def _epoch(ts: str) -> float | None:
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def absorption() -> dict[str, Any]:
+    """How consistently insulin lowers glucose. Isolates CLEAN correction boluses
+    (no carbs nearby, no dose stacking, glucose elevated so there's room to fall),
+    measures the drop over the next RESPONSE_MIN minutes, and reports drop-per-unit
+    and — the key signal — its variability (CV). High CV = the same dose can do
+    very different things ('sometimes a lot does little, a little does a lot')."""
+    since = (datetime.now(timezone.utc) - timedelta(days=ABS_WINDOW_DAYS)).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+    pts = []
+    for r in db.query_entities("GlucoseReading", {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}}, "timestamp", 300000):
+        e = _epoch(r.get("timestamp"))
+        if e is not None and r.get("value") is not None:
+            pts.append((e, float(r["value"])))
+    pts.sort()
+    times = [p[0] for p in pts]
+    vals = [p[1] for p in pts]
+    if len(times) < 100:
+        return {"available": False, "reason": "Not enough CGM data in range."}
+
+    boluses, carbs, ins_times = [], [], []
+    for t in db.query_entities("Treatment", {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}}, "timestamp", 100000):
+        e = _epoch(t.get("timestamp"))
+        if e is None:
+            continue
+        if t.get("type") == "insulin" and t.get("event_type") != "Daily Total" and t.get("amount"):
+            boluses.append((e, float(t["amount"])))
+            ins_times.append(e)
+        elif t.get("type") == "carb" and t.get("amount"):
+            carbs.append(e)
+    boluses.sort()
+    carbs.sort()
+    ins_times.sort()
+
+    def any_in(sorted_list, lo, hi):
+        return bisect.bisect_right(sorted_list, hi) > bisect.bisect_left(sorted_list, lo)
+
+    def cgm_at(e, tol=600):
+        i = bisect.bisect_left(times, e)
+        best, bd = None, None
+        for j in (i - 1, i):
+            if 0 <= j < len(times):
+                d = abs(times[j] - e)
+                if d <= tol and (bd is None or d < bd):
+                    bd, best = d, vals[j]
+        return best
+
+    dpus = []
+    for e, units in boluses:
+        if units < MIN_UNITS:
+            continue
+        if any_in(carbs, e - CARB_GUARD_MIN * 60, e + CARB_GUARD_MIN * 60):
+            continue  # meal-related
+        lo = bisect.bisect_left(ins_times, e - STACK_GUARD_PRE_MIN * 60)
+        hi = bisect.bisect_right(ins_times, e + RESPONSE_MIN * 60)
+        if hi - lo > 1:
+            continue  # dose stacking in the response window
+        g0 = cgm_at(e)
+        if g0 is None or g0 < MIN_START_GLUCOSE:
+            continue
+        a = bisect.bisect_left(times, e)
+        b = bisect.bisect_right(times, e + RESPONSE_MIN * 60)
+        seg = vals[a:b]
+        if not seg:
+            continue
+        dpus.append((g0 - min(seg)) / units)
+
+    if len(dpus) < 8:
+        return {"available": False, "reason": f"Only {len(dpus)} clean correction boluses in {ABS_WINDOW_DAYS}d — need more."}
+
+    m = mean(dpus)
+    cv = round(pstdev(dpus) / m * 100) if m else None
+    consistency = "highly variable" if (cv or 0) >= 50 else "variable" if (cv or 0) >= 30 else "consistent"
+    est = estimate()
+    return {
+        "available": True,
+        "n": len(dpus),
+        "mean_drop_per_unit": round(m, 1),
+        "median_drop_per_unit": round(median(dpus), 1),
+        "cv_pct": cv,
+        "min_drop_per_unit": round(min(dpus)),
+        "max_drop_per_unit": round(max(dpus)),
+        "consistency": consistency,
+        "expected_isf": est.get("est_isf_mgdl_per_u") if est.get("available") else None,
+        "window_days": ABS_WINDOW_DAYS,
+    }
+
+
 async def handle(body: dict[str, Any]) -> dict[str, Any]:
-    if body.get("action", "resistance") == "resistance":
+    action = body.get("action", "resistance")
+    if action == "resistance":
         return estimate()
+    if action == "absorption":
+        return absorption()
     return {"error": "Unknown action", "_status": 400}
