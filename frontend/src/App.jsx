@@ -24,6 +24,7 @@ import PrivacyPolicy from './pages/PrivacyPolicy';
 import TermsOfService from './pages/TermsOfService';
 import OuraCallback from './pages/OuraCallback';
 import FitbitCallback from './pages/FitbitCallback';
+import GoogleHealthCallback from './pages/GoogleHealthCallback';
 
 const AuthenticatedApp = () => {
   return (
@@ -33,6 +34,7 @@ const AuthenticatedApp = () => {
       <Route path="/terms" element={<TermsOfService />} />
       <Route path="/oura-callback" element={<OuraCallback />} />
       <Route path="/fitbit-callback" element={<FitbitCallback />} />
+      <Route path="/google-health-callback" element={<GoogleHealthCallback />} />
       <Route element={<AuthGate />}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/explorer" element={<Explorer />} />

@@ -4,6 +4,7 @@ import DexcomShareSetup from "../components/connections/DexcomShareSetup";
 import NightscoutSetup from "../components/connections/NightscoutSetup";
 import OuraSetup from "../components/connections/OuraSetup";
 import FitbitSetup from "../components/connections/FitbitSetup";
+import GoogleHealthSetup from "../components/connections/GoogleHealthSetup";
 import TandemSetup from "../components/connections/TandemSetup";
 import GlookoSetup from "../components/connections/GlookoSetup";
 import { Plug, FileSpreadsheet } from "lucide-react";
@@ -44,6 +45,9 @@ export default function Connections() {
 
       {/* Fitbit */}
       <FitbitSetup />
+
+      {/* Google Health (Fitbit's successor API) */}
+      <GoogleHealthSetup />
 
       {/* CSV Import link */}
       <Link to="/import" className="block">
