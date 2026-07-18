@@ -12,6 +12,7 @@ import HeatmapChart from "../components/dashboard/HeatmapChart";
 import DayOfWeekChart from "../components/dashboard/DayOfWeekChart";
 import OuraPanel from "../components/dashboard/OuraPanel";
 import WearablesPanel from "../components/dashboard/WearablesPanel";
+import LiveHeartRate from "../components/dashboard/LiveHeartRate";
 import GlucoseOuraOverlay from "../components/dashboard/GlucoseOuraOverlay";
 import CorrelationCards from "../components/dashboard/CorrelationCards";
 import TimeRangePicker, { RANGES } from "../components/dashboard/TimeRangePicker";
@@ -191,6 +192,8 @@ export default function Dashboard() {
           <span className="text-sm text-muted-foreground">Loading data for selected dates…</span>
         </div>
       )}
+
+      {wearables.length > 0 && <LiveHeartRate />}
 
       <GlucoseChart readings={filteredReadings.length ? filteredReadings : readings.slice(0, 288)} treatments={filteredTreatments} periodLogs={periodLogs} />
 
