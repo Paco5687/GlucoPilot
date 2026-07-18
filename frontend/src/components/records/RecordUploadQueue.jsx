@@ -102,7 +102,7 @@ export default function RecordUploadQueue({ onComplete }) {
         onDragLeave={() => setDragOver(false)}
         onDrop={onDrop}
         onClick={() => inputRef.current?.click()}
-        className={`bg-card rounded-xl border border-dashed p-6 text-center cursor-pointer transition-colors ${dragOver ? "border-primary bg-primary/5" : "border-border"}`}
+        className={`bg-card rounded-lg border border-dashed p-3 flex items-center gap-3 cursor-pointer transition-colors ${dragOver ? "border-primary bg-primary/5" : "border-border hover:border-primary/40"}`}
       >
         <input
           ref={inputRef}
@@ -112,11 +112,11 @@ export default function RecordUploadQueue({ onComplete }) {
           className="hidden"
           onChange={(e) => { addFiles(e.target.files); e.target.value = ""; }}
         />
-        <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
-        <p className="text-sm font-medium">Drop files here or click to choose</p>
-        <p className="text-xs text-muted-foreground mt-1">
-          PDF, PNG, or JPG — select many at once. Identical files are skipped automatically; each is read by the AI model one at a time.
-        </p>
+        <Upload className="w-4 h-4 text-muted-foreground flex-shrink-0" />
+        <div className="min-w-0 text-left">
+          <p className="text-sm font-medium leading-tight">Drop files or click to upload records</p>
+          <p className="text-[11px] text-muted-foreground leading-tight">PDF, PNG, JPG — many at once; identical files are skipped.</p>
+        </div>
       </div>
 
       {items.length > 0 && (
