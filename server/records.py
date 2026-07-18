@@ -12,6 +12,7 @@ Entities:
 
 import asyncio
 import base64
+import hashlib
 import logging
 import subprocess
 import tempfile
@@ -115,6 +116,22 @@ async def upload(file: UploadFile):
     if len(content) > MAX_FILE_MB * 1024 * 1024:
         raise HTTPException(status_code=400, detail=f"File too large (max {MAX_FILE_MB} MB).")
 
+    # Skip byte-identical re-uploads so a batch full of duplicates doesn't burn
+    # GPU time re-extracting or double-count the same labs.
+    content_hash = hashlib.sha256(content).hexdigest()
+    dupes = db.query_entities(
+        "MedicalRecord", {"owner_email": OWNER_EMAIL, "content_hash": content_hash}, "-created_date", 1
+    )
+    if dupes:
+        prior = dupes[0]
+        return {
+            "ok": True,
+            "duplicate": True,
+            "duplicate_of": prior.get("filename"),
+            "record": prior,
+            "lab_results": prior.get("lab_count", 0),
+        }
+
     RECORDS_DIR.mkdir(parents=True, exist_ok=True)
     rid = uuid.uuid4().hex
     stored = RECORDS_DIR / f"{rid}{suffix}"
@@ -125,6 +142,7 @@ async def upload(file: UploadFile):
         {
             "filename": file.filename,
             "stored_as": stored.name,
+            "content_hash": content_hash,
             "status": "processing",
             "uploaded_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "owner_email": OWNER_EMAIL,
