@@ -7,7 +7,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from . import cycle_inference, dexcom, dexcom_share, fitbit, glooko, insights, nightscout, oura, patterns, tandem
+from . import cycle_inference, dexcom, dexcom_share, fitbit, glooko, google_health, insights, nightscout, oura, patterns, tandem
 from .auth import require_admin
 
 log = logging.getLogger("glucopilot.functions")
@@ -32,6 +32,8 @@ async def _dispatch(name: str, body: dict[str, Any]) -> Any:
         return await dexcom_share.handle(body)
     if name == "fitbit":
         return await fitbit.handle(body)
+    if name == "googleHealth":
+        return await google_health.handle(body)
     if name == "analyzePatterns":
         return await patterns.analyze()
     if name == "analyzeInsights":

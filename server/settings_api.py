@@ -16,7 +16,7 @@ from .db import config_value, get_setting, set_config_value
 
 router = APIRouter(dependencies=[Depends(require_admin)])
 
-SECRET_KEYS = ("anthropic_api_key", "openai_api_key", "oura_client_secret", "dexcom_client_secret", "fitbit_client_secret", "github_token")
+SECRET_KEYS = ("anthropic_api_key", "openai_api_key", "oura_client_secret", "dexcom_client_secret", "fitbit_client_secret", "google_health_client_secret", "github_token")
 PLAIN_KEYS = (
     "llm_provider",
     "anthropic_model",
@@ -30,6 +30,7 @@ PLAIN_KEYS = (
     "oura_client_id",
     "dexcom_client_id",
     "fitbit_client_id",
+    "google_health_client_id",
     "github_repo",
     "github_project_number",
 )

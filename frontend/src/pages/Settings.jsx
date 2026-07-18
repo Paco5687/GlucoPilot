@@ -292,6 +292,29 @@ export default function Settings() {
       </Section>
 
       <Section
+        title="Google Health (Fitbit)"
+        description="Fitbit's successor API. Register an app in Google Cloud Console, enable the Google Health API, then connect on the Connections page. Legacy Fitbit Web API retires Sep 30, 2026."
+      >
+        <div>
+          <Label htmlFor="google_health_client_id" className="text-xs">Client ID</Label>
+          <Input
+            id="google_health_client_id"
+            className="mt-1 font-mono text-xs"
+            value={values.google_health_client_id || ""}
+            onChange={(e) => setValue("google_health_client_id", e.target.value)}
+          />
+        </div>
+        <SecretField
+          label="Client secret"
+          name="google_health_client_secret"
+          meta={data.secrets.google_health_client_secret}
+          value={secretInputs.google_health_client_secret || ""}
+          onChange={(v) => setSecret("google_health_client_secret", v)}
+          help={`Add this as an Authorized redirect URI on the OAuth client: ${window.location.origin}/google-health-callback`}
+        />
+      </Section>
+
+      <Section
         title="Dexcom"
         description="Developer app credentials from developer.dexcom.com. Production API only — connect from the Connections page when ready."
       >

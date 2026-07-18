@@ -18,7 +18,7 @@ import asyncio
 import logging
 import time
 
-from . import cycle_inference, db, dexcom, dexcom_share, fitbit, glooko, nightscout, oura, tandem
+from . import cycle_inference, db, dexcom, dexcom_share, fitbit, glooko, google_health, nightscout, oura, tandem
 from .config import OWNER_EMAIL, env_bool
 
 log = logging.getLogger("glucopilot.scheduler")
@@ -30,6 +30,7 @@ NIGHTSCOUT_INTERVAL = 5 * 60
 NIGHTSCOUT_PROFILE_INTERVAL = 60 * 60
 OURA_INTERVAL = 3600  # hourly: ring uploads to Oura cloud sporadically; poll often so HR lands ASAP
 FITBIT_INTERVAL = 6 * 3600
+GOOGLE_HEALTH_INTERVAL = 6 * 3600
 CYCLE_INFERENCE_INTERVAL = 24 * 3600
 TANDEM_INTERVAL = 10 * 60
 GLOOKO_INTERVAL = 30 * 60  # Glooko's cloud feed lags ~1h; 30 min polls suffice
@@ -43,6 +44,7 @@ _last_run = {
     "tandem": 0.0,
     "glooko": 0.0,
     "fitbit": 0.0,
+    "google_health": 0.0,
     "cycle_inference": 0.0,
 }
 
@@ -118,6 +120,16 @@ async def _tick() -> None:
                 log.info("fitbit sync: %s", result)
             except Exception as err:
                 log.warning("fitbit sync failed: %s", err)
+
+    if now - _last_run["google_health"] >= GOOGLE_HEALTH_INTERVAL:
+        rows = db.query_entities("GoogleHealthConnection", {"owner_email": OWNER_EMAIL, "connected": True}, "-created_date", 1)
+        if rows:
+            _last_run["google_health"] = now
+            try:
+                result = await google_health.handle({"action": "sync", "days": 3})
+                log.info("google health sync: %s", result)
+            except Exception as err:
+                log.warning("google health sync failed: %s", err)
 
     if now - _last_run["oura"] >= OURA_INTERVAL and _oura_connected():
         _last_run["oura"] = now
