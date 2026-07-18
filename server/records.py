@@ -112,11 +112,27 @@ async def _extract_document(page_paths: list[Path]) -> dict:
     """Extract a whole document. Long records (25-30+ pages) are processed in
     page batches so each vision call stays within the local model's context,
     then merged. doc_type/date/summary come from the first batch that yields
-    them; lab_results accumulate across all batches (deduped later)."""
+    them; lab_results accumulate across all batches (deduped later).
+
+    Resilient: a batch is retried once, and a persistently-failing batch (e.g.
+    the local model returns non-JSON for one page) is skipped so the rest of a
+    long document still extracts. Raises only if EVERY batch fails."""
     merged: dict = {"doc_type": "", "record_date": "", "summary": "", "lab_results": []}
-    for i in range(0, len(page_paths), PAGE_BATCH):
-        batch = page_paths[i : i + PAGE_BATCH]
-        part = await _extract(_encode_images(batch))
+    batches = [page_paths[i : i + PAGE_BATCH] for i in range(0, len(page_paths), PAGE_BATCH)]
+    failed = 0
+    last_err: Exception | None = None
+    for idx, batch in enumerate(batches):
+        part = None
+        for attempt in range(2):  # one retry — local-model JSON hiccups are often transient
+            try:
+                part = await _extract(_encode_images(batch))
+                break
+            except Exception as err:  # noqa: BLE001 - keep going through the document
+                last_err = err
+                log.warning("batch %d/%d extract failed (attempt %d): %s", idx + 1, len(batches), attempt + 1, str(err)[:150])
+        if part is None:
+            failed += 1
+            continue
         if not merged["doc_type"] and part.get("doc_type"):
             merged["doc_type"] = part["doc_type"]
         if not merged["record_date"] and part.get("record_date"):
@@ -124,6 +140,10 @@ async def _extract_document(page_paths: list[Path]) -> dict:
         if not merged["summary"] and part.get("summary"):
             merged["summary"] = part["summary"]
         merged["lab_results"].extend(part.get("lab_results") or [])
+    if failed == len(batches):
+        raise last_err or RuntimeError("extraction failed for every page batch")
+    merged["_batches_failed"] = failed
+    merged["_batches_total"] = len(batches)
     return merged
 
 
@@ -226,6 +246,8 @@ async def _extract_and_store(record: dict, stored: Path, suffix: str) -> dict:
     if results:
         db.bulk_create_entities("LabResult", results)
 
+    b_failed = extracted.get("_batches_failed", 0)
+    b_total = extracted.get("_batches_total", 1)
     return db.update_entity(
         "MedicalRecord",
         record["id"],
@@ -236,7 +258,9 @@ async def _extract_and_store(record: dict, stored: Path, suffix: str) -> dict:
             "summary": extracted.get("summary") or "",
             "page_count": len(page_paths),
             "lab_count": len(results),
-            "error": "",
+            # Note when some page-batches couldn't be read so the user can re-run.
+            "error": f"Partial: {b_failed}/{b_total} page-batches failed to read" if b_failed else "",
+            "partial": bool(b_failed),
         },
     )
 
