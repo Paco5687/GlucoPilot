@@ -317,8 +317,76 @@ async def _fetch_window(client: httpx.AsyncClient, token: str, start: date, end:
     return by_day
 
 
+async def _sync_heart_rate(minutes: int = 180) -> dict[str, Any]:
+    """Pull intraday heart-rate samples for the last `minutes`, downsample to
+    1-minute buckets, and store as FitbitHeartRate (mirrors OuraHeartRate:
+    {timestamp, bpm, source}). Fitbit records HR every few seconds, so raw
+    storage would be ~24k rows/day — bucketing keeps it to 1440/day. Near
+    real-time: samples lag ~5-15 min behind live (Fitbit cloud sync)."""
+    conn = _get_connection()
+    if not conn or not conn.get("connected"):
+        return {"error": "Google Health is not connected.", "_status": 400}
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=minutes)
+    buckets: dict[str, int] = {}
+    async with httpx.AsyncClient(timeout=90) as client:
+        token = await _access_token(client)
+        base = f"{API}/users/me/dataTypes/heart-rate/dataPoints"
+        page_token: str | None = None
+        for _ in range(30):
+            params: dict[str, Any] = {"pageSize": 1000}
+            if page_token:
+                params["pageToken"] = page_token
+            res = await client.get(base, params=params, headers={"Authorization": f"Bearer {token}"})
+            if res.status_code >= 400:
+                log.warning("google health heart-rate failed: %s %s", res.status_code, res.text[:200])
+                break
+            data = res.json()
+            stop = False
+            for p in data.get("dataPoints", []):
+                v = p.get("heartRate") or {}
+                st = (v.get("sampleTime") or {}).get("physicalTime")
+                bpm = v.get("beatsPerMinute")
+                if not st or bpm is None:
+                    continue
+                try:
+                    dt = datetime.fromisoformat(st.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if dt < cutoff:
+                    stop = True  # newest-first — the rest are older too
+                    continue
+                minute = dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
+                key = minute.isoformat(timespec="seconds").replace("+00:00", "Z")
+                # newest-first: keep the newest sample seen for each minute
+                buckets.setdefault(key, int(float(bpm)))
+            page_token = data.get("nextPageToken")
+            if stop or not page_token:
+                break
+
+    cutoff_iso = cutoff.isoformat(timespec="seconds").replace("+00:00", "Z")
+    existing = {
+        r.get("timestamp")
+        for r in db.query_entities(
+            "FitbitHeartRate", {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": cutoff_iso}}, "-timestamp", 5000
+        )
+    }
+    to_create = [
+        {"timestamp": k, "bpm": bpm, "source": "google_health", "owner_email": OWNER_EMAIL}
+        for k, bpm in buckets.items()
+        if k not in existing
+    ]
+    if to_create:
+        db.bulk_create_entities("FitbitHeartRate", to_create)
+    set_config_value("google_health_hr_last_sync", _iso_now())
+    return {"success": True, "created": len(to_create), "buckets": len(buckets)}
+
+
 async def handle(body: dict[str, Any]) -> dict[str, Any]:
     action = body.get("action")
+
+    if action == "sync_hr":
+        return await _sync_heart_rate(min(int(body.get("minutes") or 180), 1440))
 
     if action == "get_client_id":
         return {"client_id": config_value("google_health_client_id"), "scopes": SCOPES}

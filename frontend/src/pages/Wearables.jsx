@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Loader2, RefreshCw, Heart, Moon, Droplets, Wind, Footprints, Flame } from "lucide-react";
 import { toast } from "sonner";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import LiveHeartRate from "../components/dashboard/LiveHeartRate";
 
 const RANGES = [
   { key: 30, label: "30d" },
@@ -172,10 +173,13 @@ export default function Wearables() {
           )}
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {METRICS.map((m) => (
-            <MetricCard key={m.key} metric={m} rows={windowed} />
-          ))}
+        <div className="space-y-4">
+          <LiveHeartRate />
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {METRICS.map((m) => (
+              <MetricCard key={m.key} metric={m} rows={windowed} />
+            ))}
+          </div>
         </div>
       )}
     </div>
