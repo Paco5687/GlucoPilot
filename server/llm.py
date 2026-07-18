@@ -34,7 +34,9 @@ def _local_client_and_base(raw_url: str) -> tuple[httpx.AsyncClient, str]:
     if raw_url.startswith("unix://"):
         uds = raw_url[len("unix://"):]
         transport = httpx.AsyncHTTPTransport(uds=uds)
-        return httpx.AsyncClient(transport=transport, timeout=300), "http://local-llm/v1"
+        # Host must be localhost: Ollama rejects other Host headers with 403
+        # (DNS-rebinding guard); vLLM ignores it, so this is safe for both.
+        return httpx.AsyncClient(transport=transport, timeout=300), "http://localhost/v1"
     return httpx.AsyncClient(timeout=300), raw_url.rstrip("/")
 
 
