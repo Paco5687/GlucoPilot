@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import ReactMarkdown from "react-markdown";
 import SafetyBanner from "../components/SafetyBanner";
-import { MessageCircleHeart, Send, Loader2, Brain, Plus, X, Zap, Sparkles, Trash2 } from "lucide-react";
+import { MessageCircleHeart, Send, Loader2, Brain, Plus, X, Zap, Sparkles, Trash2, Check } from "lucide-react";
 import { toast } from "sonner";
 
 const SUGGESTIONS = [
@@ -216,19 +216,26 @@ export default function Companion() {
                 </div>
               </div>
             ) : (
-              messages.map((m, i) => (
-                (m.role === "assistant" && !m.content) ? null : (
-                  <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+              messages.map((m, i) => {
+                if (m.role === "assistant" && !m.content) return null;
+                const isLast = i === messages.length - 1;
+                const streaming = busy && isLast && m.role === "assistant";
+                const done = !busy && isLast && m.role === "assistant";
+                return (
+                  <div key={i} className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}>
                     <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${m.role === "user" ? "bg-primary text-primary-foreground whitespace-pre-wrap" : "bg-muted"}`}>
                       {m.role === "user" ? m.content : (
                         <div className="prose prose-sm max-w-none dark:prose-invert [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_table]:text-xs">
                           <ReactMarkdown>{m.content}</ReactMarkdown>
+                          {streaming && <span className="inline-block w-[3px] h-[1.05em] ml-0.5 -mb-[0.15em] rounded-sm bg-primary animate-pulse" aria-label="responding" />}
                         </div>
                       )}
                     </div>
+                    {streaming && <span className="text-[11px] text-muted-foreground mt-1 px-1 inline-flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> responding…</span>}
+                    {done && <span className="text-[11px] text-muted-foreground/70 mt-1 px-1 inline-flex items-center gap-1"><Check className="w-3 h-3" /> done</span>}
                   </div>
-                )
-              ))
+                );
+              })
             )}
             {busy && !messages[messages.length - 1]?.content && (
               <div className="flex justify-start"><div className="bg-muted rounded-2xl px-4 py-2.5 text-sm text-muted-foreground inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> {tier === "quality" ? "thinking deeply… (slower model, worth the wait)" : "thinking…"}</div></div>
