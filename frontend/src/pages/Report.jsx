@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck } from "lucide-react";
+import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, Line, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
 } from "recharts";
@@ -189,6 +189,53 @@ export default function Report() {
           Generated {new Date(report.generated_at).toLocaleDateString()}
         </div>
       </div>
+
+      {/* Diagnosed conditions */}
+      {report.conditions?.length > 0 && (
+        <div className="report-section report-card rounded-xl border border-border p-4">
+          <h2 className="font-semibold text-sm mb-2 flex items-center gap-2">
+            <Stethoscope className="w-4 h-4 text-primary" /> Conditions
+          </h2>
+          <div className="flex flex-wrap gap-2">
+            {report.conditions.map((c, i) => (
+              <span key={i} className="text-xs px-2 py-1 rounded-full bg-muted">
+                {c.name}
+                {c.status && c.status !== "active" ? ` (${c.status})` : ""}
+                {c.diagnosed ? ` · dx ${c.diagnosed}` : ""}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Medications & allergies */}
+      {(report.medications?.length > 0 || report.allergies?.length > 0) && (
+        <div className="report-section grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {report.medications?.length > 0 && (
+            <div className="report-card rounded-xl border border-border p-4">
+              <h2 className="font-semibold text-sm mb-2">Medications &amp; supplements</h2>
+              <ul className="text-sm space-y-1">
+                {report.medications.map((m, i) => (
+                  <li key={i}>
+                    {m.name}{m.dose ? ` ${m.dose}` : ""}{m.frequency ? ` · ${m.frequency}` : ""}
+                    {m.kind === "supplement" ? " (supplement)" : ""}{m.status === "stopped" ? " — stopped" : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {report.allergies?.length > 0 && (
+            <div className="report-card rounded-xl border border-border p-4">
+              <h2 className="font-semibold text-sm mb-2">Allergies</h2>
+              <ul className="text-sm space-y-1">
+                {report.allergies.map((a, i) => (
+                  <li key={i}>{a.allergen}{a.severity ? ` (${a.severity})` : ""}{a.reaction ? ` — ${a.reaction}` : ""}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Insurance (prints at the top for the front desk) */}
       {report.insurance?.available && (

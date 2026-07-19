@@ -8,6 +8,9 @@ import { toast } from "sonner";
 import ProviderAccess from "@/components/settings/ProviderAccess";
 import InsuranceSettings from "@/components/settings/InsuranceSettings";
 import ProfileSettings from "@/components/settings/ProfileSettings";
+import ConditionsSettings from "@/components/settings/ConditionsSettings";
+import MedicationsSettings from "@/components/settings/MedicationsSettings";
+import AllergiesSettings from "@/components/settings/AllergiesSettings";
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -125,6 +128,12 @@ export default function Settings() {
       </div>
 
       <ProfileSettings />
+
+      <ConditionsSettings />
+
+      <MedicationsSettings />
+
+      <AllergiesSettings />
 
       <InsuranceSettings />
 
