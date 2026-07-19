@@ -18,16 +18,19 @@ export default function LiveHeartRate() {
   const seeded = useRef(false);
 
   const fetchPoints = useCallback(async () => {
-    const since = new Date(Date.now() - WINDOW_MIN * 60000).toISOString();
-    const rows = await fetchEntity("FitbitHeartRate", "-timestamp", 400, { timestamp: { $gte: since } });
-    setPoints(
-      rows
-        .map((r) => ({ t: new Date(r.timestamp).getTime(), bpm: r.bpm }))
-        .filter((p) => !Number.isNaN(p.t) && p.bpm != null)
-        .sort((a, b) => a.t - b.t)
-    );
-    setNow(Date.now());
-    setLoading(false);
+    try {
+      const since = new Date(Date.now() - WINDOW_MIN * 60000).toISOString();
+      const rows = await fetchEntity("FitbitHeartRate", "-timestamp", 400, { timestamp: { $gte: since } });
+      setPoints(
+        rows
+          .map((r) => ({ t: new Date(r.timestamp).getTime(), bpm: r.bpm }))
+          .filter((p) => !Number.isNaN(p.t) && p.bpm != null)
+          .sort((a, b) => a.t - b.t)
+      );
+      setNow(Date.now());
+    } catch { /* leave the last good points; the poll will retry */ } finally {
+      setLoading(false);
+    }
   }, [fetchEntity]);
 
   // Seed a fresh pull on first mount (owner only), then poll the entity.

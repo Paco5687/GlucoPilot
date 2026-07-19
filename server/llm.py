@@ -231,6 +231,119 @@ async def invoke_llm(
     return await _invoke_anthropic(prompt, response_json_schema, max_tokens, images)
 
 
+class _ThinkStripper:
+    """Incrementally strips <think>...</think> spans from a streamed response,
+    holding back partial tags that straddle chunk boundaries."""
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._in = False
+
+    @staticmethod
+    def _partial_tail(s: str, tag: str) -> int:
+        for n in range(min(len(s), len(tag) - 1), 0, -1):
+            if tag.startswith(s[-n:]):
+                return n
+        return 0
+
+    def feed(self, text: str) -> str:
+        self._buf += text
+        out: list[str] = []
+        while True:
+            if self._in:
+                i = self._buf.find("</think>")
+                if i == -1:
+                    keep = self._partial_tail(self._buf, "</think>")
+                    self._buf = self._buf[len(self._buf) - keep:] if keep else ""
+                    break
+                self._buf = self._buf[i + len("</think>"):]
+                self._in = False
+            else:
+                i = self._buf.find("<think>")
+                if i == -1:
+                    keep = self._partial_tail(self._buf, "<think>")
+                    out.append(self._buf[: len(self._buf) - keep] if keep else self._buf)
+                    self._buf = self._buf[len(self._buf) - keep:] if keep else ""
+                    break
+                out.append(self._buf[:i])
+                self._buf = self._buf[i + len("<think>"):]
+                self._in = True
+        return "".join(out)
+
+    def flush(self) -> str:
+        if self._in:
+            return ""
+        rest, self._buf = self._buf, ""
+        return rest
+
+
+async def _stream_local(prompt: str, max_tokens: int, url_override: str | None = None, model_override: str | None = None):
+    raw_url = url_override or config_value("local_llm_url", LOCAL_URL_DEFAULT)
+    model = model_override or config_value("local_llm_model", LOCAL_MODEL_DEFAULT)
+    payload: dict[str, Any] = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": True,
+        # Anti-repetition sampling — the small local model otherwise loops.
+        "temperature": 0.6,
+        "top_p": 0.9,
+        "frequency_penalty": 0.4,
+        "presence_penalty": 0.3,
+    }
+    client, base_url = _local_client_and_base(raw_url)
+    stripper = _ThinkStripper()
+    async with client:
+        try:
+            async with client.stream("POST", f"{base_url}/chat/completions", json=payload) as response:
+                if response.status_code >= 400:
+                    body = await response.aread()
+                    raise HTTPException(status_code=502, detail=f"Local LLM error: {body[:500]!r}")
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except ValueError:
+                        continue
+                    delta = (chunk.get("choices") or [{}])[0].get("delta", {}).get("content") or ""
+                    if delta:
+                        visible = stripper.feed(delta)
+                        if visible:
+                            yield visible
+        except (httpx.ConnectError, FileNotFoundError) as err:
+            raise HTTPException(status_code=502, detail=f"Local LLM unreachable at {raw_url}: {err}")
+    tail = stripper.flush()
+    if tail:
+        yield tail
+
+
+async def invoke_llm_stream(prompt: str, max_tokens: int = 700, tier: str = "default"):
+    """Yield reply text incrementally. The local provider streams token-by-token;
+    cloud providers yield the full reply once (correct, just not chunked).
+
+    tier="quality" streams from the bigger, slower local model (e.g. Ollama
+    gemma3:27b) when one is configured — streaming makes that model usable
+    interactively since tokens appear as they're generated."""
+    provider = config_value("llm_provider", "anthropic").strip().lower()
+    if provider == "local":
+        url_override = model_override = None
+        if tier == "quality":
+            q_url = config_value("quality_llm_url")
+            q_model = config_value("quality_llm_model")
+            if q_url and q_model:
+                url_override, model_override = q_url, q_model
+        async for chunk in _stream_local(prompt, max_tokens, url_override, model_override):
+            yield chunk
+        return
+    text = await invoke_llm(prompt, max_tokens=max_tokens, tier=tier)
+    yield text if isinstance(text, str) else str(text)
+
+
 class InvokeBody(BaseModel):
     prompt: str
     model: str | None = None  # accepted for shim compatibility; server picks the model

@@ -3,14 +3,14 @@ import { base44 } from "@/api/base44Client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import SafetyBanner from "../components/SafetyBanner";
-import { MessageCircleHeart, Send, Loader2, Brain, Plus, X } from "lucide-react";
+import { MessageCircleHeart, Send, Loader2, Brain, Plus, X, Zap, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 const SUGGESTIONS = [
-  "How has my time in range been lately, and does anything explain the changes?",
-  "I've been feeling exhausted and foggy this week — does my data show anything?",
-  "Compare my hormone labs to how my cycle affects my glucose.",
-  "What patterns should I bring up at my next endo appointment?",
+  "I've been exhausted and foggy lately — what in my data might explain it?",
+  "What do my recent labs say about my thyroid and inflammation?",
+  "How does my cycle line up with my symptoms and energy?",
+  "What patterns should I bring up at my next appointment?",
 ];
 
 const MEM_TONE = {
@@ -25,7 +25,10 @@ export default function Companion() {
   const [busy, setBusy] = useState(false);
   const [showMem, setShowMem] = useState(true);
   const [newMem, setNewMem] = useState("");
+  const [tier, setTier] = useState(() => localStorage.getItem("companion_tier") || "default");
   const endRef = useRef(null);
+
+  useEffect(() => { localStorage.setItem("companion_tier", tier); }, [tier]);
 
   const loadMemories = useCallback(async () => {
     try { const r = await base44.functions.invoke("companion", { action: "memories" }); setMemories(r.data?.memories || []); } catch { /* */ }
@@ -38,23 +41,62 @@ export default function Companion() {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, busy]);
 
+  function appendToLast(delta) {
+    setMessages((m) => {
+      const copy = m.slice();
+      const last = copy[copy.length - 1];
+      copy[copy.length - 1] = { role: "assistant", content: (last?.content || "") + delta };
+      return copy;
+    });
+  }
+
   async function send(text) {
     const msg = (text ?? input).trim();
     if (!msg || busy) return;
     setInput("");
-    setMessages((m) => [...m, { role: "user", content: msg }]);
+    // user bubble + an empty assistant placeholder we stream into
+    setMessages((m) => [...m, { role: "user", content: msg }, { role: "assistant", content: "" }]);
     setBusy(true);
     try {
-      const res = await base44.functions.invoke("companion", { action: "send", message: msg });
-      if (res.data?.error) throw new Error(res.data.error);
-      setMessages((m) => [...m, { role: "assistant", content: res.data.reply }]);
-      if (res.data.remembered?.length) {
-        toast.success(`Remembered ${res.data.remembered.length} new thing${res.data.remembered.length === 1 ? "" : "s"}`);
-        loadMemories();
+      const res = await fetch("/api/companion/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ message: msg, tier }),
+      });
+      if (!res.ok || !res.body) throw new Error("Companion unavailable");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let got = false;
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line) continue;
+          let evt;
+          try { evt = JSON.parse(line); } catch { continue; }
+          if (evt.error) throw new Error(evt.error);
+          if (evt.delta) { got = true; appendToLast(evt.delta); }
+          if (evt.done && evt.remembered?.length) {
+            toast.success(`Remembered ${evt.remembered.length} new thing${evt.remembered.length === 1 ? "" : "s"}`);
+            loadMemories();
+          }
+        }
       }
+      if (!got) throw new Error("No response");
     } catch (err) {
-      toast.error(err?.response?.data?.error || err.message || "Companion unavailable");
-      setMessages((m) => [...m, { role: "assistant", content: "_Sorry — I couldn't respond just now._" }]);
+      toast.error(err?.message || "Companion unavailable");
+      setMessages((m) => {
+        const copy = m.slice();
+        const last = copy[copy.length - 1];
+        if (last?.role === "assistant" && !last.content) copy[copy.length - 1] = { role: "assistant", content: "_Sorry — I couldn't respond just now._" };
+        return copy;
+      });
     }
     setBusy(false);
   }
@@ -85,6 +127,22 @@ export default function Companion() {
           <p className="text-sm text-muted-foreground mt-1">Chat grounded in your full health data. It remembers what you share and reasons across your records.</p>
         </div>
         <div className="flex items-center gap-2">
+          <div className="inline-flex items-center rounded-lg border border-border bg-muted/40 p-0.5" title="Which model answers. Fast = quick; Deep = slower but more thorough.">
+            <button
+              onClick={() => setTier("default")}
+              disabled={busy}
+              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${tier === "default" ? "bg-card shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <Zap className="w-3.5 h-3.5" /> Fast
+            </button>
+            <button
+              onClick={() => setTier("quality")}
+              disabled={busy}
+              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${tier === "quality" ? "bg-card shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <Sparkles className="w-3.5 h-3.5" /> Deep
+            </button>
+          </div>
           <Button variant="outline" size="sm" onClick={() => setShowMem((s) => !s)} className="gap-1.5 text-xs">
             <Brain className="w-3.5 h-3.5" /> Memory ({memories.length})
           </Button>
@@ -99,7 +157,7 @@ export default function Companion() {
             {messages.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-center gap-4 px-4">
                 <MessageCircleHeart className="w-10 h-10 text-primary/40" />
-                <p className="text-sm text-muted-foreground max-w-md">Ask me anything about your health — I can see your glucose, labs, cycle, wearables, insulin, and records, and I'll remember what you tell me.</p>
+                <p className="text-sm text-muted-foreground max-w-md">Ask me anything about your health — thyroid, hormones, energy, sleep, your cycle, labs, glucose, and more. I can see your records and I'll remember what you tell me.</p>
                 <div className="flex flex-col gap-2 w-full max-w-md">
                   {SUGGESTIONS.map((s) => (
                     <button key={s} onClick={() => send(s)} className="text-left text-xs bg-muted/50 hover:bg-muted rounded-lg px-3 py-2 text-muted-foreground">{s}</button>
@@ -108,15 +166,18 @@ export default function Companion() {
               </div>
             ) : (
               messages.map((m, i) => (
-                <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-                  <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap leading-relaxed ${m.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
-                    {m.content}
+                // skip the empty assistant placeholder we stream into (the "thinking…" bubble stands in until the first token)
+                (m.role === "assistant" && !m.content) ? null : (
+                  <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+                    <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm whitespace-pre-wrap leading-relaxed ${m.role === "user" ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
+                      {m.content}
+                    </div>
                   </div>
-                </div>
+                )
               ))
             )}
-            {busy && (
-              <div className="flex justify-start"><div className="bg-muted rounded-2xl px-4 py-2.5 text-sm text-muted-foreground inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> thinking…</div></div>
+            {busy && !messages[messages.length - 1]?.content && (
+              <div className="flex justify-start"><div className="bg-muted rounded-2xl px-4 py-2.5 text-sm text-muted-foreground inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> {tier === "quality" ? "thinking deeply… (slower model, worth the wait)" : "thinking…"}</div></div>
             )}
             <div ref={endRef} />
           </div>
