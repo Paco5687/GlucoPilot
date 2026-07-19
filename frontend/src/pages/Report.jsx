@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck } from "lucide-react";
+import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, Line, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
 } from "recharts";
@@ -189,6 +189,24 @@ export default function Report() {
           Generated {new Date(report.generated_at).toLocaleDateString()}
         </div>
       </div>
+
+      {/* Diagnosed conditions */}
+      {report.conditions?.length > 0 && (
+        <div className="report-section report-card rounded-xl border border-border p-4">
+          <h2 className="font-semibold text-sm mb-2 flex items-center gap-2">
+            <Stethoscope className="w-4 h-4 text-primary" /> Conditions
+          </h2>
+          <div className="flex flex-wrap gap-2">
+            {report.conditions.map((c, i) => (
+              <span key={i} className="text-xs px-2 py-1 rounded-full bg-muted">
+                {c.name}
+                {c.status && c.status !== "active" ? ` (${c.status})` : ""}
+                {c.diagnosed ? ` · dx ${c.diagnosed}` : ""}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Insurance (prints at the top for the front desk) */}
       {report.insurance?.available && (
