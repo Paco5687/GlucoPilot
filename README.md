@@ -82,8 +82,19 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the module map.
 ## Quick start
 
 ```bash
-git clone <your-fork-url> glucopilot && cd glucopilot
+git clone https://github.com/Paco5687/GlucoPilot glucopilot && cd glucopilot
 cp .env.example .env          # edit APP_SECRET_KEY at minimum
+```
+
+**Option A — prebuilt image** (no build; pulls `ghcr.io/paco5687/glucopilot`):
+
+```bash
+docker compose up -d
+```
+
+**Option B — build from source:**
+
+```bash
 docker compose up -d --build
 ```
 
