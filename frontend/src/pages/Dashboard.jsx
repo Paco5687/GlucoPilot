@@ -205,9 +205,9 @@ export default function Dashboard() {
         </div>
       )}
 
-      {wearables.length > 0 && <LiveHeartRate />}
-
       <GlucoseChart readings={filteredReadings.length ? filteredReadings : readings.slice(0, 288)} treatments={filteredTreatments} periodLogs={periodLogs} fingersticks={fingersticks} />
+
+      {wearables.length > 0 && <LiveHeartRate />}
 
       {!isViewingShared && <FingerstickLogger onAdded={loadFingersticks} />}
 

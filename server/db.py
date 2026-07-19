@@ -33,6 +33,7 @@ ENTITY_TYPES = {
     "LabResult",
     "FitbitConnection",
     "FitbitDaily",
+    "FitbitHeartRate",
 }
 
 _COLUMN_FIELDS = {"id", "created_date", "updated_date"}
