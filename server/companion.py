@@ -114,14 +114,26 @@ async def _extract_memories(user_msg: str, reply: str, existing: list) -> list[d
     prompt = (
         "You maintain a long-term memory about Emily. From the exchange below, extract any NEW, durable facts about "
         "her LIVED EXPERIENCE worth remembering — symptoms, how she's feeling, life events/stressors, treatment or "
-        "routine changes, goals, preferences. Only concrete lasting facts, in the third person. Do NOT restate her "
-        "numeric lab/glucose data (that's already tracked), do NOT include questions or one-off small talk, and skip "
+        "routine changes, goals, preferences. Only concrete lasting facts, in the third person.\n"
+        "IMPORTANT: Emily often shares how she's feeling WHILE asking a question (e.g. 'I've been run down and my "
+        "joints ache — does my data explain it?'). Extract the symptom/feeling/event she mentions even when it is "
+        "wrapped in a question; you are recording the fact she reported, not the question itself.\n"
+        "Do NOT restate her numeric lab/glucose data (that's already tracked), skip pure small talk, and skip "
         "anything already known.\n\n"
+        "EXAMPLE\n"
+        "Emily said: Work has been brutal this month and I'm barely sleeping. Also my hands feel puffy in the "
+        "mornings — is that related to anything?\n"
+        'Output: {"memories": [{"content": "Reports high work stress and poor sleep this month.", "category": "life_context"}, '
+        '{"content": "Reports morning hand puffiness/swelling.", "category": "symptom"}]}\n\n'
         f"ALREADY KNOWN:\n{known}\n\n"
         f"Emily said: {user_msg}\nCompanion replied: {reply}\n\nReturn the new memories (empty list if none)."
     )
     res = await invoke_llm(prompt, response_json_schema=MEMORY_SCHEMA, max_tokens=500)
-    return (res or {}).get("memories", []) if isinstance(res, dict) else []
+    mems = (res or {}).get("memories", []) if isinstance(res, dict) else []
+    if not mems:  # small local model is noisy on this task — one retry before giving up
+        res = await invoke_llm(prompt, response_json_schema=MEMORY_SCHEMA, max_tokens=500)
+        mems = (res or {}).get("memories", []) if isinstance(res, dict) else []
+    return mems
 
 
 async def handle(body: dict[str, Any]) -> dict[str, Any]:
