@@ -1,5 +1,8 @@
 services:
   glucopilot:
+    # `docker compose up -d` pulls this prebuilt image; add `--build` to build
+    # from source instead (which tags the local build with the same name).
+    image: ghcr.io/paco5687/glucopilot:${IMAGE_TAG:-latest}
     build: .
     restart: unless-stopped
     env_file:
