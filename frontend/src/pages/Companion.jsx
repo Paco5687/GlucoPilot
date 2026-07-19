@@ -80,10 +80,13 @@ export default function Companion() {
 
   async function deleteThread(id, e) {
     e?.stopPropagation();
+    if (busy) return;
+    if (!window.confirm("Delete this conversation? This can't be undone. (Your saved memories are kept.)")) return;
     await base44.functions.invoke("companion", { action: "delete_thread", thread_id: id });
     const t = await loadThreads();
     setThreads(t);
     if (activeThread === id) { setActiveThread(null); setMessages([]); }
+    toast.success("Conversation deleted");
   }
 
   async function send(text) {
@@ -193,7 +196,7 @@ export default function Companion() {
               <div key={t.id} onClick={() => !busy && openThread(t.id)}
                 className={`group flex items-center gap-1 px-2.5 py-2 rounded-lg cursor-pointer text-sm transition-colors ${activeThread === t.id ? "bg-primary/10 text-primary" : "hover:bg-muted text-muted-foreground"}`}>
                 <span className="truncate flex-1">{t.title || "Untitled"}</span>
-                <button onClick={(e) => deleteThread(t.id, e)} className="opacity-0 group-hover:opacity-100 hover:text-destructive flex-shrink-0"><Trash2 className="w-3.5 h-3.5" /></button>
+                <button onClick={(e) => deleteThread(t.id, e)} title="Delete conversation" className="opacity-40 hover:opacity-100 hover:text-destructive flex-shrink-0 p-0.5"><Trash2 className="w-3.5 h-3.5" /></button>
               </div>
             ))}
           </div>
