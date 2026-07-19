@@ -42,6 +42,7 @@ EXTRACTION_SCHEMA = {
     "type": "object",
     "properties": {
         "doc_type": {"type": "string", "description": "e.g. lab_report, imaging_report, visit_summary, other"},
+        "source_name": {"type": "string", "description": "Short searchable label for the SOURCE/panel — lab vendor, imaging center, or test name, e.g. 'ACL Labs', 'DUTCH Hormones', 'Labcorp CMP', 'CT Abdomen/Pelvis'. No date."},
         "record_date": {"type": "string", "description": "Primary date on the document, YYYY-MM-DD; empty if unknown"},
         "summary": {"type": "string", "description": "2-4 sentence plain-language summary of the document"},
         "lab_results": {
@@ -83,7 +84,7 @@ EXTRACTION_SCHEMA = {
 EXTRACTION_PROMPT = """You are extracting structured data from a personal medical document for the patient's own health tracker.
 
 Carefully read the document image(s) and extract:
-1. doc_type (lab_report, imaging_report, visit_summary, other), the primary record_date, and a short plain-language summary. For an imaging or radiology report, the summary should capture the key findings and the impression.
+1. doc_type (lab_report, imaging_report, visit_summary, other), the primary record_date, a short plain-language summary, and source_name — a short searchable label for the lab vendor / imaging center / panel (e.g. "ACL Labs", "DUTCH Hormones", "Labcorp CMP", "CT Abdomen/Pelvis"), WITHOUT a date. For an imaging or radiology report, the summary should capture the key findings and the impression.
 2. lab_results: EVERY quantitative blood/urine lab result — test name (canonicalized, e.g. "Hemoglobin A1c" -> "HbA1c"), numeric value, unit, reference range bounds if printed, flag (high/low/normal/critical) if indicated, collection date, and panel/category.
 3. measurements: for imaging/radiology reports (CT, MRI, ultrasound, X-ray, DEXA) OR any report with quantitative anatomical measurements, capture each one — organ sizes, cyst/nodule/lesion/mass dimensions — as name (WITH anatomical location), numeric value, unit (cm/mm), a flag if the report calls it enlarged/abnormal, and a category like "Imaging - CT Abdomen/Pelvis". Leave measurements empty for ordinary blood/urine panels.
 
@@ -297,14 +298,16 @@ async def _extract_and_store(record: dict, stored: Path, suffix: str) -> dict:
 
     b_failed = extracted.get("_batches_failed", 0)
     b_total = extracted.get("_batches_total", 1)
+    record_date = extracted.get("record_date") or ""
     return db.update_entity(
         "MedicalRecord",
         record["id"],
         {
             "status": "processed",
             "doc_type": extracted.get("doc_type") or "other",
-            "record_date": extracted.get("record_date") or "",
+            "record_date": record_date,
             "summary": extracted.get("summary") or "",
+            "title": _make_title(extracted.get("source_name"), record_date, record.get("filename")),
             "page_count": len(page_paths),
             "lab_count": len(results),
             # Note when some page-batches couldn't be read so the user can re-run.
@@ -312,6 +315,24 @@ async def _extract_and_store(record: dict, stored: Path, suffix: str) -> dict:
             "partial": bool(b_failed),
         },
     )
+
+
+def _mdy(date_iso: str) -> str:
+    """YYYY-MM-DD -> M-D-YYYY (matches how the labels read); passthrough otherwise."""
+    try:
+        y, m, d = date_iso.split("-")
+        return f"{int(m)}-{int(d)}-{y}"
+    except (ValueError, AttributeError):
+        return date_iso or ""
+
+
+def _make_title(source_name: str | None, record_date: str, filename: str | None) -> str:
+    """Searchable '<source> <M-D-YYYY>' label. Falls back to the filename stem."""
+    src = (source_name or "").strip()
+    if not src:
+        src = Path(filename or "Document").stem
+    mdy = _mdy(record_date)
+    return f"{src} {mdy}".strip() if mdy else src
 
 
 @router.post("/api/records/{rid}/reprocess", dependencies=[Depends(require_admin)])
@@ -331,6 +352,33 @@ async def reprocess(rid: str):
         log.exception("record reprocess failed")
         db.update_entity("MedicalRecord", rid, {"status": "failed", "error": str(err)[:300]})
         raise HTTPException(status_code=502, detail=f"Reprocess failed: {err}")
+
+
+@router.post("/api/records/backfill-titles", dependencies=[Depends(require_admin)])
+async def backfill_titles():
+    """One-time: give already-processed documents a searchable title from their
+    summary (source/panel name) + date taken."""
+    updated = 0
+    for rec in db.query_entities("MedicalRecord", {"owner_email": OWNER_EMAIL}, "-created_date", 1000):
+        if rec.get("title") or rec.get("status") != "processed":
+            continue
+        src = ""
+        summary = rec.get("summary") or ""
+        if summary:
+            try:
+                out = await invoke_llm(
+                    "From this medical document summary, reply with ONLY a short searchable source/panel "
+                    "label (lab vendor, imaging center, or test/panel name) — no date, max 5 words:\n\n"
+                    + summary[:800],
+                    max_tokens=30,
+                )
+                src = (out or "").strip().strip('"').splitlines()[0][:60] if out else ""
+            except Exception:
+                src = ""
+        db.update_entity("MedicalRecord", rec["id"],
+                         {"title": _make_title(src, rec.get("record_date") or "", rec.get("filename"))})
+        updated += 1
+    return {"ok": True, "updated": updated}
 
 
 @router.get("/api/records/file/{rid}")
