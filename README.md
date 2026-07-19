@@ -5,8 +5,14 @@
 
 A self-hosted, single-user personal health platform centered on Type 1 diabetes.
 It unifies continuous glucose monitoring, insulin pump data, wearables, menstrual
-cycle tracking, and lab work into one private app — with analysis, AI narratives,
-a printable clinician report, and a read-only login to share with a doctor.
+cycle tracking, lab work, and a daily symptom journal into one private app — then
+lets you **talk to all of it**.
+
+The centerpiece is a health **Companion**: a chat grounded in your *real* data
+that remembers your lived experience and reasons across every domain at once —
+glucose, labs, hormones, sleep, symptoms, medications. Around it sit pattern
+detection, cross-domain insights, a printable clinician report, and a read-only
+login to share with a doctor.
 
 Everything runs on **your** server with **your** API keys. With a local model,
 no health data ever leaves the machine.
@@ -31,19 +37,30 @@ no health data ever leaves the machine.
 | **Tandem Source** | pump boluses / basal / suspends | t:slim X2 & Mobi, via `tconnectsync` |
 | **Glooko** | pump treatments | Tandem & Omnipod 5 fallback |
 | **Oura Ring** | sleep / readiness / HRV / HR / SpO₂ / temperature | OAuth |
-| **Fitbit** | steps / resting HR / sleep / SpO₂ / breathing rate | OAuth |
+| **Fitbit / Google Health** | steps / heart rate (near-real-time) / sleep / SpO₂ / breathing rate | OAuth; Google Health is Fitbit's successor API |
 | **CSV / Base44 export** | bulk import | glucose, treatments, Oura, cycle |
 
-**Features:**
+**Talk to your data**
 
-- **Dashboard** — real-time glucose, TIR/GMI/CV metrics, AGP, treatment timeline, wearable overlays.
+- **Companion** — a health chat grounded in your *real* records (glucose, labs, cycle, wearables, medications, symptoms). It **remembers** what you tell it across conversations, keeps multiple threads, answers with rich formatting, and lets you switch between a quick local model and a deeper one. Not a doctor: it surfaces patterns and questions for your care team — never diagnoses or dosing.
+- **Overview** — a cross-domain AI health summary that spots connections across your whole picture, not just glucose.
+- **Records** — upload lab reports and imaging (PDF/photo); a local vision model extracts values into **per-analyte trend charts**.
+- **Visit Report** — a printable 90-day clinical summary (AGP, TIR, per-phase metrics, labs, conditions, medications, symptoms) with an AI "quarter in review" narrative.
+
+**Track & analyze**
+
+- **Dashboard** — real-time glucose, TIR/GMI/CV metrics, AGP, treatment timeline, live heart rate, wearable overlays.
 - **Explorer** — a zoomable/pannable canvas chart of glucose with insulin, basal bands, and IOB estimation.
 - **Patterns** — statistical + AI detection of recurring highs/lows, post-meal spikes, dawn phenomenon, etc.
 - **Insights** — cross-domain correlations: glucose × sleep × readiness × activity × cycle.
+- **Insulin** — total daily dose, estimated insulin resistance, and correction-response/absorption stats.
 - **Cycle** — menstrual phases **inferred automatically from Oura nightly temperature**, tied to glucose/insulin.
-- **AI Analyst** — chat grounded in your own computed glucose data.
-- **Records** — upload lab reports (PDF/photo); a local vision model extracts values into **per-analyte trend charts**.
-- **Visit Report** — a printable 90-day clinical summary (AGP, TIR, per-phase metrics, labs) with an AI "quarter in review" narrative.
+- **Wearables** — sleep, activity, HR/HRV, and SpO₂ deep-dives with glucose overlays.
+- **Symptom journal** — a nightly check-in (severity, duration, notes) that feeds the Companion, the analytics, and the report.
+
+**Your clinical picture**
+
+- **Conditions, medications & allergies, profile** — entered once in Settings, woven into the AI's context and printed on the Visit Report.
 - **Provider login** — a read-only second account to share with a clinician.
 
 ## Try the demo
