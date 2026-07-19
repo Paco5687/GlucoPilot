@@ -94,12 +94,27 @@ setup and [`docs/LOCAL_MODELS.md`](docs/LOCAL_MODELS.md) for a fully-private AI 
 
 Forgot the admin password? `docker compose exec glucopilot python -m server.reset_password`.
 
-## Privacy & scope
+## Privacy & safety
 
-GlucoPilot is deliberately **single-user / single-tenant** — one owner per
-deployment. This keeps it simple and keeps you the sole custodian of your data.
-It is **not** built for multi-tenant hosting of other people's health data; run
-one instance per person.
+**Your data stays yours.** GlucoPilot runs entirely on **your** server. There is
+**no telemetry and no phone-home** — the app only talks to the services *you*
+connect (CGM, pump, wearables, etc.) and, for AI features, the model provider you
+choose. Pick the **local model** and your health data — including uploaded lab
+reports and imaging — **never leaves your machine**. Everything lives in one
+SQLite database in a Docker volume you control; there is no shared backend and
+the maintainers never see your data.
+
+It is deliberately **single-user / single-tenant** — one owner per deployment,
+so you're the sole custodian. It is **not** built to host other people's health
+data multi-tenant; run one instance per person.
+
+> ⚕️ **Not a medical device.** GlucoPilot is for personal data exploration and
+> education. It does **not** diagnose, recommend insulin dosing, or control any
+> device, and its analytics are estimates — not clinical guidance. Always consult
+> your care team for treatment decisions.
+
+Found a security or privacy issue in the code? Please report it privately — see
+[`SECURITY.md`](SECURITY.md).
 
 ## Third-party integrations
 
