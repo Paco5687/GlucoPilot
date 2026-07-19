@@ -93,6 +93,7 @@ def _dossier() -> dict[str, Any]:
         "medications_and_supplements": ctx.get("medications"),
         "allergies": ctx.get("allergies"),
         "profile": ctx.get("profile"),
+        "symptom_journal": ctx.get("symptom_journal"),
         "labs_out_of_range": (ctx.get("labs_out_of_range") or [])[:20],
         "lab_trends": (ctx.get("lab_trends") or [])[:12],
         "menstrual_cycle": ctx.get("cycle"),
