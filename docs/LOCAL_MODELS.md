@@ -1,9 +1,9 @@
 # Local models (fully-private AI)
 
-GlucoPilot's AI features — the AI Analyst, pattern/insight narratives, medical
-**lab-report extraction**, and the **Visit Report** — can run against either the
-Anthropic API or a local OpenAI-compatible server. Choose the provider on the
-in-app **Settings → AI** page.
+GlucoPilot's AI features — the **Companion**, cross-domain Overview,
+pattern/insight narratives, medical **lab-report extraction**, and the **Visit
+Report** — can run against either the Anthropic API or a local OpenAI-compatible
+server. Choose the provider on the in-app **Settings → AI** page.
 
 For a fully-private setup where no health data leaves your machine, use local
 models. Two roles:
