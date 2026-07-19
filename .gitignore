@@ -30,3 +30,4 @@ frontend/dist/
 .claude/
 .DS_Store
 *.log
+.env.bak*

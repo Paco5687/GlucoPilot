@@ -1,7 +1,17 @@
 # Deployment
 
 GlucoPilot is one container serving the API and the built SPA on port `8000`.
-It needs HTTPS in front of it (OAuth redirect URIs require it).
+
+## Just want it on your own machine?
+
+Run `./install.sh` from the repo — an interactive installer that generates your
+config, starts the app on `http://localhost:8000`, and prints the link. It uses
+[`docker-compose.local.yml`](../docker-compose.local.yml) (publishes the port, no
+reverse proxy). Nothing below is required for local/personal use; connect data
+sources and pick your AI on the in-app **Settings** page afterward.
+
+The rest of this page is for a **public server deploy** with a domain and HTTPS
+(required for the OAuth data-source integrations, whose redirect URIs need HTTPS).
 
 ## 1. Configure
 

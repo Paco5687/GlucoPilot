@@ -277,7 +277,7 @@ class _ThinkStripper:
         return rest
 
 
-async def _stream_local(prompt: str, max_tokens: int, url_override: str | None = None, model_override: str | None = None):
+async def _stream_local(prompt: str, max_tokens: int, url_override: str | None = None, model_override: str | None = None, stop: list[str] | None = None):
     raw_url = url_override or config_value("local_llm_url", LOCAL_URL_DEFAULT)
     model = model_override or config_value("local_llm_model", LOCAL_MODEL_DEFAULT)
     payload: dict[str, Any] = {
@@ -291,6 +291,8 @@ async def _stream_local(prompt: str, max_tokens: int, url_override: str | None =
         "frequency_penalty": 0.4,
         "presence_penalty": 0.3,
     }
+    if stop:
+        payload["stop"] = stop
     client, base_url = _local_client_and_base(raw_url)
     stripper = _ThinkStripper()
     async with client:
@@ -322,7 +324,7 @@ async def _stream_local(prompt: str, max_tokens: int, url_override: str | None =
         yield tail
 
 
-async def invoke_llm_stream(prompt: str, max_tokens: int = 700, tier: str = "default"):
+async def invoke_llm_stream(prompt: str, max_tokens: int = 700, tier: str = "default", stop: list[str] | None = None):
     """Yield reply text incrementally. The local provider streams token-by-token;
     cloud providers yield the full reply once (correct, just not chunked).
 
@@ -337,7 +339,7 @@ async def invoke_llm_stream(prompt: str, max_tokens: int = 700, tier: str = "def
             q_model = config_value("quality_llm_model")
             if q_url and q_model:
                 url_override, model_override = q_url, q_model
-        async for chunk in _stream_local(prompt, max_tokens, url_override, model_override):
+        async for chunk in _stream_local(prompt, max_tokens, url_override, model_override, stop=stop):
             yield chunk
         return
     text = await invoke_llm(prompt, max_tokens=max_tokens, tier=tier)

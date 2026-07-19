@@ -1,0 +1,28 @@
+# Local / personal single-machine setup — no reverse proxy, no domain required.
+# Publishes the app on http://localhost:${PORT:-8000} (bound to 127.0.0.1, so it
+# stays on your machine). For a server deploy with HTTPS behind Traefik/nginx/
+# Caddy, use docker-compose.yml instead — see docs/DEPLOY.md.
+#
+# Quick start:  ./install.sh
+#   (equivalently:  docker compose -f docker-compose.local.yml up -d)
+services:
+  glucopilot:
+    # `up -d` pulls this prebuilt image; add `--build` to build from source.
+    image: ghcr.io/paco5687/glucopilot:${IMAGE_TAG:-latest}
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    extra_hosts:
+      # Reach host-local services (e.g. a local LLM). See docs/LOCAL_MODELS.md.
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:${PORT:-8000}:8000"
+    volumes:
+      - data:/data
+      # Optional Unix sockets to host-local LLM servers (see docs/LOCAL_MODELS.md).
+      - ./run:/run/glucopilot
+
+volumes:
+  data:
+    name: ${DATA_VOLUME:-glucopilot_data}

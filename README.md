@@ -81,21 +81,28 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the module map.
 
 ## Quick start
 
+### Easiest — run it on your own machine
+
+You only need [Docker](https://docs.docker.com/get-docker/). Then:
+
 ```bash
 git clone https://github.com/Paco5687/GlucoPilot glucopilot && cd glucopilot
-cp .env.example .env          # edit APP_SECRET_KEY at minimum
+./install.sh
 ```
 
-**Option A — prebuilt image** (no build; pulls `ghcr.io/paco5687/glucopilot`):
+The installer checks Docker, generates your config (with a random secret key),
+asks a couple of quick questions (port, timezone, an optional AI key), starts the
+app, and prints the link — usually `http://localhost:8000`. Open it, create your
+login, and finish setup on the **Settings** page. That's the whole thing.
+
+### Server deploy (with a domain + HTTPS)
+
+For a public deployment behind a reverse proxy:
 
 ```bash
-docker compose up -d
-```
-
-**Option B — build from source:**
-
-```bash
-docker compose up -d --build
+git clone https://github.com/Paco5687/GlucoPilot glucopilot && cd glucopilot
+cp .env.example .env          # set APP_SECRET_KEY and APP_PUBLIC_URL
+docker compose up -d          # prebuilt image; add --build to build from source
 ```
 
 Open your `APP_PUBLIC_URL` and complete the first-run admin setup. Then add
