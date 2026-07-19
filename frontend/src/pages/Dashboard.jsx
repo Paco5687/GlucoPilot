@@ -14,6 +14,7 @@ import OuraPanel from "../components/dashboard/OuraPanel";
 import WearablesPanel from "../components/dashboard/WearablesPanel";
 import LiveHeartRate from "../components/dashboard/LiveHeartRate";
 import FingerstickLogger from "../components/dashboard/FingerstickLogger";
+import SymptomNudge from "../components/dashboard/SymptomNudge";
 import GlucoseOuraOverlay from "../components/dashboard/GlucoseOuraOverlay";
 import CorrelationCards from "../components/dashboard/CorrelationCards";
 import TimeRangePicker, { RANGES } from "../components/dashboard/TimeRangePicker";
@@ -188,6 +189,8 @@ export default function Dashboard() {
         <h1 className="text-lg font-semibold">Dashboard</h1>
         <TimeRangePicker value={range} onChange={setRange} customRange={customRange} onCustomRangeChange={setCustomRange} />
       </div>
+
+      <SymptomNudge />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-1">

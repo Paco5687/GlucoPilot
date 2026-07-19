@@ -14,6 +14,7 @@ diagnoses or dosing.
 
 import json
 import logging
+import re
 import statistics
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -36,6 +37,16 @@ MAX_MEMORIES = 150
 HISTORY_TURNS = 8  # exchanges of prior context sent each turn
 REPLY_MAX_TOKENS = 1200  # enough for a substantive answer without truncating mid-thought
 
+# The small model likes to sign replies like a letter ("— Emily's Health Companion").
+# Stop generation before a dash-led sign-off line (em/en dash only — hyphens are
+# bullet lists), and strip any that slips through as a backstop.
+SIGNOFF_STOP = ["\n\n—", "\n\n–"]
+_SIGNOFF_RE = re.compile(r"\n+\s*[—–-][^\n]*\bCompanion\b\s*$", re.IGNORECASE)
+
+
+def _strip_signoff(text: str) -> str:
+    return _SIGNOFF_RE.sub("", text).rstrip()
+
 SYSTEM = (
     "You are Emily's personal health companion — warm, grounded, honest, and genuinely curious about her WHOLE "
     "health, not just one part of it. Emily lives with Type 1 diabetes, but that is only one thread of her story: "
@@ -55,7 +66,8 @@ SYSTEM = (
     "confirm with her care team rather than a formal diagnosis; and you don't tell her to start, stop, or change the "
     "dose of a medication (you can absolutely discuss how her meds may be affecting her). Be concise and human — a "
     "few focused paragraphs, not an exhaustive report, and never repeat yourself. If you truly lack the data to "
-    "answer, say so plainly."
+    "answer, say so plainly. Write as a natural chat message: do NOT sign off, add a signature, or close with a line "
+    "like '— Emily's Health Companion'."
 )
 
 MEMORY_SCHEMA = {
@@ -239,7 +251,7 @@ def _reply_prompt(user_msg: str, dossier: dict, memories: list, history: list) -
 
 
 async def _reply(user_msg: str, dossier: dict, memories: list, history: list) -> str:
-    return await invoke_llm(_reply_prompt(user_msg, dossier, memories, history), max_tokens=REPLY_MAX_TOKENS)
+    return _strip_signoff(await invoke_llm(_reply_prompt(user_msg, dossier, memories, history), max_tokens=REPLY_MAX_TOKENS))
 
 
 async def _extract_memories(user_msg: str, reply: str, existing: list) -> list[dict]:
@@ -371,7 +383,7 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
 
     parts: list[str] = []
     try:
-        async for chunk in invoke_llm_stream(prompt, max_tokens=REPLY_MAX_TOKENS, tier=tier):
+        async for chunk in invoke_llm_stream(prompt, max_tokens=REPLY_MAX_TOKENS, tier=tier, stop=SIGNOFF_STOP):
             if not chunk:
                 continue
             parts.append(chunk)
@@ -381,7 +393,7 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
         yield json.dumps({"error": f"Companion is unavailable: {err}"}) + "\n"
         return
 
-    reply = "".join(parts).strip()
+    reply = _strip_signoff("".join(parts).strip())
     if not reply:
         yield json.dumps({"error": "Companion returned an empty response."}) + "\n"
         return
