@@ -17,24 +17,34 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import StreamingResponse
+
 from . import db, health_summary, insulin
+from .auth import require_admin
 from .config import OWNER_EMAIL
-from .llm import invoke_llm
+from .llm import invoke_llm, invoke_llm_stream
 
 log = logging.getLogger("glucopilot.companion")
+
+router = APIRouter(dependencies=[Depends(require_admin)])
 
 MAX_MEMORIES = 150
 HISTORY_TURNS = 8  # exchanges of prior context sent each turn
 
 SYSTEM = (
-    "You are Emily's personal health companion inside GlucoPilot — warm, grounded, and honest. "
-    "You have her diagnosed conditions, medications/supplements, allergies, her actual health data (glucose, labs, menstrual cycle, wearables, insulin, imaging) and a "
-    "memory of what she's told you about her lived experience. Ground every factual claim in her real data: "
-    "cite specific numbers, dates, and trends rather than generalities, and say when the data is old or missing. "
-    "When she shares how she's feeling or what's happening in her life, take it seriously and connect it to what "
-    "you see in her data. You are NOT a physician: never diagnose or give dosing/medication instructions — instead "
-    "surface observations, patterns, and specific things worth raising with her care team. If you don't have the "
-    "data to answer, say so plainly."
+    "You are Emily's personal health companion — warm, grounded, honest, and genuinely curious about her WHOLE "
+    "health, not just one part of it. Emily lives with Type 1 diabetes, but that is only one thread of her story: "
+    "her thyroid, hormones and menstrual cycle, inflammation and immune markers, gut health, sleep, energy, mood "
+    "and stress, medications and supplements, and everything she tells you about her life all matter just as much. "
+    "Do NOT funnel every conversation back to glucose or diabetes — follow the evidence and her actual question "
+    "wherever they lead, and focus on the parts of her data that are relevant to what she asked.\n"
+    "Ground factual claims in her real data: cite specific numbers, dates, and trends rather than generalities, and "
+    "say plainly when the data is old or missing. When she shares how she's feeling or what's happening in her life, "
+    "take it seriously and connect it to what you see. Be concise and human — a few focused paragraphs, not an "
+    "exhaustive report, and never repeat yourself. You are NOT a physician: never diagnose or give dosing/medication "
+    "instructions — instead surface observations, patterns, and specific things worth raising with her care team. "
+    "If you don't have the data to answer, say so plainly."
 )
 
 MEMORY_SCHEMA = {
@@ -76,37 +86,42 @@ def _dossier() -> dict[str, Any]:
         if r.get("status") == "processed"
     ]
     recent_docs.sort(key=lambda d: str(d.get("date") or ""), reverse=True)
+    # Ordered whole-person first (conditions, meds, labs, cycle, wearables),
+    # with the diabetes-specific data last so the model doesn't tunnel on it.
     return {
         "diagnosed_conditions": ctx.get("conditions"),
         "medications_and_supplements": ctx.get("medications"),
         "allergies": ctx.get("allergies"),
         "profile": ctx.get("profile"),
-        "glucose_90d": ctx.get("glucose"),
-        "cycle": ctx.get("cycle"),
-        "wearables_recent_vs_prior": ctx.get("wearables"),
         "labs_out_of_range": (ctx.get("labs_out_of_range") or [])[:20],
         "lab_trends": (ctx.get("lab_trends") or [])[:12],
+        "menstrual_cycle": ctx.get("cycle"),
+        "wearables_recent_vs_prior": ctx.get("wearables"),
+        "imaging": ctx.get("imaging"),
+        "recent_documents": recent_docs[:12],
+        "glucose_90d": ctx.get("glucose"),
         "insulin": {
             "resistance": ins.get("category"), "tdd_per_kg": ins.get("tdd_per_kg"),
             "data_through": ins.get("data_through"), "response_consistency": absn.get("consistency"),
             "response_variability_cv_pct": absn.get("cv_pct"),
         } if ins.get("available") else None,
-        "imaging": ctx.get("imaging"),
-        "recent_documents": recent_docs[:12],
     }
 
 
-async def _reply(user_msg: str, dossier: dict, memories: list, history: list) -> str:
+def _reply_prompt(user_msg: str, dossier: dict, memories: list, history: list) -> str:
     mem_txt = "\n".join(f"- [{m.get('category', 'note')}] {m.get('content')}" for m in memories) or "(nothing remembered yet)"
     hist_txt = "\n".join(f"{'Emily' if m['role'] == 'user' else 'Companion'}: {m['content']}" for m in history) or "(start of conversation)"
-    prompt = (
+    return (
         f"{SYSTEM}\n\n"
         f"=== EMILY'S HEALTH DATA (evidence to ground your answers) ===\n{json.dumps(dossier, indent=1, default=str)}\n\n"
         f"=== WHAT YOU REMEMBER ABOUT HER LIVED EXPERIENCE ===\n{mem_txt}\n\n"
         f"=== RECENT CONVERSATION ===\n{hist_txt}\n\n"
         f"Emily: {user_msg}\nCompanion:"
     )
-    return await invoke_llm(prompt, max_tokens=900)
+
+
+async def _reply(user_msg: str, dossier: dict, memories: list, history: list) -> str:
+    return await invoke_llm(_reply_prompt(user_msg, dossier, memories, history), max_tokens=700)
 
 
 async def _extract_memories(user_msg: str, reply: str, existing: list) -> list[dict]:
@@ -177,21 +192,68 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
             return {"error": f"Companion is unavailable: {err}", "_status": 502}
         reply = (reply or "").strip()
         db.create_entity("ChatMessage", {"role": "assistant", "content": reply, "created_date": _now(), "owner_email": OWNER_EMAIL})
-
-        remembered = []
-        try:
-            for m in await _extract_memories(text, reply, memories):
-                c = (m.get("content") or "").strip()
-                if not c:
-                    continue
-                if any(c.lower() in e.get("content", "").lower() or e.get("content", "").lower() in c.lower() for e in memories):
-                    continue  # dedupe against what we already know
-                db.create_entity("HealthMemory", {"content": c, "category": (m.get("category") or "observation"),
-                                                  "source": "companion", "created_date": _now(), "owner_email": OWNER_EMAIL})
-                remembered.append(c)
-        except Exception:
-            log.warning("companion memory extraction failed", exc_info=True)
-
+        remembered = await _store_new_memories(text, reply, memories)
         return {"reply": reply, "remembered": remembered}
 
     return {"error": "Unknown action", "_status": 400}
+
+
+async def _store_new_memories(text: str, reply: str, memories: list) -> list[str]:
+    remembered: list[str] = []
+    try:
+        for m in await _extract_memories(text, reply, memories):
+            c = (m.get("content") or "").strip()
+            if not c:
+                continue
+            if any(c.lower() in e.get("content", "").lower() or e.get("content", "").lower() in c.lower() for e in memories):
+                continue  # dedupe against what we already know
+            db.create_entity("HealthMemory", {"content": c, "category": (m.get("category") or "observation"),
+                                              "source": "companion", "created_date": _now(), "owner_email": OWNER_EMAIL})
+            remembered.append(c)
+    except Exception:
+        log.warning("companion memory extraction failed", exc_info=True)
+    return remembered
+
+
+async def stream_send(text: str):
+    """Stream a reply as newline-delimited JSON: {"delta": "..."} per chunk, then
+    a final {"done": true, "remembered": [...]}. Persists the exchange and extracts
+    memories once the reply completes."""
+    text = (text or "").strip()
+    if not text:
+        yield json.dumps({"error": "Message is empty."}) + "\n"
+        return
+    db.create_entity("ChatMessage", {"role": "user", "content": text, "created_date": _now(), "owner_email": OWNER_EMAIL})
+    history = list(reversed(db.query_entities("ChatMessage", {"owner_email": OWNER_EMAIL}, "-created_date", HISTORY_TURNS * 2)))
+    memories = _memories()
+    prompt = _reply_prompt(text, _dossier(), memories, history[:-1])
+
+    parts: list[str] = []
+    try:
+        async for chunk in invoke_llm_stream(prompt, max_tokens=700):
+            if not chunk:
+                continue
+            parts.append(chunk)
+            yield json.dumps({"delta": chunk}) + "\n"
+    except Exception as err:
+        log.exception("companion stream failed")
+        yield json.dumps({"error": f"Companion is unavailable: {err}"}) + "\n"
+        return
+
+    reply = "".join(parts).strip()
+    if not reply:
+        yield json.dumps({"error": "Companion returned an empty response."}) + "\n"
+        return
+    db.create_entity("ChatMessage", {"role": "assistant", "content": reply, "created_date": _now(), "owner_email": OWNER_EMAIL})
+    remembered = await _store_new_memories(text, reply, memories)
+    yield json.dumps({"done": True, "remembered": remembered}) + "\n"
+
+
+@router.post("/api/companion/stream")
+async def companion_stream(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    message = (body or {}).get("message", "") if isinstance(body, dict) else ""
+    return StreamingResponse(stream_send(message), media_type="application/x-ndjson")
