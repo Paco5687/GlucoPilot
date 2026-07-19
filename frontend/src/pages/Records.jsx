@@ -28,6 +28,11 @@ export default function Records() {
         base44.entities.MedicalRecord.list("-created_date", 200),
         base44.entities.LabResult.list("collected_date", 5000),
       ]);
+      // Organize by date taken (record_date), not upload date; undated fall back
+      // to upload date and sink to the bottom.
+      recs.sort((a, b) =>
+        String(b.record_date || b.created_date || "").localeCompare(String(a.record_date || a.created_date || ""))
+      );
       setRecords(recs);
       setLabs(labRows);
     } catch {
@@ -133,11 +138,11 @@ export default function Records() {
               <FileText className="w-5 h-5 text-muted-foreground flex-shrink-0 mt-0.5" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-medium text-sm">{rec.filename}</span>
+                  <span className="font-medium text-sm" title={rec.filename}>{rec.title || rec.filename}</span>
                   <span className="text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">
                     {rec.doc_type || rec.status}
                   </span>
-                  {rec.record_date && <span className="text-xs text-muted-foreground">{rec.record_date}</span>}
+                  {rec.record_date && <span className="text-xs text-muted-foreground">taken {rec.record_date}</span>}
                   {rec.status === "failed" && (
                     <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">failed</span>
                   )}
