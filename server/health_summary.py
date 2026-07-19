@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import conditions, db, profile, report
+from . import conditions, db, meds, profile, report
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value, set_config_value
 from .llm import invoke_llm
@@ -111,6 +111,8 @@ def _build_context() -> dict[str, Any]:
     return {
         "window_days": WINDOW_DAYS,
         "conditions": conditions.get_conditions() or None,
+        "medications": meds.get_medications() or None,
+        "allergies": meds.get_allergies() or None,
         "profile": {k: prof.get(k) for k in ("age", "sex", "bmi", "weight_kg")} if prof.get("age") or prof.get("bmi") else None,
         "glucose": {k: glucose.get(k) for k in ("available", "tir", "avg", "gmi", "cv", "days")} if glucose.get("available") else None,
         "cycle": {"cycles": cycle.get("cycles_detected"), "avg_length": cycle.get("avg_cycle_length"),

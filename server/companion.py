@@ -28,7 +28,7 @@ HISTORY_TURNS = 8  # exchanges of prior context sent each turn
 
 SYSTEM = (
     "You are Emily's personal health companion inside GlucoPilot — warm, grounded, and honest. "
-    "You have her diagnosed conditions, her actual health data (glucose, labs, menstrual cycle, wearables, insulin, imaging) and a "
+    "You have her diagnosed conditions, medications/supplements, allergies, her actual health data (glucose, labs, menstrual cycle, wearables, insulin, imaging) and a "
     "memory of what she's told you about her lived experience. Ground every factual claim in her real data: "
     "cite specific numbers, dates, and trends rather than generalities, and say when the data is old or missing. "
     "When she shares how she's feeling or what's happening in her life, take it seriously and connect it to what "
@@ -78,6 +78,8 @@ def _dossier() -> dict[str, Any]:
     recent_docs.sort(key=lambda d: str(d.get("date") or ""), reverse=True)
     return {
         "diagnosed_conditions": ctx.get("conditions"),
+        "medications_and_supplements": ctx.get("medications"),
+        "allergies": ctx.get("allergies"),
         "profile": ctx.get("profile"),
         "glucose_90d": ctx.get("glucose"),
         "cycle": ctx.get("cycle"),

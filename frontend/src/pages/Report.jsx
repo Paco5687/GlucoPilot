@@ -208,6 +208,35 @@ export default function Report() {
         </div>
       )}
 
+      {/* Medications & allergies */}
+      {(report.medications?.length > 0 || report.allergies?.length > 0) && (
+        <div className="report-section grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {report.medications?.length > 0 && (
+            <div className="report-card rounded-xl border border-border p-4">
+              <h2 className="font-semibold text-sm mb-2">Medications &amp; supplements</h2>
+              <ul className="text-sm space-y-1">
+                {report.medications.map((m, i) => (
+                  <li key={i}>
+                    {m.name}{m.dose ? ` ${m.dose}` : ""}{m.frequency ? ` · ${m.frequency}` : ""}
+                    {m.kind === "supplement" ? " (supplement)" : ""}{m.status === "stopped" ? " — stopped" : ""}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {report.allergies?.length > 0 && (
+            <div className="report-card rounded-xl border border-border p-4">
+              <h2 className="font-semibold text-sm mb-2">Allergies</h2>
+              <ul className="text-sm space-y-1">
+                {report.allergies.map((a, i) => (
+                  <li key={i}>{a.allergen}{a.severity ? ` (${a.severity})` : ""}{a.reaction ? ` — ${a.reaction}` : ""}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Insurance (prints at the top for the front desk) */}
       {report.insurance?.available && (
         <div className="report-section report-card rounded-xl border border-border p-4">
