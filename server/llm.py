@@ -277,9 +277,9 @@ class _ThinkStripper:
         return rest
 
 
-async def _stream_local(prompt: str, max_tokens: int):
-    raw_url = config_value("local_llm_url", LOCAL_URL_DEFAULT)
-    model = config_value("local_llm_model", LOCAL_MODEL_DEFAULT)
+async def _stream_local(prompt: str, max_tokens: int, url_override: str | None = None, model_override: str | None = None):
+    raw_url = url_override or config_value("local_llm_url", LOCAL_URL_DEFAULT)
+    model = model_override or config_value("local_llm_model", LOCAL_MODEL_DEFAULT)
     payload: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
@@ -324,10 +324,20 @@ async def _stream_local(prompt: str, max_tokens: int):
 
 async def invoke_llm_stream(prompt: str, max_tokens: int = 700, tier: str = "default"):
     """Yield reply text incrementally. The local provider streams token-by-token;
-    cloud providers yield the full reply once (correct, just not chunked)."""
+    cloud providers yield the full reply once (correct, just not chunked).
+
+    tier="quality" streams from the bigger, slower local model (e.g. Ollama
+    gemma3:27b) when one is configured — streaming makes that model usable
+    interactively since tokens appear as they're generated."""
     provider = config_value("llm_provider", "anthropic").strip().lower()
     if provider == "local":
-        async for chunk in _stream_local(prompt, max_tokens):
+        url_override = model_override = None
+        if tier == "quality":
+            q_url = config_value("quality_llm_url")
+            q_model = config_value("quality_llm_model")
+            if q_url and q_model:
+                url_override, model_override = q_url, q_model
+        async for chunk in _stream_local(prompt, max_tokens, url_override, model_override):
             yield chunk
         return
     text = await invoke_llm(prompt, max_tokens=max_tokens, tier=tier)

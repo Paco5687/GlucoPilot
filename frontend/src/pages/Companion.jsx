@@ -3,7 +3,7 @@ import { base44 } from "@/api/base44Client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import SafetyBanner from "../components/SafetyBanner";
-import { MessageCircleHeart, Send, Loader2, Brain, Plus, X } from "lucide-react";
+import { MessageCircleHeart, Send, Loader2, Brain, Plus, X, Zap, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 
 const SUGGESTIONS = [
@@ -25,7 +25,10 @@ export default function Companion() {
   const [busy, setBusy] = useState(false);
   const [showMem, setShowMem] = useState(true);
   const [newMem, setNewMem] = useState("");
+  const [tier, setTier] = useState(() => localStorage.getItem("companion_tier") || "default");
   const endRef = useRef(null);
+
+  useEffect(() => { localStorage.setItem("companion_tier", tier); }, [tier]);
 
   const loadMemories = useCallback(async () => {
     try { const r = await base44.functions.invoke("companion", { action: "memories" }); setMemories(r.data?.memories || []); } catch { /* */ }
@@ -59,7 +62,7 @@ export default function Companion() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ message: msg }),
+        body: JSON.stringify({ message: msg, tier }),
       });
       if (!res.ok || !res.body) throw new Error("Companion unavailable");
       const reader = res.body.getReader();
@@ -124,6 +127,22 @@ export default function Companion() {
           <p className="text-sm text-muted-foreground mt-1">Chat grounded in your full health data. It remembers what you share and reasons across your records.</p>
         </div>
         <div className="flex items-center gap-2">
+          <div className="inline-flex items-center rounded-lg border border-border bg-muted/40 p-0.5" title="Which model answers. Fast = quick; Deep = slower but more thorough.">
+            <button
+              onClick={() => setTier("default")}
+              disabled={busy}
+              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${tier === "default" ? "bg-card shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <Zap className="w-3.5 h-3.5" /> Fast
+            </button>
+            <button
+              onClick={() => setTier("quality")}
+              disabled={busy}
+              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors ${tier === "quality" ? "bg-card shadow-sm text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <Sparkles className="w-3.5 h-3.5" /> Deep
+            </button>
+          </div>
           <Button variant="outline" size="sm" onClick={() => setShowMem((s) => !s)} className="gap-1.5 text-xs">
             <Brain className="w-3.5 h-3.5" /> Memory ({memories.length})
           </Button>
@@ -158,7 +177,7 @@ export default function Companion() {
               ))
             )}
             {busy && !messages[messages.length - 1]?.content && (
-              <div className="flex justify-start"><div className="bg-muted rounded-2xl px-4 py-2.5 text-sm text-muted-foreground inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> thinking…</div></div>
+              <div className="flex justify-start"><div className="bg-muted rounded-2xl px-4 py-2.5 text-sm text-muted-foreground inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> {tier === "quality" ? "thinking deeply… (slower model, worth the wait)" : "thinking…"}</div></div>
             )}
             <div ref={endRef} />
           </div>

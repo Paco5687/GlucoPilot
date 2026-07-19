@@ -215,14 +215,16 @@ async def _store_new_memories(text: str, reply: str, memories: list) -> list[str
     return remembered
 
 
-async def stream_send(text: str):
+async def stream_send(text: str, tier: str = "default"):
     """Stream a reply as newline-delimited JSON: {"delta": "..."} per chunk, then
     a final {"done": true, "remembered": [...]}. Persists the exchange and extracts
-    memories once the reply completes."""
+    memories once the reply completes. tier="quality" uses the bigger, slower
+    local model so its answers can be compared against the fast default."""
     text = (text or "").strip()
     if not text:
         yield json.dumps({"error": "Message is empty."}) + "\n"
         return
+    tier = "quality" if tier == "quality" else "default"
     db.create_entity("ChatMessage", {"role": "user", "content": text, "created_date": _now(), "owner_email": OWNER_EMAIL})
     history = list(reversed(db.query_entities("ChatMessage", {"owner_email": OWNER_EMAIL}, "-created_date", HISTORY_TURNS * 2)))
     memories = _memories()
@@ -230,7 +232,7 @@ async def stream_send(text: str):
 
     parts: list[str] = []
     try:
-        async for chunk in invoke_llm_stream(prompt, max_tokens=700):
+        async for chunk in invoke_llm_stream(prompt, max_tokens=700, tier=tier):
             if not chunk:
                 continue
             parts.append(chunk)
@@ -256,4 +258,5 @@ async def companion_stream(request: Request):
     except Exception:
         body = {}
     message = (body or {}).get("message", "") if isinstance(body, dict) else ""
-    return StreamingResponse(stream_send(message), media_type="application/x-ndjson")
+    tier = (body or {}).get("tier", "default") if isinstance(body, dict) else "default"
+    return StreamingResponse(stream_send(message, tier), media_type="application/x-ndjson")
