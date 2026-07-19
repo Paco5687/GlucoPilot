@@ -14,15 +14,18 @@ diagnoses or dosing.
 
 import json
 import logging
-from datetime import datetime, timezone
+import statistics
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from . import db, health_summary, insulin
 from .auth import require_admin
-from .config import OWNER_EMAIL
+from .config import APP_TIMEZONE, OWNER_EMAIL
+from .db import config_value
 from .llm import invoke_llm, invoke_llm_stream
 
 log = logging.getLogger("glucopilot.companion")
@@ -74,6 +77,112 @@ def _memories() -> list[dict[str, Any]]:
     return db.query_entities("HealthMemory", {"owner_email": OWNER_EMAIL}, "-created_date", MAX_MEMORIES)
 
 
+def _tir(vals: list[float]) -> dict[str, Any]:
+    n = len(vals)
+    if not n:
+        return {}
+    mean = sum(vals) / n
+    return {
+        "n": n,
+        "avg": round(mean),
+        "tir_70_180": round(100 * sum(1 for v in vals if 70 <= v <= 180) / n),
+        "below_70": round(100 * sum(1 for v in vals if v < 70) / n),
+        "above_180": round(100 * sum(1 for v in vals if v > 180) / n),
+        "cv": round(100 * statistics.pstdev(vals) / mean) if mean and n > 1 else None,
+        "gmi": round(3.31 + 0.02392 * mean, 1),
+    }
+
+
+def _glucose_detail() -> dict[str, Any] | None:
+    """Deep, quantitative glucose picture (ported from the old Analyst): multi-
+    timeframe stats plus per-day and weekly breakdowns, so the companion can do
+    real period-over-period comparisons with actual numbers."""
+    tz = ZoneInfo(config_value("app_timezone", APP_TIMEZONE))
+    now = datetime.now(timezone.utc)
+    since90 = (now - timedelta(days=90)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    rows = db.query_entities(
+        "GlucoseReading", {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since90}}, "-timestamp", 40000
+    )
+    pts = []
+    for r in rows:
+        try:
+            t = datetime.fromisoformat(str(r.get("timestamp")).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        v = r.get("value")
+        if v is not None:
+            pts.append((t, float(v)))
+    if not pts:
+        return None
+
+    def window(days: int) -> dict[str, Any]:
+        cut = now - timedelta(days=days)
+        return _tir([v for t, v in pts if t >= cut])
+
+    # per-day (last 14 days) and per-ISO-week (90 days) in the user's timezone
+    daily: dict[str, list[float]] = {}
+    weekly: dict[str, list[float]] = {}
+    day_cut = now - timedelta(days=14)
+    for t, v in pts:
+        local = t.astimezone(tz)
+        if t >= day_cut:
+            daily.setdefault(local.date().isoformat(), []).append(v)
+        iso = local.isocalendar()
+        weekly.setdefault(f"{iso[0]}-W{iso[1]:02d}", []).append(v)
+
+    daily_rows = [
+        {"date": d, "avg": round(sum(v) / len(v)), "tir": _tir(v)["tir_70_180"],
+         "min": round(min(v)), "max": round(max(v)), "n": len(v)}
+        for d, v in sorted(daily.items())
+    ]
+    weekly_rows = [
+        {"week": w, "avg": round(sum(v) / len(v)), "tir": _tir(v)["tir_70_180"], "n": len(v)}
+        for w, v in sorted(weekly.items())
+    ]
+    return {
+        "current": {"value": round(pts[0][1]), "at": pts[0][0].astimezone(tz).isoformat(timespec="minutes")},
+        "last_24h": window(1), "last_7d": window(7), "last_30d": window(30), "last_90d": window(90),
+        "daily_last_14d": daily_rows,
+        "weekly_last_90d": weekly_rows,
+    }
+
+
+def _threads() -> list[dict[str, Any]]:
+    _ensure_thread_migration()
+    return db.query_entities("CompanionThread", {"owner_email": OWNER_EMAIL}, "-updated_date", 100)
+
+
+def _thread_history(thread_id: str, limit: int = HISTORY_TURNS * 2) -> list[dict[str, Any]]:
+    return db.query_entities(
+        "ChatMessage", {"owner_email": OWNER_EMAIL, "thread_id": thread_id}, "created_date", limit
+    )
+
+
+def _new_thread(first_msg: str) -> dict[str, Any]:
+    title = (first_msg or "").strip().replace("\n", " ")[:60] or "New chat"
+    return db.create_entity("CompanionThread", {
+        "title": title, "created_date": _now(), "updated_date": _now(), "owner_email": OWNER_EMAIL,
+    })
+
+
+def _ensure_thread_migration() -> None:
+    """One-time: fold any pre-threads ChatMessages into a single legacy thread."""
+    orphans = [
+        m for m in db.query_entities("ChatMessage", {"owner_email": OWNER_EMAIL}, "created_date", 10000)
+        if not m.get("thread_id")
+    ]
+    if not orphans:
+        return
+    t = db.create_entity("CompanionThread", {
+        "title": "Earlier conversation",
+        "created_date": orphans[0].get("created_date") or _now(),
+        "updated_date": orphans[-1].get("created_date") or _now(),
+        "owner_email": OWNER_EMAIL,
+    })
+    for m in orphans:
+        db.update_entity("ChatMessage", m["id"], {"thread_id": t["id"]})
+
+
 def _dossier() -> dict[str, Any]:
     """Compact, current health picture for grounding (kept small for the local
     model's context window)."""
@@ -100,7 +209,7 @@ def _dossier() -> dict[str, Any]:
         "wearables_recent_vs_prior": ctx.get("wearables"),
         "imaging": ctx.get("imaging"),
         "recent_documents": recent_docs[:12],
-        "glucose_90d": ctx.get("glucose"),
+        "glucose": _glucose_detail() or ctx.get("glucose"),
         "insulin": {
             "resistance": ins.get("category"), "tdd_per_kg": ins.get("tdd_per_kg"),
             "data_through": ins.get("data_through"), "response_consistency": absn.get("consistency"),
@@ -153,11 +262,30 @@ async def _extract_memories(user_msg: str, reply: str, existing: list) -> list[d
 
 
 async def handle(body: dict[str, Any]) -> dict[str, Any]:
-    action = body.get("action", "history")
+    action = body.get("action", "threads")
+
+    if action == "threads":
+        return {"threads": _threads()}
 
     if action == "history":
-        msgs = db.query_entities("ChatMessage", {"owner_email": OWNER_EMAIL}, "created_date", 400)
-        return {"messages": msgs}
+        tid = body.get("thread_id")
+        if not tid:
+            return {"messages": []}
+        return {"messages": db.query_entities("ChatMessage", {"owner_email": OWNER_EMAIL, "thread_id": tid}, "created_date", 1000)}
+
+    if action == "rename_thread":
+        tid, title = body.get("thread_id"), (body.get("title") or "").strip()
+        if tid and title:
+            db.update_entity("CompanionThread", tid, {"title": title[:60]})
+        return {"ok": True, "threads": _threads()}
+
+    if action in ("delete_thread", "clear"):  # "clear" kept for shim compatibility
+        tid = body.get("thread_id")
+        if tid:
+            for m in db.query_entities("ChatMessage", {"owner_email": OWNER_EMAIL, "thread_id": tid}, "-created_date", 10000):
+                db.delete_entity("ChatMessage", m["id"])
+            db.delete_entity("CompanionThread", tid)
+        return {"ok": True, "threads": _threads()}
 
     if action == "memories":
         return {"memories": _memories()}
@@ -174,17 +302,13 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
             db.delete_entity("HealthMemory", body["id"])
         return {"ok": True}
 
-    if action == "clear":
-        for m in db.query_entities("ChatMessage", {"owner_email": OWNER_EMAIL}, "-created_date", 10000):
-            db.delete_entity("ChatMessage", m["id"])
-        return {"ok": True}
-
-    if action == "send":
+    if action == "send":  # non-streaming fallback (frontend uses /api/companion/stream)
         text = (body.get("message") or "").strip()
         if not text:
             return {"error": "Message is empty.", "_status": 400}
-        db.create_entity("ChatMessage", {"role": "user", "content": text, "created_date": _now(), "owner_email": OWNER_EMAIL})
-        history = list(reversed(db.query_entities("ChatMessage", {"owner_email": OWNER_EMAIL}, "-created_date", HISTORY_TURNS * 2)))
+        tid = body.get("thread_id") or _new_thread(text)["id"]
+        db.create_entity("ChatMessage", {"role": "user", "content": text, "thread_id": tid, "created_date": _now(), "owner_email": OWNER_EMAIL})
+        history = _thread_history(tid)
         memories = _memories()
         try:
             reply = await _reply(text, _dossier(), memories, history[:-1])
@@ -192,9 +316,10 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
             log.exception("companion reply failed")
             return {"error": f"Companion is unavailable: {err}", "_status": 502}
         reply = (reply or "").strip()
-        db.create_entity("ChatMessage", {"role": "assistant", "content": reply, "created_date": _now(), "owner_email": OWNER_EMAIL})
+        db.create_entity("ChatMessage", {"role": "assistant", "content": reply, "thread_id": tid, "created_date": _now(), "owner_email": OWNER_EMAIL})
+        db.update_entity("CompanionThread", tid, {"updated_date": _now()})
         remembered = await _store_new_memories(text, reply, memories)
-        return {"reply": reply, "remembered": remembered}
+        return {"reply": reply, "remembered": remembered, "thread_id": tid}
 
     return {"error": "Unknown action", "_status": 400}
 
@@ -216,18 +341,23 @@ async def _store_new_memories(text: str, reply: str, memories: list) -> list[str
     return remembered
 
 
-async def stream_send(text: str, tier: str = "default"):
-    """Stream a reply as newline-delimited JSON: {"delta": "..."} per chunk, then
-    a final {"done": true, "remembered": [...]}. Persists the exchange and extracts
-    memories once the reply completes. tier="quality" uses the bigger, slower
-    local model so its answers can be compared against the fast default."""
+async def stream_send(text: str, tier: str = "default", thread_id: str | None = None):
+    """Stream a reply as newline-delimited JSON. Emits {"thread": {...}} first if a
+    new thread was created, {"delta": "..."} per chunk, then a final
+    {"done": true, "remembered": [...], "thread_id": ...}. Persists the exchange
+    to its thread and extracts memories once the reply completes. tier="quality"
+    uses the bigger, slower local model."""
     text = (text or "").strip()
     if not text:
         yield json.dumps({"error": "Message is empty."}) + "\n"
         return
     tier = "quality" if tier == "quality" else "default"
-    db.create_entity("ChatMessage", {"role": "user", "content": text, "created_date": _now(), "owner_email": OWNER_EMAIL})
-    history = list(reversed(db.query_entities("ChatMessage", {"owner_email": OWNER_EMAIL}, "-created_date", HISTORY_TURNS * 2)))
+    if not thread_id:
+        thread = _new_thread(text)
+        thread_id = thread["id"]
+        yield json.dumps({"thread": thread}) + "\n"
+    db.create_entity("ChatMessage", {"role": "user", "content": text, "thread_id": thread_id, "created_date": _now(), "owner_email": OWNER_EMAIL})
+    history = _thread_history(thread_id)
     memories = _memories()
     prompt = _reply_prompt(text, _dossier(), memories, history[:-1])
 
@@ -247,9 +377,10 @@ async def stream_send(text: str, tier: str = "default"):
     if not reply:
         yield json.dumps({"error": "Companion returned an empty response."}) + "\n"
         return
-    db.create_entity("ChatMessage", {"role": "assistant", "content": reply, "created_date": _now(), "owner_email": OWNER_EMAIL})
+    db.create_entity("ChatMessage", {"role": "assistant", "content": reply, "thread_id": thread_id, "created_date": _now(), "owner_email": OWNER_EMAIL})
+    db.update_entity("CompanionThread", thread_id, {"updated_date": _now()})
     remembered = await _store_new_memories(text, reply, memories)
-    yield json.dumps({"done": True, "remembered": remembered}) + "\n"
+    yield json.dumps({"done": True, "remembered": remembered, "thread_id": thread_id}) + "\n"
 
 
 @router.post("/api/companion/stream")
@@ -258,6 +389,8 @@ async def companion_stream(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    message = (body or {}).get("message", "") if isinstance(body, dict) else ""
-    tier = (body or {}).get("tier", "default") if isinstance(body, dict) else "default"
-    return StreamingResponse(stream_send(message, tier), media_type="application/x-ndjson")
+    b = body if isinstance(body, dict) else {}
+    return StreamingResponse(
+        stream_send(b.get("message", ""), b.get("tier", "default"), b.get("thread_id")),
+        media_type="application/x-ndjson",
+    )

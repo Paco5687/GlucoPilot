@@ -10,7 +10,6 @@ import AuthGate from './components/AuthGate';
 import Dashboard from './pages/Dashboard';
 import Patterns from './pages/Patterns';
 import Compare from './pages/Compare';
-import AIAnalyst from './pages/AIAnalyst';
 import Connections from './pages/Connections';
 import CsvImport from './pages/CsvImport';
 import PeriodTracker from './pages/PeriodTracker';
@@ -45,7 +44,6 @@ const AuthenticatedApp = () => {
         <Route path="/explorer" element={<Explorer />} />
         <Route path="/patterns" element={<Patterns />} />
         <Route path="/compare" element={<Compare />} />
-        <Route path="/analyst" element={<AIAnalyst />} />
         <Route path="/connections" element={<Connections />} />
         <Route path="/import" element={<CsvImport />} />
         <Route path="/period" element={<PeriodTracker />} />
