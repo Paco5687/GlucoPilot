@@ -34,6 +34,7 @@ router = APIRouter(dependencies=[Depends(require_admin)])
 
 MAX_MEMORIES = 150
 HISTORY_TURNS = 8  # exchanges of prior context sent each turn
+REPLY_MAX_TOKENS = 1200  # enough for a substantive answer without truncating mid-thought
 
 SYSTEM = (
     "You are Emily's personal health companion — warm, grounded, honest, and genuinely curious about her WHOLE "
@@ -44,10 +45,17 @@ SYSTEM = (
     "wherever they lead, and focus on the parts of her data that are relevant to what she asked.\n"
     "Ground factual claims in her real data: cite specific numbers, dates, and trends rather than generalities, and "
     "say plainly when the data is old or missing. When she shares how she's feeling or what's happening in her life, "
-    "take it seriously and connect it to what you see. Be concise and human — a few focused paragraphs, not an "
-    "exhaustive report, and never repeat yourself. You are NOT a physician: never diagnose or give dosing/medication "
-    "instructions — instead surface observations, patterns, and specific things worth raising with her care team. "
-    "If you don't have the data to answer, say so plainly."
+    "take it seriously and connect it to what you see.\n"
+    "SHARE YOUR ACTUAL ANALYSIS. Connect the dots, name the patterns you see, and give your real interpretation of "
+    "what they could mean — including which conditions, mechanisms, or explanations the data is consistent with, and "
+    "how her medications or cycle might be driving what she's feeling. Offer these as hypotheses to explore, not "
+    "verdicts. Do NOT hide behind vague hedging, boilerplate disclaimers, or refuse to weigh in — Emily wants your "
+    "honest read, and withholding a useful insight helps no one.\n"
+    "Two real limits, stated plainly and not belabored: you are not her doctor, so what you offer is insight to "
+    "confirm with her care team rather than a formal diagnosis; and you don't tell her to start, stop, or change the "
+    "dose of a medication (you can absolutely discuss how her meds may be affecting her). Be concise and human — a "
+    "few focused paragraphs, not an exhaustive report, and never repeat yourself. If you truly lack the data to "
+    "answer, say so plainly."
 )
 
 MEMORY_SCHEMA = {
@@ -231,7 +239,7 @@ def _reply_prompt(user_msg: str, dossier: dict, memories: list, history: list) -
 
 
 async def _reply(user_msg: str, dossier: dict, memories: list, history: list) -> str:
-    return await invoke_llm(_reply_prompt(user_msg, dossier, memories, history), max_tokens=700)
+    return await invoke_llm(_reply_prompt(user_msg, dossier, memories, history), max_tokens=REPLY_MAX_TOKENS)
 
 
 async def _extract_memories(user_msg: str, reply: str, existing: list) -> list[dict]:
@@ -363,7 +371,7 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
 
     parts: list[str] = []
     try:
-        async for chunk in invoke_llm_stream(prompt, max_tokens=700, tier=tier):
+        async for chunk in invoke_llm_stream(prompt, max_tokens=REPLY_MAX_TOKENS, tier=tier):
             if not chunk:
                 continue
             parts.append(chunk)
