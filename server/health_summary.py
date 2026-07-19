@@ -63,7 +63,8 @@ def _labs_snapshot() -> tuple[list, list]:
         fl = (latest.get("flag") or "").lower()
         if fl and fl not in ("normal", ""):
             flagged.append({"name": name, "value": latest["value"], "unit": latest.get("unit", ""),
-                            "flag": fl, "category": latest.get("category", "")})
+                            "flag": fl, "category": latest.get("category", ""),
+                            "date": latest.get("collected_date", "")})
         if len(pts) >= 3:
             first, last = pts[0]["value"], pts[-1]["value"]
             if first and abs(last - first) / abs(first) >= 0.15:
@@ -134,6 +135,8 @@ async def generate() -> dict[str, Any]:
         "- Do NOT add hedging boilerplate like 'correlation is not causation' or 'this is not a diagnosis' — "
         "the reader already knows that. Just point out what the data shows.\n"
         "- Be specific and concrete, not vague. Name the analytes/metrics involved.\n"
+        "- Mind recency: each lab carries a `date`. Weight recent results more; call out clearly "
+        "when a notable value is old (say, 6+ months) rather than treating it as current.\n"
         "- Aim for 6-9 genuinely distinct observations, richest/most-actionable first. Also give a fuller "
         "'working' (on track) list and a 'watch' list.\n\n"
         f"DATA SNAPSHOT (last {WINDOW_DAYS} days where applicable):\n{json.dumps(context, indent=2, default=str)}"
