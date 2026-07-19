@@ -7,6 +7,30 @@ import { FlaskConical, AlertTriangle, Search, List, LineChart as LineIcon, Grid3
 
 const ABNORMAL = new Set(["high", "low", "critical", "abnormal"]);
 
+// Recency: how old the latest result is, so stale values aren't read as current.
+const AGE_TONE = {
+  fresh: "bg-emerald-100 text-emerald-700",
+  mid: "bg-muted text-muted-foreground",
+  old: "bg-amber-100 text-amber-700",
+  stale: "bg-rose-100 text-rose-700",
+};
+function ageInfo(dateStr) {
+  if (!dateStr) return null;
+  const d = new Date(dateStr + "T12:00:00");
+  if (Number.isNaN(d.getTime())) return null;
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  let label, tone;
+  if (days < 45) { label = `${Math.max(1, Math.round(days / 7))}w ago`; tone = "fresh"; }
+  else if (days < 365) { label = `${Math.round(days / 30)}mo ago`; tone = days > 240 ? "old" : "mid"; }
+  else { label = days < 730 ? "1y+ ago" : `${Math.floor(days / 365)}y+ ago`; tone = "stale"; }
+  return { days, label, tone };
+}
+function AgeBadge({ date }) {
+  const a = ageInfo(date);
+  if (!a) return null;
+  return <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${AGE_TONE[a.tone]}`} title={date}>{a.label}</span>;
+}
+
 // --- data prep -------------------------------------------------------------
 
 function isAbnormal(flag, value, lo, hi) {
@@ -138,10 +162,15 @@ function IndexView({ analytes }) {
             </button>
             {!isCol && (
               <div className="divide-y divide-border">
-                {items.map((a) => (
+                {items.map((a) => {
+                  const stale = ageInfo(a.lastDate)?.tone === "stale";
+                  return (
                   <div key={a.name}>
-                    <button onClick={() => setExpanded(expanded === a.name ? null : a.name)} className="w-full flex items-center gap-3 px-4 py-2 hover:bg-accent/30 text-left">
-                      <span className="flex-1 min-w-0 text-sm truncate">{a.name}</span>
+                    <button onClick={() => setExpanded(expanded === a.name ? null : a.name)} className={`w-full flex items-center gap-3 px-4 py-2 hover:bg-accent/30 text-left ${stale ? "opacity-60" : ""}`}>
+                      <span className="flex-1 min-w-0 flex items-center gap-2">
+                        <span className="text-sm truncate">{a.name}</span>
+                        <AgeBadge date={a.lastDate} />
+                      </span>
                       <Sparkline points={a.points} color={a.abnormal ? "#dc2626" : "hsl(var(--primary))"} />
                       <span className="w-24 text-right text-sm font-medium tabular-nums">
                         {a.latest.value}<span className="text-[10px] text-muted-foreground ml-0.5">{a.unit}</span>
@@ -153,7 +182,8 @@ function IndexView({ analytes }) {
                     </button>
                     {expanded === a.name && <div className="px-4 pb-3 bg-accent/10"><LabTrend a={a} /></div>}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -170,9 +200,9 @@ function ChartsView({ analytes }) {
         <div key={a.name} className="bg-card rounded-xl border border-border p-4">
           <div className="flex items-start justify-between gap-2 mb-1">
             <div>
-              <h4 className="font-semibold text-sm">{a.name}</h4>
+              <h4 className="font-semibold text-sm flex items-center gap-2">{a.name} <AgeBadge date={a.lastDate} /></h4>
               <p className="text-xs text-muted-foreground">
-                {a.count} result{a.count === 1 ? "" : "s"}{a.refLow != null && a.refHigh != null ? ` · ref ${a.refLow}–${a.refHigh} ${a.unit}` : ""}
+                last {a.lastDate || "—"} · {a.count} result{a.count === 1 ? "" : "s"}{a.refLow != null && a.refHigh != null ? ` · ref ${a.refLow}–${a.refHigh} ${a.unit}` : ""}
               </p>
             </div>
             <div className="text-right">
