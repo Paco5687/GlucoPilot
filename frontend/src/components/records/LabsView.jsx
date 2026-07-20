@@ -31,6 +31,59 @@ function AgeBadge({ date }) {
   return <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${AGE_TONE[a.tone]}`} title={date}>{a.label}</span>;
 }
 
+// --- analyte identity ------------------------------------------------------
+// Two-level grouping so related results sit together without dishonest merging:
+//   • variant  = one honest trend line (a specific test + unit). Formatting-only
+//                name variants merge; Free/Total, specimen, and unit differences
+//                stay separate so scales and meaning are preserved.
+//   • family   = the base analyte (e.g. "Cortisol") gathering every variant, so
+//                serum / salivary / diurnal cortisol are all shown together.
+
+function normUnit(u) {
+  const k = (u || "").toLowerCase().replace(/[μµ]/g, "u").replace(/\s+/g, "");
+  if (k === "mcg/dl" || k === "ug/dl") return "µg/dL";
+  return (u || "").trim();
+}
+const unitKey = (u) => normUnit(u).toLowerCase();
+
+const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+const rawTokens = (name) => (name || "").toLowerCase().replace(/[.,()/\-]/g, " ").split(/\s+/).filter(Boolean);
+
+// Merge only pure formatting/word-order variants; keep clinically-distinct
+// qualifiers (free/total/specimen) so different measurements never collapse.
+const CANON_STOP = new Set(["", "reflex", "w", "with"]);
+function canonKey(name) {
+  return rawTokens(name).filter((t) => !CANON_STOP.has(t)).sort().join(" ");
+}
+
+// The base analyte, for gathering related variants under one heading.
+const FAMILY_STOP = new Set([
+  "serum", "plasma", "blood", "urine", "urinary", "salivary", "saliva", "whole",
+  "fasting", "random", "free", "total", "direct", "indirect", "bioavailable",
+  "morning", "afternoon", "evening", "night", "waking", "bed", "am", "pm", "noon",
+  "a", "b", "c", "d", "level", "levels", "reflex", "w", "with", "panel",
+]);
+function familyOf(name) {
+  let s = (name || "")
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, " ")            // drop "(Morning)", "(~5pm)"
+    .replace(/~?\d{1,2}\s*[ap]\.?m\.?/g, " ") // drop times like ~5pm
+    .replace(/\b[ap]\.?\s*m\.?\b/g, " ");   // drop A.M. / P M
+  const base = s.replace(/[.,()/\-]/g, " ").split(/\s+/)
+    .filter((t) => t && t.length > 1 && !FAMILY_STOP.has(t) && !/^\d+$/.test(t));
+  const label = base.map(cap).join(" ").trim();
+  return { key: [...base].sort().join(" ") || (name || "").toLowerCase(), label: label || name };
+}
+// What distinguishes a variant inside its family (specimen / timepoint / free-total / unit).
+function variantOf(name, familyBase, unit) {
+  const paren = [...(name || "").matchAll(/\(([^)]*)\)/g)].map((m) => m[1]).join(" ");
+  const fam = new Set(familyBase.split(" "));
+  const rest = (name || "").replace(/\([^)]*\)/g, " ").replace(/[.,()/\-]/g, " ")
+    .split(/\s+/).filter((t) => t && !fam.has(t.toLowerCase()));
+  const label = [paren, rest.join(" ")].filter(Boolean).join(" · ").trim();
+  return label || normUnit(unit) || "result";
+}
+
 // --- data prep -------------------------------------------------------------
 
 function isAbnormal(flag, value, lo, hi) {
@@ -41,38 +94,69 @@ function isAbnormal(flag, value, lo, hi) {
   return "";
 }
 
-function useAnalytes(labs) {
+function useFamilies(labs) {
   return useMemo(() => {
-    const byTest = new Map();
+    // 1. bucket into variants keyed by (canonical name + unit)
+    const byVariant = new Map();
     for (const lab of labs) {
       if (lab.value == null || !lab.test_name) continue;
-      if (!byTest.has(lab.test_name)) byTest.set(lab.test_name, []);
-      byTest.get(lab.test_name).push(lab);
+      const key = `${canonKey(lab.test_name)}|${unitKey(lab.unit)}`;
+      if (!byVariant.has(key)) byVariant.set(key, []);
+      byVariant.get(key).push(lab);
     }
-    const analytes = [];
-    for (const [name, points] of byTest) {
+
+    // 2. build a variant record for each
+    const variants = [];
+    for (const points of byVariant.values()) {
       points.sort((a, b) => String(a.collected_date).localeCompare(String(b.collected_date)));
       const latest = points[points.length - 1];
       const refLow = points.find((p) => p.reference_low != null)?.reference_low ?? null;
       const refHigh = points.find((p) => p.reference_high != null)?.reference_high ?? null;
-      const abn = isAbnormal(latest.flag, latest.value, refLow, refHigh);
-      analytes.push({
-        name,
-        category: points[points.length - 1].category || "Other",
-        points, latest, refLow, refHigh,
-        unit: latest.unit || "",
-        abnormal: abn,
+      // most common raw name = display name
+      const freq = {};
+      for (const p of points) freq[p.test_name] = (freq[p.test_name] || 0) + 1;
+      const name = Object.entries(freq).sort((a, b) => b[1] - a[1])[0][0];
+      const fam = familyOf(name);
+      variants.push({
+        name, points, latest, refLow, refHigh,
+        unit: normUnit(latest.unit),
+        abnormal: isAbnormal(latest.flag, latest.value, refLow, refHigh),
         count: points.length,
         lastDate: latest.collected_date || "",
+        category: latest.category || "Other",
+        familyKey: fam.key, familyLabel: fam.label,
+        variantLabel: variantOf(name, fam.key, latest.unit),
       });
     }
-    // abnormal first, then most recent, then name
-    analytes.sort((a, b) =>
-      (b.abnormal ? 1 : 0) - (a.abnormal ? 1 : 0) ||
+
+    // 3. gather variants into families
+    const famMap = new Map();
+    for (const v of variants) {
+      if (!famMap.has(v.familyKey)) {
+        famMap.set(v.familyKey, { key: v.familyKey, label: v.familyLabel, variants: [], categories: new Set() });
+      }
+      const f = famMap.get(v.familyKey);
+      f.variants.push(v);
+      f.categories.add(v.category);
+    }
+    const families = [...famMap.values()].map((f) => {
+      f.variants.sort((a, b) =>
+        (b.abnormal ? 1 : 0) - (a.abnormal ? 1 : 0) ||
+        String(b.lastDate).localeCompare(String(a.lastDate)) ||
+        a.variantLabel.localeCompare(b.variantLabel)
+      );
+      f.abnormalCount = f.variants.filter((v) => v.abnormal).length;
+      f.lastDate = f.variants.map((v) => v.lastDate).sort().reverse()[0] || "";
+      f.category = f.variants[0].category;
+      f.count = f.variants.reduce((n, v) => n + v.count, 0);
+      return f;
+    });
+    families.sort((a, b) =>
+      (b.abnormalCount ? 1 : 0) - (a.abnormalCount ? 1 : 0) ||
       String(b.lastDate).localeCompare(String(a.lastDate)) ||
-      a.name.localeCompare(b.name)
+      a.label.localeCompare(b.label)
     );
-    return analytes;
+    return families;
   }, [labs]);
 }
 
@@ -130,60 +214,62 @@ function LabTrend({ a }) {
   );
 }
 
+function VariantRow({ v, expanded, onToggle, showLabel }) {
+  const stale = ageInfo(v.lastDate)?.tone === "stale";
+  return (
+    <div>
+      <button onClick={onToggle} className={`w-full flex items-center gap-3 px-4 py-2 hover:bg-accent/30 text-left ${stale ? "opacity-60" : ""}`}>
+        <span className="flex-1 min-w-0 flex items-center gap-2">
+          <span className="text-sm truncate">{showLabel ? v.variantLabel : v.name}</span>
+          <AgeBadge date={v.lastDate} />
+        </span>
+        <Sparkline points={v.points} color={v.abnormal ? "#dc2626" : "hsl(var(--primary))"} />
+        <span className="w-24 text-right text-sm font-medium tabular-nums">
+          {v.latest.value}<span className="text-[10px] text-muted-foreground ml-0.5">{v.unit}</span>
+        </span>
+        <span className="w-24 text-right text-[11px] text-muted-foreground tabular-nums hidden sm:block">
+          {v.refLow != null && v.refHigh != null ? `${v.refLow}–${v.refHigh}` : "—"}
+        </span>
+        <span className="w-16 flex justify-end">{flagBadge(v.abnormal)}</span>
+      </button>
+      {expanded && <div className="px-4 pb-3 bg-accent/10"><LabTrend a={v} /></div>}
+    </div>
+  );
+}
+
 // --- views -----------------------------------------------------------------
 
-function IndexView({ analytes }) {
+function IndexView({ families }) {
   const [expanded, setExpanded] = useState(null);
-  // group by category, preserving abnormal-first order within each
-  const groups = useMemo(() => {
-    const m = new Map();
-    for (const a of analytes) { if (!m.has(a.category)) m.set(a.category, []); m.get(a.category).push(a); }
-    return [...m.entries()].sort((x, y) => x[0].localeCompare(y[0]));
-  }, [analytes]);
   const [collapsed, setCollapsed] = useState(() => new Set());
+  const toggle = (id) => setExpanded((e) => (e === id ? null : id));
 
   return (
-    <div className="space-y-4">
-      {groups.map(([cat, items]) => {
-        const isCol = collapsed.has(cat);
-        const abn = items.filter((a) => a.abnormal).length;
+    <div className="space-y-3">
+      {families.map((f) => {
+        const multi = f.variants.length > 1;
+        const isCol = collapsed.has(f.key);
         return (
-          <div key={cat} className="bg-card rounded-xl border border-border overflow-hidden">
+          <div key={f.key} className="bg-card rounded-xl border border-border overflow-hidden">
             <button
-              onClick={() => setCollapsed((p) => { const n = new Set(p); n.has(cat) ? n.delete(cat) : n.add(cat); return n; })}
+              onClick={() => setCollapsed((p) => { const n = new Set(p); n.has(f.key) ? n.delete(f.key) : n.add(f.key); return n; })}
               className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-accent/40"
             >
               <span className="flex items-center gap-2 text-sm font-semibold">
                 {isCol ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                {cat}
-                <span className="text-xs font-normal text-muted-foreground">{items.length}</span>
+                {f.label}
+                {multi && <span className="text-xs font-normal text-muted-foreground">{f.variants.length} tests · {f.count} results</span>}
+                {!multi && <AgeBadge date={f.lastDate} />}
               </span>
-              {abn > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">{abn} out of range</span>}
+              {f.abnormalCount > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">{f.abnormalCount} out of range</span>}
             </button>
             {!isCol && (
-              <div className="divide-y divide-border">
-                {items.map((a) => {
-                  const stale = ageInfo(a.lastDate)?.tone === "stale";
-                  return (
-                  <div key={a.name}>
-                    <button onClick={() => setExpanded(expanded === a.name ? null : a.name)} className={`w-full flex items-center gap-3 px-4 py-2 hover:bg-accent/30 text-left ${stale ? "opacity-60" : ""}`}>
-                      <span className="flex-1 min-w-0 flex items-center gap-2">
-                        <span className="text-sm truncate">{a.name}</span>
-                        <AgeBadge date={a.lastDate} />
-                      </span>
-                      <Sparkline points={a.points} color={a.abnormal ? "#dc2626" : "hsl(var(--primary))"} />
-                      <span className="w-24 text-right text-sm font-medium tabular-nums">
-                        {a.latest.value}<span className="text-[10px] text-muted-foreground ml-0.5">{a.unit}</span>
-                      </span>
-                      <span className="w-24 text-right text-[11px] text-muted-foreground tabular-nums hidden sm:block">
-                        {a.refLow != null && a.refHigh != null ? `${a.refLow}–${a.refHigh}` : "—"}
-                      </span>
-                      <span className="w-16 flex justify-end">{flagBadge(a.abnormal)}</span>
-                    </button>
-                    {expanded === a.name && <div className="px-4 pb-3 bg-accent/10"><LabTrend a={a} /></div>}
-                  </div>
-                  );
-                })}
+              <div className="divide-y divide-border border-t border-border">
+                {f.variants.map((v) => (
+                  <VariantRow key={`${v.name}|${v.unit}`} v={v} showLabel={multi}
+                    expanded={expanded === `${f.key}|${v.name}|${v.unit}`}
+                    onToggle={() => toggle(`${f.key}|${v.name}|${v.unit}`)} />
+                ))}
               </div>
             )}
           </div>
@@ -193,14 +279,15 @@ function IndexView({ analytes }) {
   );
 }
 
-function ChartsView({ analytes }) {
+function ChartsView({ families }) {
+  const cards = families.flatMap((f) => f.variants.map((v) => ({ ...v, multi: f.variants.length > 1, familyLabel: f.label })));
   return (
     <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-      {analytes.map((a) => (
-        <div key={a.name} className="bg-card rounded-xl border border-border p-4">
+      {cards.map((a) => (
+        <div key={`${a.name}|${a.unit}`} className="bg-card rounded-xl border border-border p-4">
           <div className="flex items-start justify-between gap-2 mb-1">
             <div>
-              <h4 className="font-semibold text-sm flex items-center gap-2">{a.name} <AgeBadge date={a.lastDate} /></h4>
+              <h4 className="font-semibold text-sm flex items-center gap-2">{a.multi ? `${a.familyLabel} — ${a.variantLabel}` : a.name} <AgeBadge date={a.lastDate} /></h4>
               <p className="text-xs text-muted-foreground">
                 last {a.lastDate || "—"} · {a.count} result{a.count === 1 ? "" : "s"}{a.refLow != null && a.refHigh != null ? ` · ref ${a.refLow}–${a.refHigh} ${a.unit}` : ""}
               </p>
@@ -217,11 +304,11 @@ function ChartsView({ analytes }) {
   );
 }
 
-function MatrixView({ analytes }) {
-  // Month-bucketed heatmap: analytes (rows) × months (cols), cell = latest that month.
+function MatrixView({ families }) {
+  const rowsIn = families.flatMap((f) => f.variants.map((v) => ({ ...v, multi: f.variants.length > 1, familyLabel: f.label })));
   const { months, rows } = useMemo(() => {
     const monthSet = new Set();
-    const rows = analytes.map((a) => {
+    const rows = rowsIn.map((a) => {
       const cells = new Map();
       for (const p of a.points) {
         const m = String(p.collected_date).slice(0, 7);
@@ -232,7 +319,7 @@ function MatrixView({ analytes }) {
       return { a, cells };
     });
     return { months: [...monthSet].sort(), rows };
-  }, [analytes]);
+  }, [rowsIn]);
 
   const color = (abn) => abn === "critical" ? "#b91c1c" : abn === "high" ? "#ef4444" : abn === "low" ? "#f59e0b" : "#10b981";
 
@@ -251,22 +338,25 @@ function MatrixView({ analytes }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map(({ a, cells }) => (
-            <tr key={a.name}>
-              <td className="sticky left-0 bg-card z-10 text-xs pr-2 whitespace-nowrap max-w-[160px] truncate" title={a.name}>{a.name}</td>
-              {months.map((m) => {
-                const c = cells.get(m);
-                return (
-                  <td key={m} className="p-0">
-                    {c ? (
-                      <div title={`${a.name}: ${c.value} ${a.unit} (${c.date})${c.abn ? " — " + c.abn : ""}`}
-                        className="w-4 h-4 rounded-sm mx-auto" style={{ backgroundColor: color(c.abn) }} />
-                    ) : <div className="w-4 h-4 mx-auto rounded-sm bg-muted/40" />}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
+          {rows.map(({ a, cells }) => {
+            const label = a.multi ? `${a.familyLabel} — ${a.variantLabel}` : a.name;
+            return (
+              <tr key={`${a.name}|${a.unit}`}>
+                <td className="sticky left-0 bg-card z-10 text-xs pr-2 whitespace-nowrap max-w-[180px] truncate" title={label}>{label}</td>
+                {months.map((m) => {
+                  const c = cells.get(m);
+                  return (
+                    <td key={m} className="p-0">
+                      {c ? (
+                        <div title={`${label}: ${c.value} ${a.unit} (${c.date})${c.abn ? " — " + c.abn : ""}`}
+                          className="w-4 h-4 rounded-sm mx-auto" style={{ backgroundColor: color(c.abn) }} />
+                      ) : <div className="w-4 h-4 mx-auto rounded-sm bg-muted/40" />}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       <div className="flex items-center gap-3 text-[11px] text-muted-foreground mt-3">
@@ -288,31 +378,41 @@ const VIEWS = [
 ];
 
 export default function LabsView({ labs }) {
-  const analytes = useAnalytes(labs);
+  const families = useFamilies(labs);
   const [view, setView] = useState("index");
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   const [flaggedOnly, setFlaggedOnly] = useState(false);
 
   const categories = useMemo(
-    () => [...new Set(analytes.map((a) => a.category))].sort(),
-    [analytes]
+    () => [...new Set(families.flatMap((f) => f.variants.map((v) => v.category)))].sort(),
+    [families]
   );
-  const filtered = useMemo(() => analytes.filter((a) =>
-    (!query || a.name.toLowerCase().includes(query.toLowerCase())) &&
-    (category === "all" || a.category === category) &&
-    (!flaggedOnly || a.abnormal)
-  ), [analytes, query, category, flaggedOnly]);
 
-  const abnormalCount = analytes.filter((a) => a.abnormal).length;
-  if (analytes.length === 0) return null;
+  const filtered = useMemo(() => {
+    const q = query.toLowerCase();
+    return families
+      .map((f) => {
+        const variants = f.variants.filter((v) =>
+          (!q || f.label.toLowerCase().includes(q) || v.name.toLowerCase().includes(q)) &&
+          (category === "all" || v.category === category) &&
+          (!flaggedOnly || v.abnormal)
+        );
+        return { ...f, variants };
+      })
+      .filter((f) => f.variants.length > 0);
+  }, [families, query, category, flaggedOnly]);
+
+  const analyteCount = families.reduce((n, f) => n + f.variants.length, 0);
+  const abnormalCount = families.reduce((n, f) => n + f.abnormalCount, 0);
+  if (families.length === 0) return null;
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h2 className="font-semibold text-base flex items-center gap-2">
           <FlaskConical className="w-4 h-4 text-primary" /> Lab trends
-          <span className="text-xs font-normal text-muted-foreground">{analytes.length} analytes</span>
+          <span className="text-xs font-normal text-muted-foreground">{families.length} analytes · {analyteCount} tests</span>
           {abnormalCount > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">{abnormalCount} out of range</span>}
         </h2>
         <div className="flex rounded-lg border border-border overflow-hidden">
@@ -349,11 +449,11 @@ export default function LabsView({ labs }) {
       {filtered.length === 0 ? (
         <p className="text-sm text-muted-foreground py-6 text-center">No analytes match these filters.</p>
       ) : view === "index" ? (
-        <IndexView analytes={filtered} />
+        <IndexView families={filtered} />
       ) : view === "charts" ? (
-        <ChartsView analytes={filtered} />
+        <ChartsView families={filtered} />
       ) : (
-        <MatrixView analytes={filtered} />
+        <MatrixView families={filtered} />
       )}
     </div>
   );
