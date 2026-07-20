@@ -7,6 +7,42 @@ import { FlaskConical, AlertTriangle, Search, List, LineChart as LineIcon, Grid3
 
 const ABNORMAL = new Set(["high", "low", "critical", "abnormal"]);
 
+// Lay-term search: typing a topic surfaces every related analyte even when none
+// of them literally contains that word (e.g. "mold" → the mycotoxin panels).
+// Each key is a topic; its terms are substrings matched against an analyte's
+// name, family, and category. Matching is bidirectional (query "thyroid panel"
+// matches the "thyroid" topic, and query "thy" does too).
+const SEARCH_ALIASES = {
+  mold: ["mold", "myco", "toxin", "cirs", "ochratox", "aflatox", "gliotox", "zearal", "trichothec", "roridin", "verrucarin", "enniatin", "citrinin", "chaetoglobosin", "sterigmatocystin", "mycophenolic", "aspergillus", "penicillium"],
+  mycotoxin: ["myco", "toxin", "ochratox", "aflatox", "gliotox", "zearal", "roridin", "verrucarin", "enniatin", "citrinin", "chaetoglobosin", "sterigmatocystin", "mycophenolic"],
+  thyroid: ["thyroid", "tsh", "t3", "t4", "thyroglobulin", "tpo", "thyroperox", "reverse t"],
+  hormone: ["estr", "estradiol", "estrone", "progesterone", "testosterone", "dhea", "lh", "fsh", "prolactin", "cortisol", "pregnenolone", "androstenedione", "shbg"],
+  adrenal: ["cortisol", "cortisone", "acth", "dhea", "aldosterone", "pregnenolone"],
+  inflammation: ["crp", "c-reactive", "esr", "sed rate", "tgf", "mmp-9", "interleukin", "il-", "homocysteine", "ferritin"],
+  gut: ["elastase", "calprotectin", "zonulin", "d-lactate", "colibactin", "hydrogen sulfide", "h2s", "methane", "secretory iga", "occult", "steatocrit", "beta-glucuron"],
+  lipid: ["cholesterol", "ldl", "hdl", "triglyc", "apob", "apo b", "lipoprotein", "vldl"],
+  cholesterol: ["cholesterol", "ldl", "hdl", "triglyc", "apob", "lipoprotein"],
+  liver: ["alt", "ast", "alkaline phos", "alp", "bilirubin", "ggt", "albumin"],
+  kidney: ["creatinine", "bun", "egfr", "urea", "cystatin"],
+  iron: ["iron", "ferritin", "transferrin", "tibc", "saturation"],
+  metal: ["lead", "mercury", "arsenic", "cadmium", "aluminum", "nickel", "thallium"],
+  vitamin: ["vitamin", "b12", "folate", "25-oh", "25-hydroxy", "cobalamin", "riboflavin"],
+  autoimmune: ["antibod", " ab ", "ana", "gad", "islet", "tpo", "autoimmun"],
+  diabetes: ["glucose", "a1c", "hba1c", "insulin", "c-peptide", "gad", "islet"],
+  lyme: ["lyme", "borrelia", "blot"],
+  cbc: ["wbc", "rbc", "hemoglobin", "hematocrit", "platelet", "neutrophil", "lymphocyte", "monocyte", "eosinophil", "basophil", "mcv", "mch"],
+};
+
+function expandQuery(query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const terms = new Set([q]);
+  for (const [topic, related] of Object.entries(SEARCH_ALIASES)) {
+    if (topic.includes(q) || q.includes(topic)) related.forEach((t) => terms.add(t));
+  }
+  return [...terms];
+}
+
 // Recency: how old the latest result is, so stale values aren't read as current.
 const AGE_TONE = {
   fresh: "bg-emerald-100 text-emerald-700",
@@ -390,14 +426,15 @@ export default function LabsView({ labs }) {
   );
 
   const filtered = useMemo(() => {
-    const q = query.toLowerCase();
+    const terms = expandQuery(query);
     return families
       .map((f) => {
-        const variants = f.variants.filter((v) =>
-          (!q || f.label.toLowerCase().includes(q) || v.name.toLowerCase().includes(q)) &&
-          (category === "all" || v.category === category) &&
-          (!flaggedOnly || v.abnormal)
-        );
+        const variants = f.variants.filter((v) => {
+          const hay = `${v.name} ${f.label} ${v.category}`.toLowerCase();
+          return (!terms.length || terms.some((t) => hay.includes(t))) &&
+            (category === "all" || v.category === category) &&
+            (!flaggedOnly || v.abnormal);
+        });
         return { ...f, variants };
       })
       .filter((f) => f.variants.length > 0);
@@ -432,7 +469,7 @@ export default function LabsView({ labs }) {
       <div className="flex items-center gap-2 flex-wrap">
         <div className="relative flex-1 min-w-[180px]">
           <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search analytes…" className="pl-8 h-9 text-sm" />
+          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search analytes, categories, or topics (e.g. mold, thyroid)…" className="pl-8 h-9 text-sm" />
         </div>
         <select value={category} onChange={(e) => setCategory(e.target.value)} className="h-9 rounded-md border border-border bg-background px-2 text-sm">
           <option value="all">All categories</option>
