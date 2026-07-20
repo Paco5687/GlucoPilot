@@ -52,10 +52,12 @@ def test_unknown_entity_rejected(client):
     assert client.post("/api/entities/NotAThing/query", json={}).status_code == 404
 
 
-def test_bug_report_fallback(client):
-    # No GitHub token configured → returns a pre-filled new-issue URL.
+def test_bug_report_submits_in_app(client):
+    # No GitHub token configured → the app still accepts and stores the report
+    # locally (github=False), never handing the reporter off to GitHub.
     r = client.post("/api/bug-report", json={"description": "test bug", "context": {"page": "/dashboard"}})
     assert r.status_code == 200
     data = r.json()
-    assert data["ok"] is False and "/issues/new" in data["fallback_url"]
+    assert data["ok"] is True and data["github"] is False
+    assert "fallback_url" not in data
     assert client.post("/api/bug-report", json={"description": " "}).status_code == 400

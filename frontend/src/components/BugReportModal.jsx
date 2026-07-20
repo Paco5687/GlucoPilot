@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Bug, X, Loader2, CheckCircle2, ExternalLink } from "lucide-react";
+import { Bug, X, Loader2, CheckCircle2 } from "lucide-react";
 import { getTrail } from "@/lib/navTrail";
 
 export default function BugReportModal({ open, onClose }) {
@@ -37,14 +37,8 @@ export default function BugReportModal({ open, onClose }) {
         }),
       });
       const data = await res.json().catch(() => null);
-      if (!res.ok) throw new Error(data?.detail || `Request failed (${res.status})`);
-      if (data.ok) {
-        setResult({ url: data.url, number: data.number, onBoard: data.on_board });
-      } else if (data.fallback_url) {
-        // No server token — open a pre-filled GitHub issue for the reporter.
-        window.open(data.fallback_url, "_blank", "noopener");
-        setResult({ fallback: true });
-      }
+      if (!res.ok || !data?.ok) throw new Error(data?.detail || `Request failed (${res.status})`);
+      setResult({ github: data.github });
     } catch (err) {
       setError(err.message || "Could not submit the report.");
     }
@@ -74,21 +68,9 @@ export default function BugReportModal({ open, onClose }) {
         {result ? (
           <div className="space-y-3 text-sm">
             <div className="flex items-center gap-2 text-green-600">
-              <CheckCircle2 className="w-5 h-5" />
-              {result.fallback ? "Almost there — finish on GitHub." : "Thanks — your report was filed."}
+              <CheckCircle2 className="w-5 h-5" /> Thanks — your report was sent.
             </div>
-            {result.fallback && (
-              <p className="text-xs text-muted-foreground">
-                We opened the project's GitHub issue tracker in a new tab with your report pre-filled. Sign in there and
-                click <b>Submit new issue</b> to send it. (Didn't open? Check your pop-up blocker.)
-              </p>
-            )}
-            {result.url && (
-              <a href={result.url} target="_blank" rel="noreferrer" className="text-primary inline-flex items-center gap-1 hover:underline">
-                View issue #{result.number} <ExternalLink className="w-3.5 h-3.5" />
-              </a>
-            )}
-            {result.onBoard && <p className="text-xs text-muted-foreground">Added to the project board.</p>}
+            <p className="text-xs text-muted-foreground">It went straight to the maintainer. No account needed.</p>
             <Button size="sm" onClick={reset} className="w-full">Done</Button>
           </div>
         ) : (
