@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope } from "lucide-react";
+import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope, ScrollText } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, Line, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
 } from "recharts";
@@ -205,6 +205,30 @@ export default function Report() {
               </span>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Health history */}
+      {(report.history?.narrative || report.history?.events?.length > 0) && (
+        <div className="report-section report-card rounded-xl border border-border p-4">
+          <h2 className="font-semibold text-sm mb-2 flex items-center gap-2">
+            <ScrollText className="w-4 h-4 text-primary" /> Health history
+          </h2>
+          {report.history.narrative && (
+            <p className="text-sm leading-relaxed whitespace-pre-wrap mb-3">{report.history.narrative}</p>
+          )}
+          {report.history.events?.length > 0 && (
+            <ul className="text-sm space-y-1">
+              {report.history.events.map((e, i) => (
+                <li key={i} className="flex flex-wrap gap-x-2">
+                  <span className="text-muted-foreground tabular-nums whitespace-nowrap">{e.date || "—"}</span>
+                  <span className="text-muted-foreground capitalize">· {e.type}</span>
+                  <span className="font-medium">{e.title}</span>
+                  {e.details && <span className="text-muted-foreground">— {e.details}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       )}
 

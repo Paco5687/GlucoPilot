@@ -20,6 +20,7 @@ import Overview from './pages/Overview';
 import Insulin from './pages/Insulin';
 import Companion from './pages/Companion';
 import Symptoms from './pages/Symptoms';
+import History from './pages/History';
 import Records from './pages/Records';
 import Report from './pages/Report';
 import Settings from './pages/Settings';
@@ -53,6 +54,7 @@ const AuthenticatedApp = () => {
         <Route path="/insulin" element={<Insulin />} />
         <Route path="/companion" element={<Companion />} />
         <Route path="/symptoms" element={<Symptoms />} />
+        <Route path="/history" element={<History />} />
         <Route path="/records" element={<Records />} />
         <Route path="/report" element={<Report />} />
         <Route path="/settings" element={<Settings />} />
