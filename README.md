@@ -21,9 +21,9 @@ no health data ever leaves the machine.
 > education. It does not diagnose, recommend insulin dosing, or control any
 > device. Always consult your care team for treatment decisions.
 
-![Dashboard](docs/screenshots/dashboard.png)
+![GlucoPilot demo — dashboard, glucose explorer, lab trends, cycle, and the Companion](docs/screenshots/demo.gif)
 
-<sub>Screenshots use the built-in demo's synthetic data — no real health information.</sub>
+<sub>A walkthrough of the built-in demo — all synthetic sample data, no real health information.</sub>
 
 ## What it does
 
