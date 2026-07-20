@@ -26,7 +26,6 @@ export default function Dashboard() {
   const [treatments, setTreatments] = useState([]);
   const [periodLogs, setPeriodLogs] = useState([]);
   const [ouraData, setOuraData] = useState([]);
-  const [ouraHR, setOuraHR] = useState([]);
   const [wearables, setWearables] = useState([]);
   const [fingersticks, setFingersticks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -55,33 +54,6 @@ export default function Dashboard() {
       setFingersticks([]);
     }
   }, []);
-
-  const loadOuraHR = useCallback(async () => {
-    // Only fetch HR data for the selected time range to avoid huge payloads
-    const rangeConfig = RANGES.find((r) => r.key === range);
-    const hours = range === "custom" ? null : (rangeConfig?.hours || 24);
-    const limit = hours && hours <= 24 ? 2000 : 5000;
-    
-    let filter = {};
-    if (range === "custom" && customRange?.from && customRange?.to) {
-      filter = {
-        timestamp: {
-          $gte: new Date(customRange.from).toISOString(),
-          $lte: new Date(new Date(customRange.to).setHours(23, 59, 59, 999)).toISOString(),
-        },
-      };
-    } else if (hours) {
-      filter = { timestamp: { $gte: new Date(Date.now() - hours * 3600000).toISOString() } };
-    }
-
-    let hr = await fetchEntity("OuraHeartRate", "-timestamp", limit, filter);
-    if (!hr.length && range !== "custom") {
-      // Ring hasn't uploaded recently — show the latest available stretch
-      // instead of an empty chart (the chart labels the staleness).
-      hr = await fetchEntity("OuraHeartRate", "-timestamp", 360);
-    }
-    setOuraHR(hr);
-  }, [isViewingShared, viewingEmail, range, customRange]);
 
   const load = useCallback(async () => {
     const [r, t, p] = await Promise.all([
@@ -167,11 +139,6 @@ export default function Dashboard() {
     return ouraData.filter((d) => d.date >= cutoffDate);
   }, [ouraData, range, customRange]);
 
-  // Load HR data when range changes (already filtered server-side)
-  useEffect(() => {
-    if (!loading) loadOuraHR();
-  }, [loadOuraHR, loading]);
-
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -218,9 +185,9 @@ export default function Dashboard() {
 
       <TreatmentSummaryCards treatments={filteredTreatments} />
 
-      <OuraPanel data={filteredOura} heartRateData={ouraHR} isViewingShared={isViewingShared} onRefresh={loadOura} />
-
       <WearablesPanel data={wearables} isViewingShared={isViewingShared} onRefresh={loadWearables} />
+
+      <OuraPanel data={filteredOura} isViewingShared={isViewingShared} onRefresh={loadOura} />
 
       {filteredOura.length > 0 && (
         <>
