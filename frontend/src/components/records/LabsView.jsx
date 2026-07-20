@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, ReferenceArea, CartesianGrid,
@@ -82,6 +82,70 @@ function normUnit(u) {
 }
 const unitKey = (u) => normUnit(u).toLowerCase();
 
+// Normalize a unit string for conversion matching (µ→u, drop spaces, mcg→ug).
+const nu = (u) => (u || "").toLowerCase().replace(/[µμ]/g, "u").replace(/\s+/g, "").replace("mcg", "ug");
+
+// Common lab unit conversions so the same analyte in different units forms one
+// trend, and the whole view can flip between conventional (US) and SI units.
+// value_si = value_conv * factor.
+const UNIT_CONVERSIONS = [
+  { match: ["glucose"], conv: "mg/dL", si: "mmol/L", factor: 0.0555 },
+  { match: ["cholesterol", "ldl", "hdl", "non-hdl", "non hdl"], conv: "mg/dL", si: "mmol/L", factor: 0.02586 },
+  { match: ["triglyceride"], conv: "mg/dL", si: "mmol/L", factor: 0.01129 },
+  { match: ["creatinine"], conv: "mg/dL", si: "µmol/L", factor: 88.42 },
+  { match: ["urea nitrogen", "bun"], conv: "mg/dL", si: "mmol/L", factor: 0.357 },
+  { match: ["uric acid"], conv: "mg/dL", si: "µmol/L", factor: 59.48 },
+  { match: ["calcium"], conv: "mg/dL", si: "mmol/L", factor: 0.2495 },
+  { match: ["magnesium"], conv: "mg/dL", si: "mmol/L", factor: 0.4114 },
+  { match: ["phosphor", "phosphate"], conv: "mg/dL", si: "mmol/L", factor: 0.3229 },
+  { match: ["bilirubin"], conv: "mg/dL", si: "µmol/L", factor: 17.1 },
+  { match: ["albumin"], conv: "g/dL", si: "g/L", factor: 10 },
+  { match: ["total protein", "protein, total"], conv: "g/dL", si: "g/L", factor: 10 },
+  { match: ["iron"], conv: "µg/dL", si: "µmol/L", factor: 0.1791 },
+  { match: ["25-hydroxy", "vitamin d", "calcidiol"], conv: "ng/mL", si: "nmol/L", factor: 2.496 },
+  { match: ["b12", "cobalamin"], conv: "pg/mL", si: "pmol/L", factor: 0.7378 },
+  { match: ["folate"], conv: "ng/mL", si: "nmol/L", factor: 2.266 },
+  { match: ["free t4", "t4, free", "free thyroxine"], conv: "ng/dL", si: "pmol/L", factor: 12.87 },
+  { match: ["total t4", "t4, total", "thyroxine"], conv: "µg/dL", si: "nmol/L", factor: 12.87 },
+  { match: ["free t3", "t3, free"], conv: "pg/mL", si: "pmol/L", factor: 1.536 },
+  { match: ["testosterone"], conv: "ng/dL", si: "nmol/L", factor: 0.03467 },
+  { match: ["estradiol"], conv: "pg/mL", si: "pmol/L", factor: 3.671 },
+  { match: ["cortisol"], conv: "µg/dL", si: "nmol/L", factor: 27.59 },
+].map((e) => ({ ...e, _c: nu(e.conv), _s: nu(e.si) }));
+
+// The conversion whose analyte name AND unit both fit this lab, else null.
+function convFor(name, unit) {
+  const n = (name || "").toLowerCase();
+  const u = nu(unit);
+  for (const e of UNIT_CONVERSIONS) {
+    if (e.match.some((m) => n.includes(m)) && (u === e._c || u === e._s)) return e;
+  }
+  return null;
+}
+
+const roundSmart = (v) => {
+  const a = Math.abs(v);
+  const f = a >= 100 ? 1 : a >= 10 ? 10 : a >= 1 ? 100 : 1000;
+  return Math.round(v * f) / f;
+};
+
+// Convert a lab reading (and its reference range) into the target unit system.
+// Returns null when the analyte/unit isn't in the conversion table.
+function convertLab(lab, target) {
+  const e = convFor(lab.test_name, lab.unit);
+  if (e == null) return null;
+  const u = nu(lab.unit);
+  const toConv = (x) => (x == null ? null : (u === e._c ? x : x / e.factor)); // → conventional
+  const out = (x) => (x == null ? null : roundSmart(target === "si" ? toConv(x) * e.factor : toConv(x)));
+  return {
+    value: out(lab.value),
+    unit: target === "si" ? e.si : e.conv,
+    reference_low: out(lab.reference_low),
+    reference_high: out(lab.reference_high),
+    bucketUnit: e._c, // constant per analyte, so mg/dL & mmol/L variants merge
+  };
+}
+
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 const rawTokens = (name) => (name || "").toLowerCase().replace(/[.,()/\-]/g, " ").split(/\s+/).filter(Boolean);
 
@@ -130,15 +194,20 @@ function isAbnormal(flag, value, lo, hi) {
   return "";
 }
 
-function useFamilies(labs) {
+function useFamilies(labs, units) {
   return useMemo(() => {
-    // 1. bucket into variants keyed by (canonical name + unit)
+    // 1. bucket into variants keyed by (canonical name + unit). Convertible
+    //    analytes are normalized to a single unit so mg/dL & mmol/L etc. merge,
+    //    and shown in the selected unit system.
     const byVariant = new Map();
     for (const lab of labs) {
       if (lab.value == null || !lab.test_name) continue;
-      const key = `${canonKey(lab.test_name)}|${unitKey(lab.unit)}`;
+      const c = convertLab(lab, units);
+      const bucketUnit = c ? c.bucketUnit : unitKey(lab.unit);
+      const point = c ? { ...lab, value: c.value, unit: c.unit, reference_low: c.reference_low, reference_high: c.reference_high } : lab;
+      const key = `${canonKey(lab.test_name)}|${bucketUnit}`;
       if (!byVariant.has(key)) byVariant.set(key, []);
-      byVariant.get(key).push(lab);
+      byVariant.get(key).push(point);
     }
 
     // 2. build a variant record for each
@@ -193,7 +262,12 @@ function useFamilies(labs) {
       a.label.localeCompare(b.label)
     );
     return families;
-  }, [labs]);
+  }, [labs, units]);
+}
+
+// Whether any analyte in the set can be shown in alternate units (controls the toggle).
+function hasConvertible(labs) {
+  return labs.some((l) => l.value != null && l.test_name && convFor(l.test_name, l.unit));
 }
 
 // --- small pieces ----------------------------------------------------------
@@ -414,11 +488,15 @@ const VIEWS = [
 ];
 
 export default function LabsView({ labs }) {
-  const families = useFamilies(labs);
+  const [units, setUnits] = useState(() => localStorage.getItem("labs_units") || "conventional");
+  const families = useFamilies(labs, units);
   const [view, setView] = useState("index");
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("all");
   const [flaggedOnly, setFlaggedOnly] = useState(false);
+  const convertible = useMemo(() => hasConvertible(labs), [labs]);
+
+  useEffect(() => { localStorage.setItem("labs_units", units); }, [units]);
 
   const categories = useMemo(
     () => [...new Set(families.flatMap((f) => f.variants.map((v) => v.category)))].sort(),
@@ -452,16 +530,28 @@ export default function LabsView({ labs }) {
           <span className="text-xs font-normal text-muted-foreground">{families.length} analytes · {analyteCount} tests</span>
           {abnormalCount > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">{abnormalCount} out of range</span>}
         </h2>
-        <div className="flex rounded-lg border border-border overflow-hidden">
-          {VIEWS.map((v) => {
-            const Icon = v.icon;
-            return (
-              <button key={v.key} onClick={() => setView(v.key)}
-                className={`text-xs px-3 py-1.5 flex items-center gap-1.5 ${view === v.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}>
-                <Icon className="w-3.5 h-3.5" /> {v.label}
-              </button>
-            );
-          })}
+        <div className="flex items-center gap-2">
+          {convertible && (
+            <div className="flex rounded-lg border border-border overflow-hidden" title="Show convertible labs in conventional (US) or SI units">
+              {[["conventional", "US"], ["si", "SI"]].map(([key, label]) => (
+                <button key={key} onClick={() => setUnits(key)}
+                  className={`text-xs px-2.5 py-1.5 font-medium ${units === key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="flex rounded-lg border border-border overflow-hidden">
+            {VIEWS.map((v) => {
+              const Icon = v.icon;
+              return (
+                <button key={v.key} onClick={() => setView(v.key)}
+                  className={`text-xs px-3 py-1.5 flex items-center gap-1.5 ${view === v.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}>
+                  <Icon className="w-3.5 h-3.5" /> {v.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
