@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import SafetyBanner from "../components/SafetyBanner";
 import RecordUploadQueue from "../components/records/RecordUploadQueue";
 import LabsView from "../components/records/LabsView";
-import { FolderHeart, Loader2, FileText, Trash2, ExternalLink, RefreshCw } from "lucide-react";
+import { FolderHeart, Loader2, FileText, Trash2, ExternalLink, RefreshCw, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Records() {
@@ -15,6 +15,7 @@ export default function Records() {
   const [loading, setLoading] = useState(true);
   const [reprocessingId, setReprocessingId] = useState(null);
   const [retryingAll, setRetryingAll] = useState(false);
+  const [docsOpen, setDocsOpen] = useState(false);
   const failedCount = records.filter((r) => r.status === "failed").length;
 
   useEffect(() => {
@@ -113,20 +114,23 @@ export default function Records() {
       {/* Lab trends — switchable Index / Charts / Matrix views with filters */}
       <LabsView labs={labs} />
 
-      {/* Documents */}
+      {/* Documents — collapsed by default so the source files don't bury the trends */}
       <div className="space-y-3">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="font-semibold text-base flex items-center gap-2">
+          <button onClick={() => setDocsOpen((o) => !o)} className="font-semibold text-base flex items-center gap-2 hover:text-primary">
+            {docsOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
             <FileText className="w-4 h-4 text-primary" /> Documents
-          </h2>
-          {isAdmin && failedCount > 0 && (
+            {!loading && <span className="text-xs font-normal text-muted-foreground">{records.length}</span>}
+            {failedCount > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">{failedCount} failed</span>}
+          </button>
+          {isAdmin && docsOpen && failedCount > 0 && (
             <Button variant="outline" size="sm" onClick={handleRetryAllFailed} disabled={retryingAll} className="gap-1.5 text-xs">
               {retryingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
               Retry all failed ({failedCount})
             </Button>
           )}
         </div>
-        {loading ? (
+        {!docsOpen ? null : loading ? (
           <div className="flex items-center gap-2 text-muted-foreground text-sm">
             <Loader2 className="w-4 h-4 animate-spin" /> Loading…
           </div>
