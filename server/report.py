@@ -297,6 +297,9 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
         "symptom_journal": payload.get("symptoms"),
         "health_history": payload.get("history"),
     }
+    # Fast default model: the quality (27B) model is currently GPU-starved and
+    # takes minutes for 1500 tokens, which hangs the report. The fast model
+    # produces a solid structured narrative in seconds.
     try:
         return await invoke_llm(
             f"""You are a diabetes data analyst preparing a summary for a Type 1 diabetes patient to bring to her endocrinologist. You are NOT a physician; this is an observational data summary to support the clinical conversation, never a diagnosis or treatment recommendation.
@@ -321,7 +324,6 @@ Write a concise, professional "quarter in review" for the care team. Reference t
                 "required": ["headline", "glucose_summary", "discussion_points"],
             },
             max_tokens=1500,
-            tier="quality",
         )
     except Exception:
         return None
