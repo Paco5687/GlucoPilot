@@ -21,6 +21,8 @@ uploaded records, and config. One owner per deployment.
 |---|---|
 | `main.py` | app assembly, SPA serving, router registration, lifespan |
 | `db.py` | SQLite JSON entity store (`query/create/update/delete`, Mongo-style filter ops); config store |
+| `migrations.py` | ordered, checksummed, transactional SQLite schema migrations |
+| `schema_registry.py` | canonical entity metadata and generic-API exposure registry |
 | `auth.py` | first-run setup, login, **admin vs. read-only provider role**, `require_admin` |
 | `entities.py` | generic entity REST API (writes gated to admin) |
 | `settings_api.py` | in-app settings & secrets (DB-stored, override env) |
