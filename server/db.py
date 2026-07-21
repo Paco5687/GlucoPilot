@@ -13,28 +13,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .config import DATA_DIR, DB_PATH
+from .schema_registry import GENERIC_API_TYPES
 
-ENTITY_TYPES = {
-    "GlucoseReading",
-    "Treatment",
-    "DailySummary",
-    "WeeklySummary",
-    "Pattern",
-    "Insight",
-    "AIConversation",
-    "PeriodLog",
-    "NightscoutProfile",
-    "OuraConnection",
-    "OuraDaily",
-    "OuraHeartRate",
-    "UserSettings",
-    "DexcomConnection",
-    "MedicalRecord",
-    "LabResult",
-    "FitbitConnection",
-    "FitbitDaily",
-    "FitbitHeartRate",
-}
+# Compatibility name used by the generic entity API. Registry membership is
+# broader; dedicated API entity types must not become generic CRUD endpoints.
+ENTITY_TYPES = GENERIC_API_TYPES
 
 _COLUMN_FIELDS = {"id", "created_date", "updated_date"}
 
@@ -49,35 +32,9 @@ def connect() -> sqlite3.Connection:
 
 def init_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with connect() as db:
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS app_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
-            )
-            """
-        )
-        db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS entities (
-                id TEXT PRIMARY KEY,
-                type TEXT NOT NULL,
-                data TEXT NOT NULL,
-                created_date TEXT NOT NULL,
-                updated_date TEXT NOT NULL
-            )
-            """
-        )
-        db.execute("CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type)")
-        db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_entities_type_ts ON entities(type, json_extract(data, '$.timestamp'))"
-        )
-        db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_entities_type_date ON entities(type, json_extract(data, '$.date'))"
-        )
-        db.commit()
+    from .migrations import run_migrations
+
+    run_migrations(DB_PATH)
     _migrate_legacy_dexcom_tokens()
 
 

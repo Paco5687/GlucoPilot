@@ -13,6 +13,8 @@ typed repositories are introduced.
   index, and latency measurements.
 - [Migration checklist](MIGRATION_CHECKLIST.md) — release gates for later
   typed-table migrations.
+- [Migration runner](MIGRATIONS.md) — ordered migration and schema-registry
+  runtime contract.
 
 ## Reproduce the structural audit
 
