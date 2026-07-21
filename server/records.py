@@ -228,6 +228,41 @@ async def _extract_and_store(record: dict, stored: Path, suffix: str) -> dict:
         page_paths = [stored]
     extracted = await _extract_document(page_paths)
 
+    results = _normalize_lab_results(extracted, record["id"])
+
+    # Replace any prior labs for this record so reprocessing is idempotent.
+    for old in db.query_entities("LabResult", {"record_id": record["id"], "owner_email": OWNER_EMAIL}):
+        db.delete_entity("LabResult", old["id"])
+    if results:
+        db.bulk_create_entities("LabResult", results)
+
+    b_failed = extracted.get("_batches_failed", 0)
+    b_total = extracted.get("_batches_total", 1)
+    record_date = extracted.get("record_date") or ""
+    return db.update_entity(
+        "MedicalRecord",
+        record["id"],
+        {
+            "status": "processed",
+            "doc_type": extracted.get("doc_type") or "other",
+            "record_date": record_date,
+            "summary": extracted.get("summary") or "",
+            "title": _make_title(extracted.get("source_name"), record_date, record.get("filename")),
+            "page_count": len(page_paths),
+            "lab_count": len(results),
+            # Note when some page-batches couldn't be read so the user can re-run.
+            "error": f"Partial: {b_failed}/{b_total} page-batches failed to read" if b_failed else "",
+            "partial": bool(b_failed),
+        },
+    )
+
+
+def _normalize_lab_results(extracted: dict, record_id: str) -> list[dict]:
+    """Normalize one synthetic or extracted document without touching storage.
+
+    Keeping this transformation pure makes duplicate/range behavior directly
+    regression-testable while preserving the existing persistence sequence.
+    """
     results = []
     seen = set()
     for lab in extracted.get("lab_results") or []:
@@ -254,7 +289,7 @@ async def _extract_and_store(record: dict, stored: Path, suffix: str) -> dict:
                 "flag": (lab.get("flag") or "").lower(),
                 "collected_date": collected,
                 "category": (lab.get("category") or "").strip(),
-                "record_id": record["id"],
+                "record_id": record_id,
                 "owner_email": OWNER_EMAIL,
             }
         )
@@ -285,36 +320,11 @@ async def _extract_and_store(record: dict, stored: Path, suffix: str) -> dict:
                 "flag": flag_map.get(raw_flag, raw_flag),
                 "collected_date": collected,
                 "category": (m.get("category") or "Imaging").strip(),
-                "record_id": record["id"],
+                "record_id": record_id,
                 "owner_email": OWNER_EMAIL,
             }
         )
-
-    # Replace any prior labs for this record so reprocessing is idempotent.
-    for old in db.query_entities("LabResult", {"record_id": record["id"], "owner_email": OWNER_EMAIL}):
-        db.delete_entity("LabResult", old["id"])
-    if results:
-        db.bulk_create_entities("LabResult", results)
-
-    b_failed = extracted.get("_batches_failed", 0)
-    b_total = extracted.get("_batches_total", 1)
-    record_date = extracted.get("record_date") or ""
-    return db.update_entity(
-        "MedicalRecord",
-        record["id"],
-        {
-            "status": "processed",
-            "doc_type": extracted.get("doc_type") or "other",
-            "record_date": record_date,
-            "summary": extracted.get("summary") or "",
-            "title": _make_title(extracted.get("source_name"), record_date, record.get("filename")),
-            "page_count": len(page_paths),
-            "lab_count": len(results),
-            # Note when some page-batches couldn't be read so the user can re-run.
-            "error": f"Partial: {b_failed}/{b_total} page-batches failed to read" if b_failed else "",
-            "partial": bool(b_failed),
-        },
-    )
+    return results
 
 
 def _mdy(date_iso: str) -> str:

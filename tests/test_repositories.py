@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.risk_critical
+
 from server import db, health_summary, insights, insulin
 from server.migrations import run_migrations
 from server.repositories import (

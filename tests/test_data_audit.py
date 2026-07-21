@@ -3,6 +3,8 @@ import sqlite3
 
 import pytest
 
+pytestmark = pytest.mark.risk_critical
+
 from server.data_audit import audit_database, connect_read_only
 
 

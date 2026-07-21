@@ -21,6 +21,18 @@ jobs:
       - name: Smoke tests (pytest)
         run: pytest -q
 
+  data-integrity:
+    name: Risk-critical data integrity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - name: Golden, migration, backup, and rollback regressions
+        run: pytest -q -m risk_critical
+
   frontend:
     name: Frontend (lint + build)
     runs-on: ubuntu-latest
