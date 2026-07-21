@@ -70,3 +70,7 @@ The scheduler polls each connected source on its own interval. Glucose inserts
 from every source pass through a global ±4-minute dedup (`readings.py`) so
 overlapping feeds (Share + official API + Nightscout) never double-store a
 reading. Treatments dedup by source id and per-type time windows.
+
+See the [data platform audit](data-platform/README.md) for the complete entity
+catalog, source lineage, query inventory, production baseline, and migration
+gates.

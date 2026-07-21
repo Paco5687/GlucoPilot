@@ -1,0 +1,30 @@
+# Data platform audit
+
+This directory is the implementation baseline for the integrity, evidence, and
+relationship-layer Epic. It describes the system before schema migrations or
+typed repositories are introduced.
+
+- [Entity catalog](ENTITY_CATALOG.md) — ownership, fields, identity, dedup,
+  time semantics, mutability, and migration priority for every entity type.
+- [Lineage and query inventory](LINEAGE_AND_QUERY_INVENTORY.md) — source and
+  consumer paths, derived-data assumptions, destructive workflows, and query
+  risks.
+- [Production baseline](PRODUCTION_BASELINE.md) — privacy-safe storage, count,
+  index, and latency measurements.
+- [Migration checklist](MIGRATION_CHECKLIST.md) — release gates for later
+  typed-table migrations.
+
+## Reproduce the structural audit
+
+Run this inside an installed container when `/data` is not host-accessible:
+
+```bash
+python -m server.data_audit /data/app.sqlite3 > /tmp/glucopilot-audit.json
+```
+
+The command opens SQLite read-only and emits no entity values, identities,
+timestamps, source identifiers, or settings. Its output is limited to counts,
+field names/types, schema/index definitions, query plans, and timings. Review
+the output before sharing it even though it is deliberately value-free.
+
+These documents record current behavior; they do not normalize or change it.
