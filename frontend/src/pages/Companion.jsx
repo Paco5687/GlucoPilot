@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import ReactMarkdown from "react-markdown";
 import SafetyBanner from "../components/SafetyBanner";
-import { MessageCircleHeart, Send, Loader2, Brain, Plus, X, Zap, Sparkles, Trash2, Check } from "lucide-react";
+import { MessageCircleHeart, Send, Loader2, Brain, Plus, X, Zap, Sparkles, Trash2, Check, BookMarked } from "lucide-react";
 import { toast } from "sonner";
 
 const SUGGESTIONS = [
@@ -26,6 +26,7 @@ export default function Companion() {
   const [memories, setMemories] = useState([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [showMem, setShowMem] = useState(false);
   const [newMem, setNewMem] = useState("");
   const [tier, setTier] = useState(() => localStorage.getItem("companion_tier") || "default");
@@ -66,7 +67,15 @@ export default function Companion() {
     setMessages((m) => {
       const copy = m.slice();
       const last = copy[copy.length - 1];
-      copy[copy.length - 1] = { role: "assistant", content: (last?.content || "") + delta };
+      copy[copy.length - 1] = { ...last, role: "assistant", content: (last?.content || "") + delta };
+      return copy;
+    });
+  }
+  function setLastSources(sources) {
+    setMessages((m) => {
+      const copy = m.slice();
+      const last = copy[copy.length - 1];
+      copy[copy.length - 1] = { ...last, role: "assistant", sources };
       return copy;
     });
   }
@@ -95,6 +104,7 @@ export default function Companion() {
     setInput("");
     setMessages((m) => [...m, { role: "user", content: msg }, { role: "assistant", content: "" }]);
     setBusy(true);
+    setSearching(false);
     let threadId = activeThread;
     try {
       const res = await fetch("/api/companion/stream", {
@@ -121,6 +131,8 @@ export default function Companion() {
           try { evt = JSON.parse(line); } catch { continue; }
           if (evt.error) throw new Error(evt.error);
           if (evt.thread) { threadId = evt.thread.id; setActiveThread(evt.thread.id); setThreads((t) => [evt.thread, ...t]); }
+          if (evt.searching) setSearching(true);
+          if (evt.sources) { setSearching(false); if (evt.sources.length) setLastSources(evt.sources); }
           if (evt.delta) { got = true; appendToLast(evt.delta); }
           if (evt.done) {
             if (evt.remembered?.length) {
@@ -142,6 +154,7 @@ export default function Companion() {
       });
     }
     setBusy(false);
+    setSearching(false);
   }
 
   async function addMemory() {
@@ -231,6 +244,17 @@ export default function Companion() {
                         </div>
                       )}
                     </div>
+                    {m.role === "assistant" && m.sources?.length > 0 && (
+                      <div className="mt-1.5 max-w-[85%] flex flex-wrap items-center gap-1.5">
+                        <span className="text-[10px] text-muted-foreground inline-flex items-center gap-1"><BookMarked className="w-3 h-3" /> Sources:</span>
+                        {m.sources.map((s, si) => (
+                          <a key={si} href={s.url} target="_blank" rel="noreferrer" title={`${s.title} · ${s.source}`}
+                            className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary hover:bg-primary/20 inline-flex items-center gap-1">
+                            [{si + 1}] {s.source}
+                          </a>
+                        ))}
+                      </div>
+                    )}
                     {streaming && <span className="text-[11px] text-muted-foreground mt-1 px-1 inline-flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> responding…</span>}
                     {done && <span className="text-[11px] text-muted-foreground/70 mt-1 px-1 inline-flex items-center gap-1"><Check className="w-3 h-3" /> done</span>}
                   </div>
@@ -238,7 +262,7 @@ export default function Companion() {
               })
             )}
             {busy && !messages[messages.length - 1]?.content && (
-              <div className="flex justify-start"><div className="bg-muted rounded-2xl px-4 py-2.5 text-sm text-muted-foreground inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> {tier === "quality" ? "thinking deeply… (slower model, worth the wait)" : "thinking…"}</div></div>
+              <div className="flex justify-start"><div className="bg-muted rounded-2xl px-4 py-2.5 text-sm text-muted-foreground inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> {searching ? "searching trusted sources…" : tier === "quality" ? "thinking deeply… (slower model, worth the wait)" : "thinking…"}</div></div>
             )}
             <div ref={endRef} />
           </div>
