@@ -18,6 +18,7 @@ REPO_DIR = APP_DIR.parent
 FRONTEND_DIST = Path(env("FRONTEND_DIST", str(REPO_DIR / "frontend" / "dist")))
 DATA_DIR = Path(env("DATA_DIR", "/data"))
 DB_PATH = DATA_DIR / "app.sqlite3"
+MIGRATION_BACKUP_DIR = Path(env("MIGRATION_BACKUP_DIR", str(DATA_DIR / "backups")))
 
 # Single-user app: every record is owned by this synthetic identity. The
 # frontend's me().email and all server-side sync writes use the same value so

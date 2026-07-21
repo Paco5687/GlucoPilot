@@ -6,13 +6,14 @@ ported frontend and function code close to the original.
 """
 
 import json
+import logging
 import sqlite3
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from .config import DATA_DIR, DB_PATH
+from .config import DATA_DIR, DB_PATH, MIGRATION_BACKUP_DIR
 from .schema_registry import GENERIC_API_TYPES
 
 # Compatibility name used by the generic entity API. Registry membership is
@@ -20,6 +21,7 @@ from .schema_registry import GENERIC_API_TYPES
 ENTITY_TYPES = GENERIC_API_TYPES
 
 _COLUMN_FIELDS = {"id", "created_date", "updated_date"}
+log = logging.getLogger("glucopilot.db")
 
 
 def connect() -> sqlite3.Connection:
@@ -32,8 +34,23 @@ def connect() -> sqlite3.Connection:
 
 def init_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    from .migrations import run_migrations
+    from .migrations import pending_migration_versions, run_migrations
 
+    pending = pending_migration_versions(DB_PATH)
+    if pending and DB_PATH.exists() and DB_PATH.stat().st_size > 0:
+        from .backup import create_verified_backup
+
+        backup_path, verification = create_verified_backup(
+            DATA_DIR,
+            MIGRATION_BACKUP_DIR,
+            reason=f"pre-migration-v{pending[-1]}",
+        )
+        log.info(
+            "verified pre-migration backup %s (entities=%s, records=%s)",
+            backup_path,
+            verification["entity_total"],
+            verification["record_file_count"],
+        )
     run_migrations(DB_PATH)
     _migrate_legacy_dexcom_tokens()
 

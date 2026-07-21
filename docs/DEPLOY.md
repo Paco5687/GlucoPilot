@@ -76,12 +76,21 @@ docker compose logs -f glucopilot
 ## Backups
 
 Everything is in the `glucopilot_data` Docker volume (SQLite DB + uploaded
-records). Back it up:
+records). Use the built-in online backup command; a raw tar of a running WAL
+database is not guaranteed to be consistent.
 
 ```bash
-docker run --rm -v glucopilot_data:/data -v "$PWD":/backup alpine \
-  tar czf /backup/glucopilot-backup.tar.gz -C /data .
+mkdir -p backups && chmod 700 backups
+docker compose run --rm --no-deps \
+  -v "$PWD/backups:/backup" \
+  glucopilot python -m server.backup create \
+  --data-dir /data --backup-root /backup --reason manual
 ```
+
+The command checks integrity and free space, captures committed WAL data,
+includes uploaded records, writes checksummed metadata, and proves the backup
+restores into a clean directory. See the complete
+[backup, upgrade, rollback, and recovery runbook](data-platform/BACKUP_AND_ROLLBACK.md).
 
 ## Private AI
 

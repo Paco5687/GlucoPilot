@@ -4,7 +4,14 @@ from threading import Barrier
 
 import pytest
 
-from server.migrations import MIGRATIONS, Migration, MigrationError, Statement, run_migrations
+from server.migrations import (
+    MIGRATIONS,
+    Migration,
+    MigrationError,
+    Statement,
+    pending_migration_versions,
+    run_migrations,
+)
 from server.schema_registry import ENTITY_SCHEMAS, GENERIC_API_TYPES
 
 
@@ -85,7 +92,9 @@ def test_clean_and_legacy_databases_converge_without_data_loss(tmp_path):
 def test_migrations_are_idempotent_and_checksummed(tmp_path):
     database = tmp_path / "app.sqlite3"
 
+    assert pending_migration_versions(database) == [1, 2]
     assert run_migrations(database) == [1, 2]
+    assert pending_migration_versions(database) == []
     assert run_migrations(database) == []
 
     with sqlite3.connect(database) as connection:

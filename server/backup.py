@@ -1,0 +1,448 @@
+"""Consistent, verifiable backup and clean-target restore for GlucoPilot data."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import shutil
+import sqlite3
+import tempfile
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote
+
+
+MANIFEST_NAME = "manifest.json"
+MANIFEST_CHECKSUM_NAME = "manifest.sha256"
+DATABASE_NAME = "app.sqlite3"
+RECORDS_NAME = "records"
+FORMAT_VERSION = 1
+MINIMUM_MARGIN_BYTES = 16 * 1024 * 1024
+
+
+class BackupError(RuntimeError):
+    """Raised when backup preflight, creation, verification, or restore fails."""
+
+
+def _read_only_connection(path: Path) -> sqlite3.Connection:
+    resolved = path.expanduser().resolve(strict=True)
+    uri = f"file:{quote(str(resolved), safe='/')}?mode=ro"
+    connection = sqlite3.connect(uri, uri=True, timeout=30)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA query_only=ON")
+    connection.execute("PRAGMA busy_timeout=30000")
+    return connection
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _safe_record_files(records_dir: Path) -> list[tuple[Path, Path, os.stat_result]]:
+    if not records_dir.exists():
+        return []
+    if not records_dir.is_dir() or records_dir.is_symlink():
+        raise BackupError(f"records path is not a safe directory: {records_dir}")
+    files = []
+    for path in sorted(records_dir.rglob("*")):
+        if path.is_symlink():
+            raise BackupError(f"record symlinks are not supported: {path}")
+        if path.is_file():
+            relative = path.relative_to(records_dir)
+            files.append((path, relative, path.stat()))
+    return files
+
+
+def _file_signature(files: list[tuple[Path, Path, os.stat_result]]) -> list[tuple[str, int, int]]:
+    return [(str(relative), stat.st_size, stat.st_mtime_ns) for _, relative, stat in files]
+
+
+def _table_exists(connection: sqlite3.Connection, name: str) -> bool:
+    return (
+        connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone()
+        is not None
+    )
+
+
+def _database_metadata(path: Path, *, include_references: bool = False) -> dict[str, Any]:
+    try:
+        with _read_only_connection(path) as connection:
+            integrity_rows = [row[0] for row in connection.execute("PRAGMA integrity_check")]
+            if integrity_rows != ["ok"]:
+                raise BackupError(f"SQLite integrity check failed: {integrity_rows[:3]}")
+            page_count = connection.execute("PRAGMA page_count").fetchone()[0]
+            page_size = connection.execute("PRAGMA page_size").fetchone()[0]
+            entity_counts: dict[str, int] = {}
+            references: set[str] = set()
+            if _table_exists(connection, "entities"):
+                entity_counts = dict(
+                    connection.execute(
+                        "SELECT type, COUNT(*) FROM entities GROUP BY type ORDER BY type"
+                    )
+                )
+                if include_references:
+                    references = {
+                        row[0]
+                        for row in connection.execute(
+                            """
+                            SELECT json_extract(data, '$.stored_as')
+                            FROM entities
+                            WHERE type='MedicalRecord'
+                              AND json_extract(data, '$.stored_as') IS NOT NULL
+                              AND json_extract(data, '$.stored_as') != ''
+                            """
+                        )
+                    }
+            migrations = []
+            if _table_exists(connection, "schema_migrations"):
+                migrations = [
+                    {"version": row[0], "name": row[1], "checksum": row[2]}
+                    for row in connection.execute(
+                        "SELECT version, name, checksum FROM schema_migrations ORDER BY version"
+                    )
+                ]
+    except BackupError:
+        raise
+    except (OSError, sqlite3.Error) as error:
+        raise BackupError(f"could not inspect SQLite database: {error}") from error
+
+    metadata = {
+        "integrity_check": "ok",
+        "logical_bytes": page_count * page_size,
+        "entity_total": sum(entity_counts.values()),
+        "entity_counts": entity_counts,
+        "migrations": migrations,
+    }
+    if include_references:
+        metadata["record_references"] = references
+    return metadata
+
+
+def required_backup_bytes(database_bytes: int, record_bytes: int) -> int:
+    payload = database_bytes + record_bytes
+    return payload + max(MINIMUM_MARGIN_BYTES, payload // 10)
+
+
+def preflight_backup(
+    data_dir: Path,
+    backup_root: Path,
+    *,
+    available_bytes: int | None = None,
+) -> dict[str, Any]:
+    """Validate source integrity, paths, and destination capacity without writes."""
+    data_dir = data_dir.expanduser().resolve(strict=True)
+    database = data_dir / DATABASE_NAME
+    if not database.is_file() or database.is_symlink():
+        raise BackupError(f"database is missing or unsafe: {database}")
+
+    records_dir = data_dir / RECORDS_NAME
+    root_resolved = backup_root.expanduser().resolve()
+    records_resolved = records_dir.resolve()
+    if root_resolved == records_resolved or records_resolved in root_resolved.parents:
+        raise BackupError("backup destination cannot be inside the records directory")
+
+    metadata = _database_metadata(database)
+    record_files = _safe_record_files(records_dir)
+    record_bytes = sum(stat.st_size for _, _, stat in record_files)
+    required = required_backup_bytes(metadata["logical_bytes"], record_bytes)
+
+    if available_bytes is None:
+        probe = root_resolved
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        try:
+            available_bytes = shutil.disk_usage(probe).free
+        except OSError as error:
+            raise BackupError(f"could not inspect backup destination capacity: {error}") from error
+    if available_bytes < required:
+        raise BackupError(
+            f"insufficient backup space: need {required} bytes, have {available_bytes} bytes"
+        )
+
+    return {
+        "database_logical_bytes": metadata["logical_bytes"],
+        "entity_total": metadata["entity_total"],
+        "record_file_count": len(record_files),
+        "record_bytes": record_bytes,
+        "required_bytes": required,
+        "available_bytes": available_bytes,
+        "integrity_check": metadata["integrity_check"],
+    }
+
+
+def _copy_database(source_path: Path, destination_path: Path) -> None:
+    try:
+        with _read_only_connection(source_path) as source:
+            destination = sqlite3.connect(destination_path)
+            try:
+                source.backup(destination)
+            finally:
+                destination.close()
+    except (OSError, sqlite3.Error) as error:
+        raise BackupError(f"SQLite online backup failed: {error}") from error
+    destination_path.chmod(0o600)
+
+
+def _copy_records(
+    files: list[tuple[Path, Path, os.stat_result]], destination: Path
+) -> list[dict[str, Any]]:
+    manifest_files = []
+    if files:
+        destination.mkdir(parents=True, mode=0o700)
+    for source, relative, _ in files:
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        shutil.copy2(source, target)
+        target.chmod(0o600)
+        manifest_files.append(
+            {"path": relative.as_posix(), "bytes": target.stat().st_size, "sha256": _sha256(target)}
+        )
+    return manifest_files
+
+
+def _write_manifest(directory: Path, manifest: dict[str, Any]) -> None:
+    manifest_path = directory / MANIFEST_NAME
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    manifest_path.chmod(0o600)
+    checksum_path = directory / MANIFEST_CHECKSUM_NAME
+    checksum_path.write_text(_sha256(manifest_path) + "\n", encoding="ascii")
+    checksum_path.chmod(0o600)
+
+
+def _load_manifest(backup_dir: Path) -> dict[str, Any]:
+    manifest_path = backup_dir / MANIFEST_NAME
+    checksum_path = backup_dir / MANIFEST_CHECKSUM_NAME
+    if not manifest_path.is_file() or not checksum_path.is_file():
+        raise BackupError("backup manifest or checksum is missing")
+    expected = checksum_path.read_text(encoding="ascii").strip()
+    if not expected or _sha256(manifest_path) != expected:
+        raise BackupError("backup manifest checksum mismatch")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise BackupError(f"backup manifest is unreadable: {error}") from error
+    if manifest.get("format_version") != FORMAT_VERSION:
+        raise BackupError(f"unsupported backup format: {manifest.get('format_version')!r}")
+    return manifest
+
+
+def _validate_backup_files(backup_dir: Path) -> dict[str, Any]:
+    manifest = _load_manifest(backup_dir)
+    database_path = backup_dir / DATABASE_NAME
+    database = manifest.get("database") or {}
+    if not database_path.is_file() or database_path.is_symlink():
+        raise BackupError("backup database is missing or unsafe")
+    if database_path.stat().st_size != database.get("bytes"):
+        raise BackupError("backup database size mismatch")
+    if _sha256(database_path) != database.get("sha256"):
+        raise BackupError("backup database checksum mismatch")
+
+    expected_files = {
+        item["path"]: item for item in (manifest.get("records") or {}).get("files", [])
+    }
+    records_dir = backup_dir / RECORDS_NAME
+    actual_files = _safe_record_files(records_dir)
+    actual_names = {relative.as_posix() for _, relative, _ in actual_files}
+    if actual_names != set(expected_files):
+        raise BackupError("backup record-file inventory mismatch")
+    for path, relative, stat in actual_files:
+        expected = expected_files[relative.as_posix()]
+        if stat.st_size != expected.get("bytes") or _sha256(path) != expected.get("sha256"):
+            raise BackupError(f"backup record checksum mismatch: {relative.as_posix()}")
+    return manifest
+
+
+def restore_backup(backup_dir: Path, target_data_dir: Path) -> dict[str, Any]:
+    """Restore into a new or empty data directory; never overwrite data."""
+    backup_dir = backup_dir.expanduser().resolve(strict=True)
+    target_data_dir = target_data_dir.expanduser().resolve()
+    if target_data_dir.exists():
+        if (
+            not target_data_dir.is_dir()
+            or target_data_dir.is_symlink()
+            or any(target_data_dir.iterdir())
+        ):
+            raise BackupError(f"restore target must be a new or empty directory: {target_data_dir}")
+    manifest = _validate_backup_files(backup_dir)
+    required = required_backup_bytes(
+        (manifest.get("database") or {}).get("bytes", 0),
+        (manifest.get("records") or {}).get("total_bytes", 0),
+    )
+    probe = target_data_dir.parent
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
+    if shutil.disk_usage(probe).free < required:
+        raise BackupError("insufficient free space for restore")
+
+    created = not target_data_dir.exists()
+    try:
+        target_data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        target_data_dir.chmod(0o700)
+        database_target = target_data_dir / DATABASE_NAME
+        shutil.copy2(backup_dir / DATABASE_NAME, database_target)
+        database_target.chmod(0o600)
+        source_records = backup_dir / RECORDS_NAME
+        if source_records.exists():
+            shutil.copytree(source_records, target_data_dir / RECORDS_NAME)
+            for path in (target_data_dir / RECORDS_NAME).rglob("*"):
+                path.chmod(0o700 if path.is_dir() else 0o600)
+    except Exception as error:
+        (target_data_dir / DATABASE_NAME).unlink(missing_ok=True)
+        shutil.rmtree(target_data_dir / RECORDS_NAME, ignore_errors=True)
+        if created:
+            target_data_dir.rmdir()
+        if isinstance(error, BackupError):
+            raise
+        raise BackupError(f"restore copy failed: {error}") from error
+    return {
+        "target": str(target_data_dir),
+        "database_bytes": database_target.stat().st_size,
+        "record_file_count": (manifest.get("records") or {}).get("file_count", 0),
+    }
+
+
+def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    metadata = _database_metadata(restored_data_dir / DATABASE_NAME, include_references=True)
+    expected_database = manifest.get("database") or {}
+    for key in ("entity_total", "entity_counts", "migrations"):
+        if metadata[key] != expected_database.get(key):
+            raise BackupError(f"restored database metadata mismatch: {key}")
+    actual_records = {
+        relative.as_posix()
+        for _, relative, _ in _safe_record_files(restored_data_dir / RECORDS_NAME)
+    }
+    references = metadata.pop("record_references")
+    missing = sorted(reference for reference in references if reference not in actual_records)
+    if missing:
+        raise BackupError(f"restored database references {len(missing)} missing record files")
+    return {
+        "integrity_check": metadata["integrity_check"],
+        "entity_total": metadata["entity_total"],
+        "record_file_count": len(actual_records),
+        "referenced_record_count": len(references),
+        "missing_record_count": 0,
+    }
+
+
+def verify_backup(backup_dir: Path) -> dict[str, Any]:
+    """Restore the backup into a temporary clean directory and validate it."""
+    backup_dir = backup_dir.expanduser().resolve(strict=True)
+    manifest = _validate_backup_files(backup_dir)
+    with tempfile.TemporaryDirectory(prefix="glucopilot-restore-verify-") as temp:
+        restored = Path(temp) / "data"
+        restore_backup(backup_dir, restored)
+        return _verify_restored_data(restored, manifest)
+
+
+def create_verified_backup(
+    data_dir: Path,
+    backup_root: Path,
+    *,
+    reason: str = "manual",
+) -> tuple[Path, dict[str, Any]]:
+    """Create an atomic backup and prove it restores before publishing it."""
+    preflight = preflight_backup(data_dir, backup_root)
+    data_dir = data_dir.expanduser().resolve(strict=True)
+    backup_root = backup_root.expanduser().resolve()
+    backup_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    backup_root.chmod(0o700)
+
+    safe_reason = re.sub(r"[^A-Za-z0-9_.-]+", "-", reason).strip("-") or "backup"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    name = f"{safe_reason}-{stamp}-{uuid.uuid4().hex[:8]}"
+    partial = backup_root / f".{name}.partial"
+    final = backup_root / name
+    partial.mkdir(mode=0o700)
+    try:
+        source_records = _safe_record_files(data_dir / RECORDS_NAME)
+        source_signature = _file_signature(source_records)
+        database_target = partial / DATABASE_NAME
+        _copy_database(data_dir / DATABASE_NAME, database_target)
+        record_manifest = _copy_records(source_records, partial / RECORDS_NAME)
+        if _file_signature(_safe_record_files(data_dir / RECORDS_NAME)) != source_signature:
+            raise BackupError("record files changed while backup was being created; retry")
+
+        database_metadata = _database_metadata(database_target, include_references=True)
+        references = database_metadata.pop("record_references")
+        copied_names = {item["path"] for item in record_manifest}
+        missing = [reference for reference in references if reference not in copied_names]
+        if missing:
+            raise BackupError(f"database references {len(missing)} missing record files")
+        database_metadata.update(
+            {"file": DATABASE_NAME, "bytes": database_target.stat().st_size, "sha256": _sha256(database_target)}
+        )
+        manifest = {
+            "format_version": FORMAT_VERSION,
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "reason": safe_reason,
+            "privacy": "Backup contains private health data and credentials; manifest contains metadata only.",
+            "preflight": preflight,
+            "database": database_metadata,
+            "records": {
+                "directory": RECORDS_NAME,
+                "file_count": len(record_manifest),
+                "total_bytes": sum(item["bytes"] for item in record_manifest),
+                "referenced_file_count": len(references),
+                "files": record_manifest,
+            },
+        }
+        _write_manifest(partial, manifest)
+        verification = verify_backup(partial)
+        partial.rename(final)
+        return final, verification
+    except Exception:
+        shutil.rmtree(partial, ignore_errors=True)
+        raise
+
+
+def _print_json(payload: dict[str, Any]) -> None:
+    print(json.dumps(payload, indent=2, sort_keys=True))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    preflight_parser = subparsers.add_parser("preflight", help="check source integrity and free space")
+    preflight_parser.add_argument("--data-dir", type=Path, default=Path("/data"))
+    preflight_parser.add_argument("--backup-root", type=Path, required=True)
+
+    create_parser = subparsers.add_parser("create", help="create and restore-verify a backup")
+    create_parser.add_argument("--data-dir", type=Path, default=Path("/data"))
+    create_parser.add_argument("--backup-root", type=Path, required=True)
+    create_parser.add_argument("--reason", default="manual")
+
+    verify_parser = subparsers.add_parser("verify", help="verify a backup via clean restore")
+    verify_parser.add_argument("backup", type=Path)
+
+    restore_parser = subparsers.add_parser("restore", help="restore into a new data directory")
+    restore_parser.add_argument("backup", type=Path)
+    restore_parser.add_argument("target", type=Path)
+
+    args = parser.parse_args()
+    if args.command == "preflight":
+        _print_json(preflight_backup(args.data_dir, args.backup_root))
+    elif args.command == "create":
+        path, verification = create_verified_backup(
+            args.data_dir, args.backup_root, reason=args.reason
+        )
+        _print_json({"backup": str(path), "verification": verification})
+    elif args.command == "verify":
+        _print_json(verify_backup(args.backup))
+    elif args.command == "restore":
+        _print_json(restore_backup(args.backup, args.target))
+
+
+if __name__ == "__main__":
+    main()

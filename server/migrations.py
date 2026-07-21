@@ -281,3 +281,33 @@ def run_migrations(
         raise MigrationError(f"{label} failed: {error}") from error
     finally:
         connection.close()
+
+
+def pending_migration_versions(
+    path: Path = DB_PATH, migrations: Iterable[Migration] = MIGRATIONS
+) -> list[int]:
+    """Inspect an existing database without modifying it."""
+    ordered = tuple(migrations)
+    _validate_definitions(ordered)
+    if not path.exists() or path.stat().st_size == 0:
+        return [migration.version for migration in ordered]
+    try:
+        resolved = path.expanduser().resolve(strict=True)
+        uri = f"file:{quote(str(resolved), safe='/')}?mode=ro"
+        with sqlite3.connect(uri, uri=True, timeout=30) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA query_only=ON")
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+            ).fetchone()
+            if not table:
+                return [migration.version for migration in ordered]
+            applied = connection.execute(
+                "SELECT version, name, checksum FROM schema_migrations ORDER BY version"
+            ).fetchall()
+            applied_count = _validate_applied(applied, ordered)
+            return [migration.version for migration in ordered[applied_count:]]
+    except MigrationError:
+        raise
+    except (OSError, sqlite3.Error) as error:
+        raise MigrationError(f"could not inspect migration state: {error}") from error
