@@ -39,12 +39,12 @@ export default function Dashboard() {
   const loadOura = useCallback(async () => {
     const o = await fetchEntity("OuraDaily", "-date", 90);
     setOuraData(o);
-  }, [isViewingShared, viewingEmail]);
+  }, [fetchEntity, isViewingShared, viewingEmail]);
 
   const loadWearables = useCallback(async () => {
     const w = await fetchEntity("FitbitDaily", "-date", 120, { source: "google_health" });
     setWearables(w);
-  }, [isViewingShared, viewingEmail]);
+  }, [fetchEntity, isViewingShared, viewingEmail]);
 
   const loadFingersticks = useCallback(async () => {
     try {
@@ -68,27 +68,18 @@ export default function Dashboard() {
     setTreatments(t);
     setPeriodLogs(p);
     setLoading(false);
-  }, [isViewingShared, viewingEmail, loadOura, loadWearables, loadFingersticks]);
+  }, [fetchEntity, isViewingShared, viewingEmail, loadOura, loadWearables, loadFingersticks]);
 
   useEffect(() => {
     setLoading(true);
     load();
 
-    // Only subscribe to real-time updates for own data
-    if (!isViewingShared) {
-      const unsubReadings = base44.entities.GlucoseReading.subscribe(() => load());
-      const unsubTreatments = base44.entities.Treatment.subscribe(() => load());
-      const poll = setInterval(() => load(), 60 * 1000);
-      return () => {
-        unsubReadings();
-        unsubTreatments();
-        clearInterval(poll);
-      };
-    } else {
-      const poll = setInterval(() => load(), 60 * 1000);
-      return () => clearInterval(poll);
-    }
-  }, [load, isViewingShared]);
+    // Entity subscriptions are polling shims too. Use one dashboard timer so
+    // GlucoseReading, Treatment, and the explicit interval cannot all reload
+    // the dashboard simultaneously.
+    const poll = setInterval(() => void load(), 60 * 1000);
+    return () => clearInterval(poll);
+  }, [load]);
 
   // Fetch data on-demand for custom date ranges
   useEffect(() => {
@@ -105,7 +96,7 @@ export default function Dashboard() {
       setCustomTreatments(t);
       setCustomLoading(false);
     });
-  }, [range, customRange, isViewingShared, viewingEmail]);
+  }, [range, customRange, fetchEntity, isViewingShared, viewingEmail]);
 
   const filteredReadings = useMemo(() => {
     if (range === "custom") return customReadings;

@@ -16,44 +16,64 @@ export default function LiveHeartRate() {
   const [syncing, setSyncing] = useState(false);
   const [now, setNow] = useState(Date.now());
   const seeded = useRef(false);
+  const mounted = useRef(false);
+  const requestInFlight = useRef(null);
 
-  const fetchPoints = useCallback(async () => {
-    try {
-      const since = new Date(Date.now() - WINDOW_MIN * 60000).toISOString();
-      const rows = await fetchEntity("FitbitHeartRate", "-timestamp", 400, { timestamp: { $gte: since } });
-      setPoints(
-        rows
-          .map((r) => ({ t: new Date(r.timestamp).getTime(), bpm: r.bpm }))
-          .filter((p) => !Number.isNaN(p.t) && p.bpm != null)
-          .sort((a, b) => a.t - b.t)
-      );
-      setNow(Date.now());
-    } catch { /* leave the last good points; the poll will retry */ } finally {
-      setLoading(false);
-    }
+  const fetchPoints = useCallback(() => {
+    if (!mounted.current) return Promise.resolve();
+    if (requestInFlight.current) return requestInFlight.current;
+
+    const request = (async () => {
+      try {
+        const since = new Date(Date.now() - WINDOW_MIN * 60000).toISOString();
+        const rows = await fetchEntity("FitbitHeartRate", "-timestamp", 400, { timestamp: { $gte: since } });
+        if (!mounted.current) return;
+        setPoints(
+          rows
+            .map((r) => ({ t: new Date(r.timestamp).getTime(), bpm: r.bpm }))
+            .filter((p) => !Number.isNaN(p.t) && p.bpm != null)
+            .sort((a, b) => a.t - b.t)
+        );
+        setNow(Date.now());
+      } catch {
+        // Leave the last good points; the next poll or manual refresh will retry.
+      } finally {
+        if (mounted.current) setLoading(false);
+        if (requestInFlight.current === request) requestInFlight.current = null;
+      }
+    })();
+
+    requestInFlight.current = request;
+    return request;
   }, [fetchEntity]);
 
-  // Seed a fresh pull on first mount (owner only), then poll the entity.
+  // Query once on mount, then poll on one fixed cadence. The in-flight guard
+  // above prevents a slow query or manual refresh from overlapping a poll.
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!isViewingShared && !seeded.current) {
-        seeded.current = true;
-        try { await base44.functions.invoke("googleHealth", { action: "sync_hr", minutes: WINDOW_MIN }); } catch { /* scheduler covers it */ }
-      }
-      if (!cancelled) await fetchPoints();
-    })();
-    const poll = setInterval(fetchPoints, POLL_MS);
-    return () => { cancelled = true; clearInterval(poll); };
+    mounted.current = true;
+    void fetchPoints();
+
+    if (!isViewingShared && !seeded.current) {
+      seeded.current = true;
+      void base44.functions.invoke("googleHealth", { action: "sync_hr", minutes: WINDOW_MIN }).catch(() => {
+        // The backend scheduler will retry the sync.
+      });
+    }
+
+    const poll = setInterval(() => void fetchPoints(), POLL_MS);
+    return () => {
+      mounted.current = false;
+      clearInterval(poll);
+    };
   }, [fetchPoints, isViewingShared]);
 
   async function handleSync() {
     setSyncing(true);
     try {
       await base44.functions.invoke("googleHealth", { action: "sync_hr", minutes: WINDOW_MIN });
-      await fetchPoints();
+      if (mounted.current) await fetchPoints();
     } finally {
-      setSyncing(false);
+      if (mounted.current) setSyncing(false);
     }
   }
 
