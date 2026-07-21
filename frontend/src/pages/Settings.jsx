@@ -261,6 +261,62 @@ export default function Settings() {
       </Section>
 
       <Section
+        title="AI web grounding"
+        description="Let the Companion look up general medical facts from trusted sources and cite them, instead of recalling from memory (which it can get wrong). Only the medical topic of your question is sent out — never your records. Off by default."
+      >
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            className="h-4 w-4 accent-primary"
+            checked={(values.companion_web_grounding || "") === "true"}
+            onChange={(e) => setValue("companion_web_grounding", e.target.checked ? "true" : "")}
+          />
+          Ground Companion answers with trusted sources
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Always uses free NIH sources (MedlinePlus + PubMed, no key needed). Optionally add a web-search
+          provider below for broader coverage, restricted to reputable medical domains.
+        </p>
+        {(values.companion_web_grounding || "") === "true" && (
+          <div className="space-y-3 pt-1">
+            <div>
+              <Label htmlFor="web_search_provider" className="text-xs">Optional web search</Label>
+              <select
+                id="web_search_provider"
+                className="mt-1 w-full h-9 rounded-md border border-border bg-background px-2 text-sm"
+                value={values.web_search_provider || ""}
+                onChange={(e) => setValue("web_search_provider", e.target.value)}
+              >
+                <option value="">NIH only (no key)</option>
+                <option value="tavily">Tavily</option>
+                <option value="brave">Brave Search</option>
+              </select>
+            </div>
+            {(values.web_search_provider === "tavily" || values.web_search_provider === "brave") && (
+              <SecretField
+                label={`${values.web_search_provider === "tavily" ? "Tavily" : "Brave"} API key`}
+                name="web_search_key"
+                meta={data.secrets.web_search_key}
+                value={secretInputs.web_search_key || ""}
+                onChange={(v) => setSecret("web_search_key", v)}
+                help={values.web_search_provider === "tavily" ? "From app.tavily.com." : "From api-dashboard.search.brave.com."}
+              />
+            )}
+            <div>
+              <Label htmlFor="ncbi_api_key" className="text-xs">NCBI API key (optional)</Label>
+              <Input
+                id="ncbi_api_key"
+                className="mt-1 font-mono text-xs"
+                value={values.ncbi_api_key || ""}
+                onChange={(e) => setValue("ncbi_api_key", e.target.value)}
+                placeholder="Raises PubMed rate limits — ncbi.nlm.nih.gov/account"
+              />
+            </div>
+          </div>
+        )}
+      </Section>
+
+      <Section
         title="Oura Ring"
         description="OAuth app credentials from cloud.ouraring.com → your OAuth application. Then connect on the Connections page."
       >

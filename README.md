@@ -139,6 +139,13 @@ reports and imaging — **never leaves your machine**. Everything lives in one
 SQLite database in a Docker volume you control; there is no shared backend and
 the maintainers never see your data.
 
+**AI web grounding is optional and off by default.** When you enable it (Settings
+→ AI web grounding), the Companion looks up general medical facts from trusted
+sources (NIH's MedlinePlus and PubMed, plus an optional web-search provider) and
+cites them — **only the general medical topic of your question is sent, never
+your records or personal data.** With it off, nothing about your questions leaves
+the machine.
+
 It is deliberately **single-user / single-tenant** — one owner per deployment,
 so you're the sole custodian. It is **not** built to host other people's health
 data multi-tenant; run one instance per person.

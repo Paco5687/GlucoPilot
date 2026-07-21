@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
-from . import db, health_summary, insulin
+from . import db, health_summary, insulin, research
 from .auth import require_admin
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value
@@ -239,20 +239,60 @@ def _dossier() -> dict[str, Any]:
     }
 
 
-def _reply_prompt(user_msg: str, dossier: dict, memories: list, history: list) -> str:
+def _reply_prompt(user_msg: str, dossier: dict, memories: list, history: list, sources: list | None = None) -> str:
     mem_txt = "\n".join(f"- [{m.get('category', 'note')}] {m.get('content')}" for m in memories) or "(nothing remembered yet)"
     hist_txt = "\n".join(f"{'Emily' if m['role'] == 'user' else 'Companion'}: {m['content']}" for m in history) or "(start of conversation)"
+    src_txt = ""
+    if sources:
+        blocks = [f"[{i}] {s.get('title')} ({s.get('source')}) — {s.get('url')}\n{s.get('snippet')}" for i, s in enumerate(sources, 1)]
+        src_txt = (
+            "\n\n=== TRUSTED MEDICAL SOURCES (authoritative reference — cite inline as [1], [2]) ===\n"
+            + "\n\n".join(blocks)
+            + "\n\nFor general medical facts, rely on these sources and cite them inline like [1]. If they don't "
+              "answer something, say so plainly rather than guessing — do NOT invent specifics. Her personal numbers "
+              "still come from her health data above."
+        )
     return (
         f"{SYSTEM}\n\n"
         f"=== EMILY'S HEALTH DATA (evidence to ground your answers) ===\n{json.dumps(dossier, indent=1, default=str)}\n\n"
         f"=== WHAT YOU REMEMBER ABOUT HER LIVED EXPERIENCE ===\n{mem_txt}\n\n"
-        f"=== RECENT CONVERSATION ===\n{hist_txt}\n\n"
+        f"=== RECENT CONVERSATION ===\n{hist_txt}"
+        f"{src_txt}\n\n"
         f"Emily: {user_msg}\nCompanion:"
     )
 
 
 async def _reply(user_msg: str, dossier: dict, memories: list, history: list) -> str:
     return _strip_signoff(await invoke_llm(_reply_prompt(user_msg, dossier, memories, history), max_tokens=REPLY_MAX_TOKENS))
+
+
+def _grounding_enabled() -> bool:
+    return (config_value("companion_web_grounding", "") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+async def _distill_query(user_msg: str) -> str | None:
+    """Decide if a general medical lookup would help, and if so produce a clean,
+    privacy-safe search query (concepts only — no personal details/numbers)."""
+    prompt = (
+        "You help a health assistant decide whether to look up authoritative medical facts.\n"
+        "From the user's message, output a SHORT search query (2-5 words) of general medical concepts — a "
+        "condition, lab test, symptom, medication, or mechanism — with NO personal details, names, numbers, or "
+        "possessives. If the message is small talk or only about the person's own data/trends (not a general "
+        "medical fact), output exactly: NONE\n\n"
+        "Message: what does high leukocyte esterase in my urine mean?\nQuery: leukocyte esterase urine\n"
+        "Message: compare my time in range this week vs last\nQuery: NONE\n"
+        "Message: could my joint pain be from my hashimotos?\nQuery: hashimoto thyroiditis joint pain\n"
+        "Message: is my morning cortisol of 20 too high?\nQuery: morning cortisol elevated\n\n"
+        f"Message: {user_msg}\nQuery:"
+    )
+    try:
+        res = await invoke_llm(prompt, max_tokens=24)
+    except Exception:
+        return None
+    q = (res or "").strip().strip('"').splitlines()[0].strip().rstrip(".")
+    if not q or "NONE" in q.upper() or len(q) > 100:
+        return None
+    return q
 
 
 async def _extract_memories(user_msg: str, reply: str, existing: list) -> list[dict]:
@@ -380,7 +420,21 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
     db.create_entity("ChatMessage", {"role": "user", "content": text, "thread_id": thread_id, "created_date": _now(), "owner_email": OWNER_EMAIL})
     history = _thread_history(thread_id)
     memories = _memories()
-    prompt = _reply_prompt(text, _dossier(), memories, history[:-1])
+
+    # Optional grounding: search trusted medical sources and let the model cite
+    # them, instead of recalling facts from memory (which it hallucinates).
+    sources: list[dict[str, Any]] = []
+    if _grounding_enabled():
+        yield json.dumps({"searching": True}) + "\n"
+        query = await _distill_query(text)
+        if query:
+            try:
+                sources = await research.gather(query)
+            except Exception:
+                log.warning("companion grounding failed", exc_info=True)
+        yield json.dumps({"sources": sources}) + "\n"
+
+    prompt = _reply_prompt(text, _dossier(), memories, history[:-1], sources)
 
     parts: list[str] = []
     try:
@@ -398,7 +452,7 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
     if not reply:
         yield json.dumps({"error": "Companion returned an empty response."}) + "\n"
         return
-    db.create_entity("ChatMessage", {"role": "assistant", "content": reply, "thread_id": thread_id, "created_date": _now(), "owner_email": OWNER_EMAIL})
+    db.create_entity("ChatMessage", {"role": "assistant", "content": reply, "thread_id": thread_id, "sources": sources or None, "created_date": _now(), "owner_email": OWNER_EMAIL})
     db.update_entity("CompanionThread", thread_id, {"updated_date": _now()})
     remembered = await _store_new_memories(text, reply, memories)
     yield json.dumps({"done": True, "remembered": remembered, "thread_id": thread_id}) + "\n"
