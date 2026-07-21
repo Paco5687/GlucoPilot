@@ -1,6 +1,6 @@
 # Domain repositories and unit of work
 
-Status: additive legacy adapter layer  
+Status: additive legacy adapter layer
 Implementations: `server/repositories.py`, `server/unit_of_work.py`
 
 F4 separates clinical consumers from the physical JSON entity table without
@@ -105,4 +105,3 @@ not erase what the user submitted.
 6. New relationship/evidence writes wait for G1/G2 schemas and migrations.
 7. Any operation spanning multiple repositories must use a unit of work or
    document why partial persistence is intentional.
-
