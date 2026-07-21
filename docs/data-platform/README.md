@@ -15,6 +15,8 @@ typed repositories are introduced.
   typed-table migrations.
 - [Migration runner](MIGRATIONS.md) — ordered migration and schema-registry
   runtime contract.
+- [Backup and rollback runbook](BACKUP_AND_ROLLBACK.md) — verified backup,
+  upgrade, failure, restore, and recovery operations.
 
 ## Reproduce the structural audit
 
