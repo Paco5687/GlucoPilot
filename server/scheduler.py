@@ -35,7 +35,7 @@ GOOGLE_HEALTH_INTERVAL = 6 * 3600
 GOOGLE_HEALTH_HR_INTERVAL = 2 * 60  # intraday HR — poll often; Fitbit cloud lag (~5-15 min) is the real floor
 CYCLE_INFERENCE_INTERVAL = 24 * 3600
 TANDEM_INTERVAL = 10 * 60
-GLOOKO_INTERVAL = 30 * 60  # Glooko's cloud feed lags ~1h; 30 min polls suffice
+GLOOKO_INTERVAL = 6 * 3600  # the pump uploads to Glooko ~once a night; 4×/day catches it without hammering the API
 
 _last_run = {
     "dexcom_share": 0.0,

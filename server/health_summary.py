@@ -146,7 +146,9 @@ async def generate() -> dict[str, Any]:
         "'working' (on track) list and a 'watch' list.\n\n"
         f"DATA SNAPSHOT (last {WINDOW_DAYS} days where applicable):\n{json.dumps(context, indent=2, default=str)}"
     )
-    result = await invoke_llm(prompt, response_json_schema=SUMMARY_SCHEMA, max_tokens=3000, tier="quality")
+    # Fast default model: the quality (27B) model is currently GPU-starved and
+    # times out on a synthesis this size. The fast model handles it in seconds.
+    result = await invoke_llm(prompt, response_json_schema=SUMMARY_SCHEMA, max_tokens=3000)
 
     # Compact metric strip for the page header (computed, not LLM-generated).
     g = context.get("glucose") or {}
