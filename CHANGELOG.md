@@ -6,6 +6,32 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-07-21
+
+### Added
+- **Health History** — a standing background narrative plus a typed medical
+  timeline (diagnoses, exposures, injuries, prescriptions, ER/hospital visits,
+  appointments, doctor advice). Feeds the Companion and the Visit Report. (#67)
+- **Records: topic search** — search a topic (e.g. "mold", "thyroid") to surface
+  every related lab, matching analyte name, family, and category. (#71)
+- **Records: unit conversion** — a curated conversion table normalizes the same
+  analyte across units into one trend, with a Conventional / SI display toggle. (#76)
+
+### Fixed
+- **Dashboard** — collapsed duplicate heart-rate charts and the Oura/Fitbit
+  metric overlap into one clear view (Fitbit for live physiology, Oura for its
+  scores). (#72)
+- **Bug reporter** — now files reports in-app instead of bouncing the reporter to
+  GitHub's sign-in; nothing is lost regardless of GitHub configuration. (#77)
+- **Records: cleaner lab trends** — the same test written different ways (e.g.
+  serum "Cortisol" vs "Cortisol, A.M.") now merges into one continuous trend,
+  while genuinely different tests — specimens, metabolites, and timed-panel
+  points — stay separate.
+
+### Changed
+- **CI** — bumped the `docker/*` actions to their Node 24 majors, clearing the
+  Node 20 deprecation warning. (#75)
+
 ## [0.1.0] — 2026-07-19
 
 First public release. A self-hosted, single-user personal health platform
@@ -63,5 +89,6 @@ of your data.
 - No telemetry and no phone-home.
 - CI/CD via GitHub Actions; prebuilt images published to GHCR.
 
-[Unreleased]: https://github.com/Paco5687/GlucoPilot/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Paco5687/GlucoPilot/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Paco5687/GlucoPilot/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Paco5687/GlucoPilot/releases/tag/v0.1.0
