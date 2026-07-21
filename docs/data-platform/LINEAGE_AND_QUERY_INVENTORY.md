@@ -1,0 +1,113 @@
+# Lineage and query inventory
+
+## Source-to-entity lineage
+
+| Source / module | Writes | Identity and time assumptions | Replacement behavior |
+|---|---|---|---|
+| Dexcom Share | `GlucoseReading` | Upstream ID discarded; datetime to UTC; global ±240-second dedup. | Incremental append; earliest-arriving source wins. |
+| Dexcom API v3 | `DexcomConnection`, glucose, treatment | Event `recordId` → `ns_id`; EGV ID discarded; naive time treated UTC. | Incremental overlap; connection patched. |
+| Nightscout | `UserSettings`, `NightscoutProfile`, glucose, treatment | Treatment `_id` → `ns_id`; UTC timestamps; profile timezone retained. | Normal append/dedup; backfill deletes all Nightscout glucose/treatment first. |
+| Tandem Source | `Treatment` | Pump ID → `tandem-{id}`; naive pump time interpreted in configured timezone then UTC. | Two-hour overlap; processor can update/delete events. |
+| Glooko | Treatment and optional glucose | GUID → `glooko-{guid}`; naive time currently treated UTC pending verification. | ID plus ±90-second treatment dedup. |
+| Oura | connection, daily, heart rate | Daily provider date; exact UTC HR timestamp. | Daily patch; HR append if timestamp absent. |
+| Fitbit Web API | connection and daily | Provider date. | Daily patch. |
+| Google Health | connection, Fitbit daily/HR | Provider date; intraday HR to UTC minute. | Daily patch; HR append if minute absent. |
+| Medical-record upload | file, `MedicalRecord`, `LabResult` | File SHA-256; child labs retain parent ID/date but no page/extractor version. | Reprocess replaces record's labs; delete removes file + labs. |
+| Lively/phone ingest | `PeriodLog` | Local date key and source. | Merge by date; manual rows respected. |
+| CSV/Base44 imports | Glucose, treatment, Oura, period | Timestamp normalization and proximity/date dedup. | Legacy CSV import replaces owner/source=`csv` glucose/treatment. |
+| Manual APIs | Fingersticks, profile/weight, diagnoses, meds, allergies, insurance, symptoms, history | Random IDs and user-supplied dates. | User edit/append/delete per catalog. |
+| Rule/LLM jobs | Patterns, insights, summary, Companion | No source-record, algorithm, or input-data version. | Deactivate/replace/append varies by output. |
+
+Every source is operationally owned by its module and the deployment owner.
+There is no persisted source-record or sync-run model, so partial pages,
+coverage windows, failures, upstream revisions, and field-level origin cannot
+be reconstructed.
+
+## Derived results and missing-data assumptions
+
+| Result | Inputs | Current incomplete-data behavior |
+|---|---|---|
+| Dashboard | Glucose, treatment, period, daily wearables/HR, fingersticks | Empty states render; partial windows produce metrics without coverage. |
+| Patterns | 14 days glucose/treatment + timezone | Stops below 50 CGM points; each rule silently skips insufficient events/hours. Confidence is a threshold label. |
+| Cross-domain insights | 90-day CGM, daily wearables/HR, cycle, insulin | Needs 14 days and ≥100 CGM points per included day. Pairwise missing inputs reduce sample count without coverage state. |
+| Insulin estimate | Profile weight, treatment/TDD, glucose | Missing weight suppresses per-kg output. Missing basal can make boluses appear to be TDD unless an authoritative daily total exists. |
+| Insulin response | Insulin, nearby glucose, optional carbs | Events lacking pre/post CGM are skipped; confounding is not represented as evidence. |
+| Fingerstick stats | Fingerstick + nearest CGM ±15 minutes | Unpaired readings count but do not enter delta statistics; pairing never refreshes. |
+| Cycle inference | Oura temperature + existing period logs | Rebuilds only inferred rows; existing date wins; insufficient input returns none. |
+| Health Overview | Glucose, treatments, wearables, labs, profile/clinical lists, cycle, symptoms/history | Empty sections omitted; generated singleton has no input snapshot. |
+| Companion | Overview context, insulin outputs, records, memory/chat, optional trusted web | Missing sections omitted; internal claims have no evidence path/data version; memories are unverified. |
+| Visit Report | Windowed glucose/treatment plus profile, clinical lists, labs, symptoms/history, insurance | Missing sections omitted/unavailable; no completeness, reliability, or contradiction object. |
+
+## Field-family consumer matrix
+
+| Field family | Direct consumers |
+|---|---|
+| Glucose `value`, `timestamp`, `trend`, `source` | Dashboard charts/metrics, Explorer, Compare, pattern and insight engines, insulin analysis, Overview, Companion dossier, Visit Report, source cursors/dedup. |
+| Treatment time/type/event/amount/basal fields | Dashboard timeline/summary, pattern and insight engines, insulin estimate/response, Overview, Companion, Visit Report, connector dedup. |
+| Daily wearable date + sleep/readiness/activity/HRV/SpO2 fields | Dashboard and Wearables views, cycle inference (Oura temperature), insights, Overview, Companion, Visit Report. |
+| Intraday HR timestamp/BPM/source | Live dashboard and glucose overlay, Wearables, cross-domain daily-HR aggregation. |
+| Period date/phase/source/notes | Dashboard, Period Tracker, insights cycle comparisons, Overview, Companion, Visit Report. |
+| Fingerstick value/time/CGM/delta | Dashboard marker/logger, discrepancy statistics, insulin/clinical context. |
+| Medical-record status/date/title/file metadata | Records queue/index, delete/reprocess paths, Companion recent-document context. |
+| Lab name/value/unit/range/flag/date/category/record ID | Records index/charts/matrix/search, Overview, Companion, Visit Report, record cascade/reprocess. |
+| Profile/weight/demographic fields | Settings, BMI/age computation, insulin per-kg estimate, Overview, Companion, Visit Report. |
+| Diagnoses, medications, allergies, insurance | Settings/dedicated editors, Overview context, Companion, Visit Report. |
+| Symptoms and history fields | Journal/history pages, rollups, Overview, Companion, Visit Report. |
+| Pattern/insight titles, descriptions, confidence/evidence/status | Overview/dashboard cards and prior Patterns/Insights compatibility consumers. |
+| Summary serialized payload and generated time | Overview and Companion dossier. |
+| Companion thread/message/memory fields | Companion thread list/history, memory controls, dossier/prompt construction. |
+| Connection tokens/status/expiry/last-sync | Connector modules and Connections UI; settings APIs expose redacted metadata. |
+| User settings / `app_settings` configuration | Connector setup, scheduler, auth/LLM/feature configuration, history narrative. |
+| Bug-report context/GitHub link | In-app reporter persistence and GitHub issue bridge only. |
+
+## Frontend generic-entity queries
+
+| Consumer | Shape | Notes |
+|---|---|---|
+| `Dashboard.jsx` | Glucose 26k, treatment 5k, period 500, Oura 90, Fitbit 120; then range-filtered queries. | One initial fetch + intentional 60-second refresh. |
+| `Records.jsx` | Medical records 200 by creation; labs 5k by collected date. | Full client-side views. |
+| `Explorer.jsx` | Glucose and treatment up to 100k each. | Large browser payload. |
+| `Compare.jsx` | Glucose in 5k pages. | No formal coverage response. |
+| `PeriodTracker.jsx` | Period 5k and Oura 120; period writes/deletes. | User/inference rows share type. |
+| `Overview.jsx` | Latest 50 patterns. | Other context via summary API. |
+| Connection UI / Lively import | `UserSettings`; period list + 50-row bulk inserts. | Legacy settings and user import. |
+
+`useViewingData` currently returns deployment-owner data; shared-view identity
+flags are placeholders. Generic writes require admin, but generic reads do not
+automatically inject `owner_email`.
+
+## Backend query shapes
+
+| Shape | Consumers | Index coverage / risk |
+|---|---|---|
+| Type + timestamp order/range | Dashboard, dedup, analysis, report, source cursors | Timestamp expression index; owner/source residual. Several dedup paths load the whole type. |
+| Type + date order | Wearables and period | Date expression index; owner residual. |
+| Type + `collected_date` | Lab UI/report | No matching index; temporary sort. |
+| Type + owner + source/upstream ID | Connectors/dedup | No owner/source/`ns_id` index or uniqueness. |
+| Type + record ID | Lab reprocess/delete | No `record_id` index or foreign key. |
+| Type + thread ID + created date | Companion | No composite/expression index. |
+| Arbitrary generic JSON filter/sort | Entity API | Can scan/sort any allowed field; server does not cap limits. |
+
+## Destructive and replacement paths
+
+| Workflow | Scope | Recovery today |
+|---|---|---|
+| Nightscout backfill | All owner Nightscout glucose/treatment | Whole-volume restore or remote re-sync; delete/fetch/insert is not one transaction. |
+| Legacy CSV import | All owner/source=`csv` glucose/treatment | Restore or rerun source import. |
+| Record reprocess/delete | Child labs; delete also removes uploaded file | Reprocess retained file or restore volume; no DB/filesystem transaction. |
+| Insight generation | All owner insights | Regenerate; previous output/input not retained. |
+| Health summary | All owner summaries | Regenerate; previous output/input not retained. |
+| Cycle inference | All owner Oura-inferred periods | Regenerate from Oura. |
+| Demo cleanup | Every known demo type | Catalog drift can leave unknown types. |
+| Glucose dedup `--apply` | Selected duplicate IDs | Backup restore only; command defaults to dry run. |
+
+## Foundation risks confirmed by F0
+
+1. Registry drift: 34 code-visible types versus 19 generic-API types.
+2. No migration ledger/schema version, validation, uniqueness, or foreign keys.
+3. Secrets and clinical records use the same generic JSON mechanism.
+4. Provenance usually ends at one mutable `source` string.
+5. UTC instants, provider dates, local dates, and naive timestamps differ by
+   source.
+6. Derived outputs lack algorithm/input versions and missing-data contracts.
+7. Whole-type dedup scans and large browser queries will scale poorly.
