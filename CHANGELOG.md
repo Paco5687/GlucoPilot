@@ -6,6 +6,29 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-07-21
+
+### Added
+- **Companion web grounding** — optional, off by default. The Companion searches
+  trusted medical sources (NIH's MedlinePlus + PubMed, plus an optional
+  allowlisted web-search provider) and cites them inline instead of recalling
+  specifics from memory — cutting hallucination. Only the general medical topic
+  of your question is sent out, never your records. (#85)
+
+### Changed
+- **One Overview page** — the former Insights and Patterns tabs are folded into
+  Overview (Insights was redundant with its cross-domain connections, and already
+  fed them). Overview now shows metrics, connections, on-track / worth-watching,
+  and a "Patterns in your glucose" section; Refresh regenerates the summary and
+  re-scans patterns together.
+- **Glooko** — polling reduced from every 30 minutes to every 6 hours (the pump
+  uploads to Glooko roughly once a night).
+
+### Fixed
+- **Visit Report and Overview no longer hang** — both moved off the GPU-starved
+  quality (27B) model to the fast model, generating in seconds instead of timing
+  out.
+
 ## [0.1.1] — 2026-07-21
 
 ### Added
@@ -89,6 +112,7 @@ of your data.
 - No telemetry and no phone-home.
 - CI/CD via GitHub Actions; prebuilt images published to GHCR.
 
-[Unreleased]: https://github.com/Paco5687/GlucoPilot/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Paco5687/GlucoPilot/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/Paco5687/GlucoPilot/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/Paco5687/GlucoPilot/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/Paco5687/GlucoPilot/releases/tag/v0.1.0
