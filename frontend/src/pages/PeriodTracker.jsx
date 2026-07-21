@@ -31,7 +31,7 @@ export default function PeriodTracker() {
     setLogs(data);
     setOuraDays(oura);
     setLoading(false);
-  }, [isViewingShared, viewingEmail]);
+  }, [fetchEntity, isViewingShared, viewingEmail]);
 
   useEffect(() => { setLoading(true); load(); }, [load]);
 

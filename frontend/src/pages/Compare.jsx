@@ -45,7 +45,7 @@ export default function Compare() {
       setLoading(false);
     }
     load();
-  }, [isViewingShared, viewingEmail]);
+  }, [fetchEntity, isViewingShared, viewingEmail]);
 
   if (loading) {
     return (

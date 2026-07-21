@@ -19,4 +19,7 @@ export default defineConfig({
       '/logout': 'http://localhost:8000',
     },
   },
+  test: {
+    environment: 'jsdom',
+  },
 })
