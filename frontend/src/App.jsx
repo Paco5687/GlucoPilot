@@ -8,13 +8,11 @@ import UserNotRegisteredError from '@/components/UserNotRegisteredError';
 import Landing from './pages/Landing';
 import AuthGate from './components/AuthGate';
 import Dashboard from './pages/Dashboard';
-import Patterns from './pages/Patterns';
 import Compare from './pages/Compare';
 import Connections from './pages/Connections';
 import CsvImport from './pages/CsvImport';
 import PeriodTracker from './pages/PeriodTracker';
 import Explorer from './pages/Explorer';
-import Insights from './pages/Insights';
 import Wearables from './pages/Wearables';
 import Overview from './pages/Overview';
 import Insulin from './pages/Insulin';
@@ -43,12 +41,10 @@ const AuthenticatedApp = () => {
       <Route element={<AuthGate />}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/explorer" element={<Explorer />} />
-        <Route path="/patterns" element={<Patterns />} />
         <Route path="/compare" element={<Compare />} />
         <Route path="/connections" element={<Connections />} />
         <Route path="/import" element={<CsvImport />} />
         <Route path="/period" element={<PeriodTracker />} />
-        <Route path="/insights" element={<Insights />} />
         <Route path="/wearables" element={<Wearables />} />
         <Route path="/overview" element={<Overview />} />
         <Route path="/insulin" element={<Insulin />} />
