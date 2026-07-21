@@ -147,13 +147,25 @@ function convertLab(lab, target) {
 }
 
 const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
-const rawTokens = (name) => (name || "").toLowerCase().replace(/[.,()/\-]/g, " ").split(/\s+/).filter(Boolean);
 
-// Merge only pure formatting/word-order variants; keep clinically-distinct
-// qualifiers (free/total/specimen) so different measurements never collapse.
-const CANON_STOP = new Set(["", "reflex", "w", "with"]);
+// Collapse the SAME test written different ways into one trend line: ignore
+// specimen words, generic filler, and A.M./P.M. draw markers, and be order-
+// insensitive. Everything that changes the measurement is KEPT — numbers
+// (2-OH-E1 ≠ 4-OH-E1), α/β isomers, letters (SS-A ≠ SS-B), "%", free/total,
+// and diurnal time-points — so different tests never merge.
+const CANON_STOP = new Set([
+  "", "reflex", "w", "with", "level", "levels", "panel",
+  "serum", "plasma", "blood", "salivary", "saliva", "urine", "urinary", "whole", "random",
+]);
 function canonKey(name) {
-  return rawTokens(name).filter((t) => !CANON_STOP.has(t)).sort().join(" ");
+  return (name || "")
+    .toLowerCase()
+    .replace(/\b[ap]\.?m\.?\b/g, " ") // drop A.M./P.M./am/pm draw markers (not diurnal panel words)
+    .replace(/[.,()/\-]/g, " ")
+    .split(/\s+/)
+    .filter((t) => t && !CANON_STOP.has(t))
+    .sort()
+    .join(" ");
 }
 
 // The base analyte, for gathering related variants under one heading.
