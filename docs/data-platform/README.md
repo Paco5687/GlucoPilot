@@ -17,6 +17,8 @@ typed repositories are introduced.
   runtime contract.
 - [Backup and rollback runbook](BACKUP_AND_ROLLBACK.md) — verified backup,
   upgrade, failure, restore, and recovery operations.
+- [Clinical data contracts](DATA_CONTRACTS.md) — versioned canonical identity,
+  time, provenance, assertion, evidence, confidence, and data-version semantics.
 
 ## Reproduce the structural audit
 
