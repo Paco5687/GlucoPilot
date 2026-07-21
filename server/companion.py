@@ -23,11 +23,13 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
-from . import db, health_summary, insulin, research
+from . import health_summary, insulin, research
 from .auth import require_admin
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value
 from .llm import invoke_llm, invoke_llm_stream
+from .repositories import EntityRepository, get_repositories
+from .unit_of_work import unit_of_work
 
 log = logging.getLogger("glucopilot.companion")
 
@@ -93,8 +95,14 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
+def _entity(entity_type: str) -> EntityRepository:
+    return get_repositories().entity(entity_type)
+
+
 def _memories() -> list[dict[str, Any]]:
-    return db.query_entities("HealthMemory", {"owner_email": OWNER_EMAIL}, "-created_date", MAX_MEMORIES)
+    return _entity("HealthMemory").query(
+        {"owner_email": OWNER_EMAIL}, "-created_date", MAX_MEMORIES
+    )
 
 
 def _tir(vals: list[float]) -> dict[str, Any]:
@@ -120,8 +128,10 @@ def _glucose_detail() -> dict[str, Any] | None:
     tz = ZoneInfo(config_value("app_timezone", APP_TIMEZONE))
     now = datetime.now(timezone.utc)
     since90 = (now - timedelta(days=90)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
-    rows = db.query_entities(
-        "GlucoseReading", {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since90}}, "-timestamp", 40000
+    rows = get_repositories().glucose.query(
+        {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since90}},
+        "-timestamp",
+        40000,
     )
     pts = []
     for r in rows:
@@ -169,38 +179,56 @@ def _glucose_detail() -> dict[str, Any] | None:
 
 def _threads() -> list[dict[str, Any]]:
     _ensure_thread_migration()
-    return db.query_entities("CompanionThread", {"owner_email": OWNER_EMAIL}, "-updated_date", 100)
+    return _entity("CompanionThread").query(
+        {"owner_email": OWNER_EMAIL}, "-updated_date", 100
+    )
 
 
 def _thread_history(thread_id: str, limit: int = HISTORY_TURNS * 2) -> list[dict[str, Any]]:
-    return db.query_entities(
-        "ChatMessage", {"owner_email": OWNER_EMAIL, "thread_id": thread_id}, "created_date", limit
+    return _entity("ChatMessage").query(
+        {"owner_email": OWNER_EMAIL, "thread_id": thread_id},
+        "created_date",
+        limit,
     )
 
 
 def _new_thread(first_msg: str) -> dict[str, Any]:
     title = (first_msg or "").strip().replace("\n", " ")[:60] or "New chat"
-    return db.create_entity("CompanionThread", {
-        "title": title, "created_date": _now(), "updated_date": _now(), "owner_email": OWNER_EMAIL,
-    })
+    return _entity("CompanionThread").create(
+        {
+            "title": title,
+            "created_date": _now(),
+            "updated_date": _now(),
+            "owner_email": OWNER_EMAIL,
+        }
+    )
 
 
 def _ensure_thread_migration() -> None:
     """One-time: fold any pre-threads ChatMessages into a single legacy thread."""
     orphans = [
-        m for m in db.query_entities("ChatMessage", {"owner_email": OWNER_EMAIL}, "created_date", 10000)
+        m
+        for m in _entity("ChatMessage").query(
+            {"owner_email": OWNER_EMAIL}, "created_date", 10000
+        )
         if not m.get("thread_id")
     ]
     if not orphans:
         return
-    t = db.create_entity("CompanionThread", {
-        "title": "Earlier conversation",
-        "created_date": orphans[0].get("created_date") or _now(),
-        "updated_date": orphans[-1].get("created_date") or _now(),
-        "owner_email": OWNER_EMAIL,
-    })
-    for m in orphans:
-        db.update_entity("ChatMessage", m["id"], {"thread_id": t["id"]})
+    with unit_of_work() as work:
+        thread_repository = work.repositories.entity("CompanionThread")
+        message_repository = work.repositories.entity("ChatMessage")
+        t = thread_repository.create(
+            {
+                "title": "Earlier conversation",
+                "created_date": orphans[0].get("created_date") or _now(),
+                "updated_date": orphans[-1].get("created_date") or _now(),
+                "owner_email": OWNER_EMAIL,
+            }
+        )
+        for message in orphans:
+            message_repository.update(message["id"], {"thread_id": t["id"]})
+        work.commit()
 
 
 def _dossier() -> dict[str, Any]:
@@ -211,7 +239,9 @@ def _dossier() -> dict[str, Any]:
     absn = insulin.absorption()
     recent_docs = [
         {"title": r.get("title"), "date": r.get("record_date")}
-        for r in db.query_entities("MedicalRecord", {"owner_email": OWNER_EMAIL}, "-created_date", 500)
+        for r in _entity("MedicalRecord").query(
+            {"owner_email": OWNER_EMAIL}, "-created_date", 500
+        )
         if r.get("status") == "processed"
     ]
     recent_docs.sort(key=lambda d: str(d.get("date") or ""), reverse=True)
@@ -332,20 +362,33 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
         tid = body.get("thread_id")
         if not tid:
             return {"messages": []}
-        return {"messages": db.query_entities("ChatMessage", {"owner_email": OWNER_EMAIL, "thread_id": tid}, "created_date", 1000)}
+        return {
+            "messages": _entity("ChatMessage").query(
+                {"owner_email": OWNER_EMAIL, "thread_id": tid},
+                "created_date",
+                1000,
+            )
+        }
 
     if action == "rename_thread":
         tid, title = body.get("thread_id"), (body.get("title") or "").strip()
         if tid and title:
-            db.update_entity("CompanionThread", tid, {"title": title[:60]})
+            _entity("CompanionThread").update(tid, {"title": title[:60]})
         return {"ok": True, "threads": _threads()}
 
     if action in ("delete_thread", "clear"):  # "clear" kept for shim compatibility
         tid = body.get("thread_id")
         if tid:
-            for m in db.query_entities("ChatMessage", {"owner_email": OWNER_EMAIL, "thread_id": tid}, "-created_date", 10000):
-                db.delete_entity("ChatMessage", m["id"])
-            db.delete_entity("CompanionThread", tid)
+            with unit_of_work() as work:
+                messages = work.repositories.entity("ChatMessage")
+                for message in messages.query(
+                    {"owner_email": OWNER_EMAIL, "thread_id": tid},
+                    "-created_date",
+                    10000,
+                ):
+                    messages.delete(message["id"])
+                work.repositories.entity("CompanionThread").delete(tid)
+                work.commit()
         return {"ok": True, "threads": _threads()}
 
     if action == "memories":
@@ -354,13 +397,20 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
     if action == "add_memory":
         content = (body.get("content") or "").strip()
         if content:
-            db.create_entity("HealthMemory", {"content": content, "category": (body.get("category") or "note"),
-                                              "source": "manual", "created_date": _now(), "owner_email": OWNER_EMAIL})
+            _entity("HealthMemory").create(
+                {
+                    "content": content,
+                    "category": body.get("category") or "note",
+                    "source": "manual",
+                    "created_date": _now(),
+                    "owner_email": OWNER_EMAIL,
+                }
+            )
         return {"ok": True, "memories": _memories()}
 
     if action == "delete_memory":
         if body.get("id"):
-            db.delete_entity("HealthMemory", body["id"])
+            _entity("HealthMemory").delete(body["id"])
         return {"ok": True}
 
     if action == "send":  # non-streaming fallback (frontend uses /api/companion/stream)
@@ -368,7 +418,15 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
         if not text:
             return {"error": "Message is empty.", "_status": 400}
         tid = body.get("thread_id") or _new_thread(text)["id"]
-        db.create_entity("ChatMessage", {"role": "user", "content": text, "thread_id": tid, "created_date": _now(), "owner_email": OWNER_EMAIL})
+        _entity("ChatMessage").create(
+            {
+                "role": "user",
+                "content": text,
+                "thread_id": tid,
+                "created_date": _now(),
+                "owner_email": OWNER_EMAIL,
+            }
+        )
         history = _thread_history(tid)
         memories = _memories()
         try:
@@ -377,8 +435,20 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
             log.exception("companion reply failed")
             return {"error": f"Companion is unavailable: {err}", "_status": 502}
         reply = (reply or "").strip()
-        db.create_entity("ChatMessage", {"role": "assistant", "content": reply, "thread_id": tid, "created_date": _now(), "owner_email": OWNER_EMAIL})
-        db.update_entity("CompanionThread", tid, {"updated_date": _now()})
+        with unit_of_work() as work:
+            work.repositories.entity("ChatMessage").create(
+                {
+                    "role": "assistant",
+                    "content": reply,
+                    "thread_id": tid,
+                    "created_date": _now(),
+                    "owner_email": OWNER_EMAIL,
+                }
+            )
+            work.repositories.entity("CompanionThread").update(
+                tid, {"updated_date": _now()}
+            )
+            work.commit()
         remembered = await _store_new_memories(text, reply, memories)
         return {"reply": reply, "remembered": remembered, "thread_id": tid}
 
@@ -394,8 +464,15 @@ async def _store_new_memories(text: str, reply: str, memories: list) -> list[str
                 continue
             if any(c.lower() in e.get("content", "").lower() or e.get("content", "").lower() in c.lower() for e in memories):
                 continue  # dedupe against what we already know
-            db.create_entity("HealthMemory", {"content": c, "category": (m.get("category") or "observation"),
-                                              "source": "companion", "created_date": _now(), "owner_email": OWNER_EMAIL})
+            _entity("HealthMemory").create(
+                {
+                    "content": c,
+                    "category": m.get("category") or "observation",
+                    "source": "companion",
+                    "created_date": _now(),
+                    "owner_email": OWNER_EMAIL,
+                }
+            )
             remembered.append(c)
     except Exception:
         log.warning("companion memory extraction failed", exc_info=True)
@@ -417,7 +494,15 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
         thread = _new_thread(text)
         thread_id = thread["id"]
         yield json.dumps({"thread": thread}) + "\n"
-    db.create_entity("ChatMessage", {"role": "user", "content": text, "thread_id": thread_id, "created_date": _now(), "owner_email": OWNER_EMAIL})
+    _entity("ChatMessage").create(
+        {
+            "role": "user",
+            "content": text,
+            "thread_id": thread_id,
+            "created_date": _now(),
+            "owner_email": OWNER_EMAIL,
+        }
+    )
     history = _thread_history(thread_id)
     memories = _memories()
 
@@ -452,8 +537,21 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
     if not reply:
         yield json.dumps({"error": "Companion returned an empty response."}) + "\n"
         return
-    db.create_entity("ChatMessage", {"role": "assistant", "content": reply, "thread_id": thread_id, "sources": sources or None, "created_date": _now(), "owner_email": OWNER_EMAIL})
-    db.update_entity("CompanionThread", thread_id, {"updated_date": _now()})
+    with unit_of_work() as work:
+        work.repositories.entity("ChatMessage").create(
+            {
+                "role": "assistant",
+                "content": reply,
+                "thread_id": thread_id,
+                "sources": sources or None,
+                "created_date": _now(),
+                "owner_email": OWNER_EMAIL,
+            }
+        )
+        work.repositories.entity("CompanionThread").update(
+            thread_id, {"updated_date": _now()}
+        )
+        work.commit()
     remembered = await _store_new_memories(text, reply, memories)
     yield json.dumps({"done": True, "remembered": remembered, "thread_id": thread_id}) + "\n"
 

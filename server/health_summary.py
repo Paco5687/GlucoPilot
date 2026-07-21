@@ -16,10 +16,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import conditions, db, history, meds, profile, report, symptoms
+from . import conditions, history, meds, profile, report, symptoms
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value, set_config_value
 from .llm import invoke_llm
+from .repositories import get_repositories
+from .unit_of_work import unit_of_work
 
 log = logging.getLogger("glucopilot.health_summary")
 
@@ -50,7 +52,9 @@ SUMMARY_SCHEMA = {
 
 
 def _labs_snapshot() -> tuple[list, list]:
-    rows = db.query_entities("LabResult", {"owner_email": OWNER_EMAIL}, "collected_date", 100000)
+    rows = get_repositories().labs.query(
+        {"owner_email": OWNER_EMAIL}, "collected_date", 100000
+    )
     by_test: dict[str, list] = {}
     for lab in rows:
         if lab.get("value") is None or not lab.get("test_name"):
@@ -74,7 +78,9 @@ def _labs_snapshot() -> tuple[list, list]:
 
 
 def _wearable_trends() -> dict[str, Any]:
-    rows = db.query_entities("FitbitDaily", {"owner_email": OWNER_EMAIL, "source": "google_health"}, "-date", 60)
+    rows = get_repositories().fitbit_daily.query(
+        {"owner_email": OWNER_EMAIL, "source": "google_health"}, "-date", 60
+    )
 
     def avg(field: str, sl: list):
         vals = [r[field] for r in sl if r.get(field) is not None]
@@ -91,12 +97,16 @@ def _wearable_trends() -> dict[str, Any]:
 
 def _insights_snapshot() -> list:
     return [{"title": i.get("title"), "category": i.get("category"), "severity": i.get("severity")}
-            for i in db.query_entities("Insight", {"owner_email": OWNER_EMAIL}, "-date_generated", 25)]
+            for i in get_repositories().entity("Insight").query(
+                {"owner_email": OWNER_EMAIL}, "-date_generated", 25
+            )]
 
 
 def _imaging_snapshot() -> list:
     return [{"date": r.get("record_date"), "summary": (r.get("summary") or "")[:700]}
-            for r in db.query_entities("MedicalRecord", {"owner_email": OWNER_EMAIL}, "-record_date", 60)
+            for r in get_repositories().entity("MedicalRecord").query(
+                {"owner_email": OWNER_EMAIL}, "-record_date", 60
+            )
             if r.get("doc_type") == "imaging_report" and r.get("summary")][:5]
 
 
@@ -163,15 +173,25 @@ async def generate() -> dict[str, Any]:
     }
     now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     payload = {"generated_at": now, "data": json.dumps({**(result or {}), "metrics": metrics}), "owner_email": OWNER_EMAIL}
-    for old in db.query_entities("HealthSummary", {"owner_email": OWNER_EMAIL}):
-        db.delete_entity("HealthSummary", old["id"])
-    db.create_entity("HealthSummary", payload)
-    set_config_value("health_summary_last_run", now)
+    # Summary replacement and its scheduler cursor span two SQLite tables and
+    # commit as one logical operation.
+    with unit_of_work() as work:
+        summary_repository = work.repositories.entity("HealthSummary")
+        summary_repository.delete_where({"owner_email": OWNER_EMAIL})
+        summary_repository.create(payload)
+        set_config_value(
+            "health_summary_last_run",
+            now,
+            connection=work.connection,
+        )
+        work.commit()
     return {"generated_at": now, **(result or {})}
 
 
 def _latest() -> dict[str, Any] | None:
-    rows = db.query_entities("HealthSummary", {"owner_email": OWNER_EMAIL}, "-created_date", 1)
+    rows = get_repositories().entity("HealthSummary").query(
+        {"owner_email": OWNER_EMAIL}, "-created_date", 1
+    )
     if not rows:
         return None
     row = rows[0]

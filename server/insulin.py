@@ -21,8 +21,9 @@ from datetime import datetime, timedelta, timezone
 from statistics import mean, median, pstdev
 from typing import Any
 
-from . import db, profile
+from . import profile
 from .config import OWNER_EMAIL
+from .repositories import get_repositories
 
 log = logging.getLogger("glucopilot.insulin")
 
@@ -49,8 +50,10 @@ def _f(rx: re.Pattern, s: str) -> float | None:
 def _daily_tdd() -> dict[str, dict[str, float]]:
     """day -> {total, basal, bolus} from parsed Daily Total notes. A day can have
     several such rows (e.g. cartridge changes) — sum them."""
-    rows = db.query_entities(
-        "Treatment", {"owner_email": OWNER_EMAIL, "type": "insulin", "event_type": "Daily Total"}, "timestamp", 100000
+    rows = get_repositories().treatments.query(
+        {"owner_email": OWNER_EMAIL, "type": "insulin", "event_type": "Daily Total"},
+        "timestamp",
+        100000,
     )
     by_day: dict[str, dict[str, float]] = {}
     for t in rows:
@@ -80,6 +83,7 @@ def _category(tdd_per_kg: float | None) -> str:
 
 
 def estimate() -> dict[str, Any]:
+    repositories = get_repositories()
     by_day = _daily_tdd()
     if not by_day:
         return {"available": False, "reason": "No daily insulin totals (basal+bolus) found — pump data needed."}
@@ -98,7 +102,9 @@ def estimate() -> dict[str, Any]:
 
     # Per cycle-phase TDD/kg (luteal resistance shows up here)
     phase_days: dict[str, list[str]] = {}
-    for p in db.query_entities("PeriodLog", {"owner_email": OWNER_EMAIL}, "date", 5000):
+    for p in repositories.entity("PeriodLog").query(
+        {"owner_email": OWNER_EMAIL}, "date", 5000
+    ):
         if p.get("date") and p.get("phase"):
             phase_days.setdefault(p["phase"], []).append(p["date"])
     per_phase = {}
@@ -150,8 +156,13 @@ def absorption() -> dict[str, Any]:
     very different things ('sometimes a lot does little, a little does a lot')."""
     since = (datetime.now(timezone.utc) - timedelta(days=ABS_WINDOW_DAYS)).isoformat(timespec="seconds").replace("+00:00", "Z")
 
+    repositories = get_repositories()
     pts = []
-    for r in db.query_entities("GlucoseReading", {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}}, "timestamp", 300000):
+    for r in repositories.glucose.query(
+        {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}},
+        "timestamp",
+        300000,
+    ):
         e = _epoch(r.get("timestamp"))
         if e is not None and r.get("value") is not None:
             pts.append((e, float(r["value"])))
@@ -162,7 +173,11 @@ def absorption() -> dict[str, Any]:
         return {"available": False, "reason": "Not enough CGM data in range."}
 
     boluses, carbs, ins_times = [], [], []
-    for t in db.query_entities("Treatment", {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}}, "timestamp", 100000):
+    for t in repositories.treatments.query(
+        {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}},
+        "timestamp",
+        100000,
+    ):
         e = _epoch(t.get("timestamp"))
         if e is None:
             continue

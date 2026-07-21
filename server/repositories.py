@@ -1,0 +1,344 @@
+"""Swappable domain repositories over the legacy JSON entity store.
+
+Core modules depend on these interfaces, not on SQLite or the JSON table. The
+legacy implementations intentionally preserve existing query and mutation
+semantics while future typed repositories can implement the same contracts.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Any, Protocol, runtime_checkable
+from collections.abc import Iterator
+
+from . import db
+
+
+Entity = dict[str, Any]
+EntityFilters = dict[str, Any]
+
+
+@runtime_checkable
+class EntityRepository(Protocol):
+    entity_type: str
+
+    def query(
+        self,
+        filters: EntityFilters | None = None,
+        sort: str | None = None,
+        limit: int | None = None,
+        skip: int = 0,
+    ) -> list[Entity]: ...
+
+    def get(self, entity_id: str) -> Entity | None: ...
+
+    def create(self, data: Entity) -> Entity: ...
+
+    def create_many(self, records: list[Entity]) -> list[Entity]: ...
+
+    def update(self, entity_id: str, patch: Entity) -> Entity | None: ...
+
+    def delete(self, entity_id: str) -> bool: ...
+
+    def delete_where(self, filters: EntityFilters) -> int: ...
+
+
+@runtime_checkable
+class GlucoseRepository(EntityRepository, Protocol):
+    """Continuous-glucose observations."""
+
+
+@runtime_checkable
+class TreatmentRepository(EntityRepository, Protocol):
+    """Insulin, carbohydrate, basal, and pump events."""
+
+
+@runtime_checkable
+class LabRepository(EntityRepository, Protocol):
+    """Document-derived or clinician-entered lab observations."""
+
+
+@runtime_checkable
+class WearableRepository(EntityRepository, Protocol):
+    """Provider-day or intraday wearable observations."""
+
+
+@dataclass(frozen=True)
+class RelationshipEdge:
+    subject_type: str
+    subject_id: str
+    predicate: str
+    object_type: str
+    object_id: str
+
+
+@runtime_checkable
+class RelationshipRepository(Protocol):
+    def for_entity(
+        self,
+        owner_email: str,
+        entity_type: str,
+        entity_id: str,
+    ) -> list[RelationshipEdge]: ...
+
+
+@dataclass(frozen=True)
+class EvidenceReference:
+    claim_type: str
+    claim_id: str
+    evidence_kind: str
+    locator: str
+    value: Any
+
+
+@runtime_checkable
+class EvidenceRepository(Protocol):
+    def for_claim(
+        self,
+        owner_email: str,
+        claim_type: str,
+        claim_id: str,
+    ) -> list[EvidenceReference]: ...
+
+
+@runtime_checkable
+class RepositoryCatalog(Protocol):
+    glucose: GlucoseRepository
+    treatments: TreatmentRepository
+    labs: LabRepository
+    oura_daily: WearableRepository
+    oura_heart_rate: WearableRepository
+    fitbit_daily: WearableRepository
+    fitbit_heart_rate: WearableRepository
+    relationships: RelationshipRepository
+    evidence: EvidenceRepository
+
+    def entity(self, entity_type: str) -> EntityRepository: ...
+
+
+class LegacyJsonEntityRepository:
+    """Compatibility adapter for one type in the legacy JSON entity table."""
+
+    def __init__(
+        self,
+        entity_type: str,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        self.entity_type = entity_type
+        self._connection = connection
+
+    def query(
+        self,
+        filters: EntityFilters | None = None,
+        sort: str | None = None,
+        limit: int | None = None,
+        skip: int = 0,
+    ) -> list[Entity]:
+        return db.query_entities(
+            self.entity_type,
+            filters,
+            sort,
+            limit,
+            skip,
+            connection=self._connection,
+        )
+
+    def get(self, entity_id: str) -> Entity | None:
+        rows = self.query({"id": entity_id}, limit=1)
+        return rows[0] if rows else None
+
+    def create(self, data: Entity) -> Entity:
+        return db.create_entity(
+            self.entity_type,
+            data,
+            connection=self._connection,
+        )
+
+    def create_many(self, records: list[Entity]) -> list[Entity]:
+        return db.bulk_create_entities(
+            self.entity_type,
+            records,
+            connection=self._connection,
+        )
+
+    def update(self, entity_id: str, patch: Entity) -> Entity | None:
+        return db.update_entity(
+            self.entity_type,
+            entity_id,
+            patch,
+            connection=self._connection,
+        )
+
+    def delete(self, entity_id: str) -> bool:
+        return db.delete_entity(
+            self.entity_type,
+            entity_id,
+            connection=self._connection,
+        )
+
+    def delete_where(self, filters: EntityFilters) -> int:
+        return db.delete_entities_where(
+            self.entity_type,
+            filters,
+            connection=self._connection,
+        )
+
+
+class LegacyRelationshipRepository:
+    """Project current parent references as relationship edges without writes."""
+
+    def __init__(self, catalog: LegacyRepositoryCatalog) -> None:
+        self._catalog = catalog
+
+    def for_entity(
+        self,
+        owner_email: str,
+        entity_type: str,
+        entity_id: str,
+    ) -> list[RelationshipEdge]:
+        edges: list[RelationshipEdge] = []
+        if entity_type == "LabResult":
+            lab = self._catalog.labs.get(entity_id)
+            if lab and lab.get("owner_email") == owner_email and lab.get("record_id"):
+                edges.append(
+                    RelationshipEdge(
+                        "LabResult",
+                        entity_id,
+                        "extracted_from",
+                        "MedicalRecord",
+                        str(lab["record_id"]),
+                    )
+                )
+        elif entity_type == "MedicalRecord":
+            for lab in self._catalog.labs.query({"owner_email": owner_email, "record_id": entity_id}):
+                edges.append(
+                    RelationshipEdge(
+                        "MedicalRecord",
+                        entity_id,
+                        "has_lab_result",
+                        "LabResult",
+                        lab["id"],
+                    )
+                )
+        elif entity_type == "ChatMessage":
+            message = self._catalog.entity("ChatMessage").get(entity_id)
+            if message and message.get("owner_email") == owner_email and message.get("thread_id"):
+                edges.append(
+                    RelationshipEdge(
+                        "ChatMessage",
+                        entity_id,
+                        "member_of_thread",
+                        "CompanionThread",
+                        str(message["thread_id"]),
+                    )
+                )
+        elif entity_type == "CompanionThread":
+            for message in self._catalog.entity("ChatMessage").query(
+                {"owner_email": owner_email, "thread_id": entity_id}
+            ):
+                edges.append(
+                    RelationshipEdge(
+                        "CompanionThread",
+                        entity_id,
+                        "has_message",
+                        "ChatMessage",
+                        message["id"],
+                    )
+                )
+        return edges
+
+
+class LegacyEvidenceRepository:
+    """Expose existing inline claim support through an evidence interface."""
+
+    _FIELDS = {
+        "Pattern": ("supporting_evidence", "legacy_inline"),
+        "Insight": ("supporting_data", "legacy_inline"),
+        "ChatMessage": ("sources", "external_source"),
+    }
+
+    def __init__(self, catalog: LegacyRepositoryCatalog) -> None:
+        self._catalog = catalog
+
+    def for_claim(
+        self,
+        owner_email: str,
+        claim_type: str,
+        claim_id: str,
+    ) -> list[EvidenceReference]:
+        mapping = self._FIELDS.get(claim_type)
+        if not mapping:
+            return []
+        claim = self._catalog.entity(claim_type).get(claim_id)
+        if not claim or claim.get("owner_email") != owner_email:
+            return []
+        field, kind = mapping
+        value = claim.get(field)
+        if value in (None, "", [], {}):
+            return []
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, ValueError):
+                pass
+        values = value if isinstance(value, list) else [value]
+        return [
+            EvidenceReference(
+                claim_type,
+                claim_id,
+                kind,
+                f"{claim_type}.{field}[{index}]",
+                item,
+            )
+            for index, item in enumerate(values)
+        ]
+
+
+class LegacyRepositoryCatalog:
+    """Repository bundle backed by the current JSON entity store."""
+
+    def __init__(self, connection: sqlite3.Connection | None = None) -> None:
+        self._connection = connection
+        self._entities: dict[str, LegacyJsonEntityRepository] = {}
+        self.glucose = self.entity("GlucoseReading")
+        self.treatments = self.entity("Treatment")
+        self.labs = self.entity("LabResult")
+        self.oura_daily = self.entity("OuraDaily")
+        self.oura_heart_rate = self.entity("OuraHeartRate")
+        self.fitbit_daily = self.entity("FitbitDaily")
+        self.fitbit_heart_rate = self.entity("FitbitHeartRate")
+        self.relationships = LegacyRelationshipRepository(self)
+        self.evidence = LegacyEvidenceRepository(self)
+
+    def entity(self, entity_type: str) -> LegacyJsonEntityRepository:
+        if entity_type not in self._entities:
+            self._entities[entity_type] = LegacyJsonEntityRepository(
+                entity_type,
+                self._connection,
+            )
+        return self._entities[entity_type]
+
+
+_DEFAULT_REPOSITORIES = LegacyRepositoryCatalog()
+_REPOSITORY_OVERRIDE: ContextVar[RepositoryCatalog | None] = ContextVar(
+    "glucopilot_repository_override",
+    default=None,
+)
+
+
+def get_repositories() -> RepositoryCatalog:
+    return _REPOSITORY_OVERRIDE.get() or _DEFAULT_REPOSITORIES
+
+
+@contextmanager
+def use_repositories(repositories: RepositoryCatalog) -> Iterator[RepositoryCatalog]:
+    """Temporarily inject repositories for a test or isolated operation."""
+    token = _REPOSITORY_OVERRIDE.set(repositories)
+    try:
+        yield repositories
+    finally:
+        _REPOSITORY_OVERRIDE.reset(token)

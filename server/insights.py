@@ -12,10 +12,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import db
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value
 from .llm import invoke_llm
+from .repositories import get_repositories
+from .unit_of_work import unit_of_work
 
 WINDOW_DAYS = 90
 MIN_PAIRS = 14
@@ -45,11 +46,11 @@ def _pearson(pairs: list[tuple[float, float]]) -> float | None:
 
 
 def _daily_glucose_metrics(tz: ZoneInfo, since: datetime) -> dict[str, dict[str, float]]:
+    glucose_repository = get_repositories().glucose
     readings = []
     skip = 0
     while True:
-        page = db.query_entities(
-            "GlucoseReading",
+        page = glucose_repository.query(
             {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since.isoformat().replace("+00:00", "Z")}},
             "timestamp",
             5000,
@@ -143,6 +144,7 @@ def _group_mean(glucose: dict, days: set[str], field: str) -> float | None:
 
 
 async def analyze() -> dict[str, Any]:
+    repositories = get_repositories()
     tz = ZoneInfo(config_value("app_timezone", APP_TIMEZONE))
     since = datetime.now(timezone.utc) - timedelta(days=WINDOW_DAYS)
 
@@ -150,12 +152,16 @@ async def analyze() -> dict[str, Any]:
     if len(glucose) < MIN_PAIRS:
         return {"insights": [], "message": f"Not enough full days of glucose data ({len(glucose)})."}
 
-    oura_rows = db.query_entities("OuraDaily", {"owner_email": OWNER_EMAIL}, "-date", 400)
+    oura_rows = repositories.oura_daily.query(
+        {"owner_email": OWNER_EMAIL}, "-date", 400
+    )
     oura_by_day = {r.get("date"): dict(r) for r in oura_rows if r.get("date")}
 
     # Merge Fitbit daily metrics into the wearable-by-day map. Oura fields win
     # where both exist; Fitbit contributes its unique fields and fills gaps.
-    for f in db.query_entities("FitbitDaily", {"owner_email": OWNER_EMAIL}, "-date", 400):
+    for f in repositories.fitbit_daily.query(
+        {"owner_email": OWNER_EMAIL}, "-date", 400
+    ):
         day = f.get("date")
         if not day:
             continue
@@ -176,8 +182,7 @@ async def analyze() -> dict[str, Any]:
     # Daily average HR from the intraday minute-buckets (FitbitHeartRate). Only
     # covers recent/backfilled days, so it joins in once ≥MIN_PAIRS accrue.
     hr_by_day: dict[str, list[float]] = {}
-    for hr in db.query_entities(
-        "FitbitHeartRate",
+    for hr in repositories.fitbit_heart_rate.query(
         {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since.isoformat().replace("+00:00", "Z")}},
         "timestamp",
         200000,
@@ -190,7 +195,9 @@ async def analyze() -> dict[str, Any]:
         if len(bpms) >= 60:  # ≥1h of minute-buckets → a representative daily mean
             oura_by_day.setdefault(day, {}).setdefault("avg_heart_rate", round(sum(bpms) / len(bpms), 1))
 
-    period_rows = db.query_entities("PeriodLog", {"owner_email": OWNER_EMAIL}, "-date", 400)
+    period_rows = repositories.entity("PeriodLog").query(
+        {"owner_email": OWNER_EMAIL}, "-date", 400
+    )
     phase_days: dict[str, set[str]] = {}
     for p in period_rows:
         if p.get("date") and p.get("phase"):
@@ -241,8 +248,7 @@ async def analyze() -> dict[str, Any]:
 
     # Per-phase daily insulin (luteal insulin resistance shows up here)
     insulin_by_day: dict[str, float] = {}
-    for t in db.query_entities(
-        "Treatment",
+    for t in repositories.treatments.query(
         {"owner_email": OWNER_EMAIL, "type": "insulin", "timestamp": {"$gte": since.isoformat().replace("+00:00", "Z")}},
         "timestamp",
         100000,
@@ -361,10 +367,6 @@ Detected relationships (r = Pearson correlation over n days; TIR = % time 70-180
             return f"Weekday TIR {c['weekday_tir']}% vs weekend {c['weekend_tir']}%"
         return f"TIR trend: {c['recent_tir']}% last 30d vs {c['prior_tir']}% prior 30d"
 
-    # Replace previous insights
-    for old in db.query_entities("Insight", {"owner_email": OWNER_EMAIL}):
-        db.delete_entity("Insight", old["id"])
-
     now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     to_create = [
         {
@@ -379,7 +381,13 @@ Detected relationships (r = Pearson correlation over n days; TIR = % time 70-180
         }
         for i, c in enumerate(candidates)
     ]
-    db.bulk_create_entities("Insight", to_create)
+    # Replace the derived set atomically so readers never observe a partial set.
+    with unit_of_work() as work:
+        insight_repository = work.repositories.entity("Insight")
+        insight_repository.delete_where({"owner_email": OWNER_EMAIL})
+        if to_create:
+            insight_repository.create_many(to_create)
+        work.commit()
     return {
         "success": True,
         "insightsFound": len(to_create),
