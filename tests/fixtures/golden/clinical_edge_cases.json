@@ -1,0 +1,506 @@
+{
+  "fixture_version": 1,
+  "synthetic": true,
+  "subject": {
+    "id": "synthetic-person-001",
+    "owner_email": "owner@glucopilot.local"
+  },
+  "parser": {
+    "glooko_readings": [
+      {
+        "input": {
+          "timestamp": "2026-01-15T12:00:00Z",
+          "value": 12300
+        },
+        "expected_value": 123
+      },
+      {
+        "input": {
+          "timestamp": "2026-01-15T12:05:00Z",
+          "value": 6.5
+        },
+        "expected_value": 117
+      },
+      {
+        "input": {
+          "timestamp": "not-a-time",
+          "value": 120
+        },
+        "expected_value": null
+      }
+    ],
+    "glooko_bolus": {
+      "input": {
+        "pumpTimestamp": "2026-01-15T13:00:00Z",
+        "insulinDelivered": 1.25,
+        "carbsInput": 18,
+        "insulinOnBoard": 0.75,
+        "isManual": true,
+        "bolusType": "Normal",
+        "guid": "synthetic-bolus-001"
+      },
+      "expected": [
+        {
+          "type": "insulin",
+          "event_type": "Normal",
+          "amount": 1.25,
+          "notes": "Carbs: 18g | IOB: 0.75U | manual",
+          "ns_id": "glooko-synthetic-bolus-001"
+        },
+        {
+          "type": "carb",
+          "event_type": "Carbs",
+          "amount": 18,
+          "ns_id": "glooko-synthetic-bolus-001-carbs"
+        }
+      ]
+    },
+    "glooko_basal": {
+      "input": {
+        "timestamp": "2026-01-15T14:00:00Z",
+        "rate": 0.8,
+        "duration": 1800,
+        "guid": "synthetic-basal-001"
+      },
+      "expected": {
+        "absolute": 0.8,
+        "duration": 30,
+        "ns_id": "glooko-synthetic-basal-001"
+      }
+    },
+    "nightscout_combined_treatment": {
+      "input": {
+        "eventType": "Meal Bolus",
+        "created_at": "2026-01-15T15:00:00Z",
+        "insulin": 2.5,
+        "carbs": 24,
+        "_id": "synthetic-nightscout-001"
+      },
+      "expected": {
+        "type": "insulin",
+        "amount": 2.5,
+        "insulin_type": "rapid",
+        "notes": "Carbs: 24g"
+      }
+    }
+  },
+  "source_overlap": {
+    "existing_readings": [
+      {
+        "timestamp": "2026-02-01T12:00:00Z",
+        "value": 110,
+        "source": "nightscout",
+        "owner_email": "owner@glucopilot.local"
+      }
+    ],
+    "incoming_readings": [
+      {
+        "timestamp": "2026-02-01T12:00:45Z",
+        "value": 111,
+        "source": "dexcom",
+        "owner_email": "owner@glucopilot.local"
+      },
+      {
+        "timestamp": "2026-02-01T12:05:00Z",
+        "value": 120,
+        "source": "dexcom",
+        "owner_email": "owner@glucopilot.local"
+      },
+      {
+        "timestamp": "invalid",
+        "value": 130,
+        "source": "glooko",
+        "owner_email": "owner@glucopilot.local"
+      }
+    ],
+    "expected": {
+      "created": 1,
+      "skipped": 2,
+      "stored_timestamps": [
+        "2026-02-01T12:00:00Z",
+        "2026-02-01T12:05:00Z"
+      ]
+    }
+  },
+  "fingerstick_disagreement": {
+    "cgm": [
+      {
+        "timestamp": "2026-03-01T09:55:00Z",
+        "value": 150
+      },
+      {
+        "timestamp": "2026-03-01T10:03:00Z",
+        "value": 160
+      },
+      {
+        "timestamp": "2026-03-01T10:20:00Z",
+        "value": 170
+      }
+    ],
+    "fingerstick": {
+      "timestamp": "2026-03-01T10:00:00Z",
+      "value": 110,
+      "note": "synthetic meter comparison"
+    },
+    "expected": {
+      "matched_cgm": 160,
+      "delta": 50,
+      "bias": "cgm_high"
+    }
+  },
+  "missing_pump_data": {
+    "glucose_days": 2,
+    "treatments": [
+      {
+        "timestamp": "2026-04-01T12:00:00Z",
+        "type": "insulin",
+        "event_type": "Bolus",
+        "amount": 4,
+        "owner_email": "owner@glucopilot.local"
+      },
+      {
+        "timestamp": "2026-04-01T12:00:00Z",
+        "type": "carb",
+        "event_type": "Carbs",
+        "amount": 30,
+        "owner_email": "owner@glucopilot.local"
+      },
+      {
+        "timestamp": "2026-04-02T12:00:00Z",
+        "type": "insulin",
+        "event_type": "Bolus",
+        "amount": 2,
+        "owner_email": "owner@glucopilot.local"
+      }
+    ],
+    "expected": {
+      "available": true,
+      "avg_daily_bolus": 3.0,
+      "boluses_per_day": 1.0,
+      "avg_daily_carbs": 15,
+      "avg_daily_basal_est": 0.0,
+      "avg_tdd_est": 3.0,
+      "has_basal": false
+    }
+  },
+  "compression_low": {
+    "days": 7,
+    "hours_utc": [
+      0,
+      3,
+      6,
+      9,
+      12,
+      15,
+      18,
+      21
+    ],
+    "baseline_value": 120,
+    "artifact": {
+      "day_index": 3,
+      "hour_utc": 3,
+      "cgm_value": 50,
+      "fingerstick_value": 112
+    },
+    "expected": {
+      "reading_count": 56,
+      "pattern_types": []
+    }
+  },
+  "cycle_effects": {
+    "period_logs": [
+      {
+        "date": "2026-06-01",
+        "phase": "menstrual",
+        "source": "manual"
+      },
+      {
+        "date": "2026-06-02",
+        "phase": "menstrual",
+        "source": "manual"
+      },
+      {
+        "date": "2026-06-03",
+        "phase": "follicular",
+        "source": "manual"
+      },
+      {
+        "date": "2026-06-29",
+        "phase": "menstrual",
+        "source": "oura_inferred"
+      },
+      {
+        "date": "2026-06-30",
+        "phase": "menstrual",
+        "source": "oura_inferred"
+      },
+      {
+        "date": "2026-07-01",
+        "phase": "follicular",
+        "source": "oura_inferred"
+      }
+    ],
+    "glucose_daily": [
+      {
+        "date": "2026-06-01",
+        "tir": 80,
+        "avg": 120
+      },
+      {
+        "date": "2026-06-02",
+        "tir": 70,
+        "avg": 130
+      },
+      {
+        "date": "2026-06-03",
+        "tir": 90,
+        "avg": 110
+      },
+      {
+        "date": "2026-07-01",
+        "tir": 85,
+        "avg": 115
+      }
+    ],
+    "expected": {
+      "cycles_detected": 2,
+      "avg_cycle_length": 28.0,
+      "source": "inferred from Oura temperature",
+      "menstrual": {
+        "days": 4,
+        "tir": 75,
+        "avg_glucose": 125
+      },
+      "follicular": {
+        "days": 2,
+        "tir": 88,
+        "avg_glucose": 112
+      }
+    }
+  },
+  "lab_extraction": {
+    "record_id": "synthetic-record-001",
+    "extracted": {
+      "record_date": "2026-05-10",
+      "lab_results": [
+        {
+          "test_name": "Vitamin D",
+          "value": 30,
+          "unit": "ng/mL",
+          "reference_low": 20,
+          "reference_high": 80,
+          "flag": "normal",
+          "category": "Nutrients"
+        },
+        {
+          "test_name": "vitamin d",
+          "value": 30,
+          "unit": "ng/mL",
+          "reference_low": 20,
+          "reference_high": 90,
+          "flag": "normal",
+          "category": "Nutrients"
+        },
+        {
+          "test_name": "Vitamin D",
+          "value": 31,
+          "unit": "ng/mL",
+          "reference_low": 20,
+          "reference_high": 80,
+          "flag": "normal",
+          "category": "Nutrients"
+        },
+        {
+          "test_name": "Invalid synthetic result",
+          "value": "not-a-number"
+        }
+      ],
+      "measurements": [
+        {
+          "name": "Synthetic thyroid nodule",
+          "value": 1.2,
+          "unit": "cm",
+          "flag": "enlarged",
+          "category": "Imaging - Synthetic Ultrasound"
+        },
+        {
+          "name": "synthetic thyroid nodule",
+          "value": 1.2,
+          "unit": "cm",
+          "flag": "enlarged",
+          "category": "Imaging - Synthetic Ultrasound"
+        }
+      ]
+    },
+    "expected": {
+      "count": 3,
+      "names": [
+        "Vitamin D",
+        "Vitamin D",
+        "Synthetic thyroid nodule"
+      ],
+      "first_reference_high": 80,
+      "measurement_flag": "high"
+    }
+  },
+  "conflicting_lab_ranges": {
+    "labs": [
+      {
+        "test_name": "Synthetic A1c",
+        "value": 7.0,
+        "unit": "%",
+        "reference_low": 4.0,
+        "reference_high": 5.6,
+        "flag": "high",
+        "collected_date": "2026-01-01",
+        "category": "Metabolic",
+        "owner_email": "owner@glucopilot.local"
+      },
+      {
+        "test_name": "Synthetic A1c",
+        "value": 6.5,
+        "unit": "%",
+        "reference_low": 4.0,
+        "reference_high": 5.7,
+        "flag": "high",
+        "collected_date": "2026-06-01",
+        "category": "Metabolic",
+        "owner_email": "owner@glucopilot.local"
+      },
+      {
+        "test_name": "Synthetic TSH",
+        "value": 3.8,
+        "unit": "mIU/L",
+        "reference_low": 0.4,
+        "reference_high": 4.5,
+        "flag": "normal",
+        "collected_date": "2025-06-01",
+        "category": "Thyroid",
+        "owner_email": "owner@glucopilot.local"
+      },
+      {
+        "test_name": "Synthetic TSH",
+        "value": 3.8,
+        "unit": "mIU/L",
+        "reference_low": 0.5,
+        "reference_high": 3.5,
+        "flag": "high",
+        "collected_date": "2026-06-01",
+        "category": "Thyroid",
+        "owner_email": "owner@glucopilot.local"
+      }
+    ],
+    "expected": {
+      "a1c_trend": "down",
+      "a1c_reference_high": 5.7,
+      "tsh_trend": "flat",
+      "tsh_reference_high": 3.5,
+      "flagged_tests": [
+        "Synthetic A1c",
+        "Synthetic TSH"
+      ]
+    }
+  },
+  "dst_fall_back": {
+    "timezone": "America/New_York",
+    "ambiguous_local": "2026-11-01T01:30:00",
+    "earlier_offset": "-04:00",
+    "later_offset": "-05:00",
+    "readings": [
+      {
+        "timestamp": "2026-11-01T05:00:00Z",
+        "value": 100
+      },
+      {
+        "timestamp": "2026-11-01T05:15:00Z",
+        "value": 110
+      },
+      {
+        "timestamp": "2026-11-01T05:30:00Z",
+        "value": 120
+      },
+      {
+        "timestamp": "2026-11-01T06:00:00Z",
+        "value": 130
+      },
+      {
+        "timestamp": "2026-11-01T06:30:00Z",
+        "value": 140
+      }
+    ],
+    "expected": {
+      "available": true,
+      "readings": 5,
+      "days": 1,
+      "avg": 120,
+      "gmi": 6.2,
+      "cv": 11.8,
+      "std": 14,
+      "tir": 100.0,
+      "tbr70": 0.0,
+      "tbr54": 0.0,
+      "tar180": 0.0,
+      "tar250": 0.0,
+      "local_hour": 1,
+      "p5": 102,
+      "p25": 110,
+      "p50": 120,
+      "p75": 130,
+      "p95": 138
+    }
+  },
+  "companion_evidence": {
+    "user_message": "What could this synthetic pattern mean?",
+    "dossier": {
+      "glucose": {
+        "last_7d": {
+          "avg": 123,
+          "tir_70_180": 88
+        }
+      }
+    },
+    "memories": [
+      {
+        "category": "symptom",
+        "content": "Reports a synthetic afternoon headache for fixture testing."
+      }
+    ],
+    "history": [
+      {
+        "role": "user",
+        "content": "Show the evidence used."
+      },
+      {
+        "role": "assistant",
+        "content": "I will distinguish personal data from general references."
+      }
+    ],
+    "sources": [
+      {
+        "title": "Synthetic Clinical Reference A",
+        "source": "fixture",
+        "url": "https://reference-a.example.invalid/topic",
+        "snippet": "Synthetic educational excerpt A."
+      },
+      {
+        "title": "Synthetic Clinical Reference B",
+        "source": "fixture",
+        "url": "https://reference-b.example.invalid/topic",
+        "snippet": "Synthetic educational excerpt B."
+      }
+    ]
+  },
+  "rollback": {
+    "health_summary": {
+      "owner_email": "owner@glucopilot.local",
+      "generated_at": "2026-07-01T00:00:00Z",
+      "summary": "synthetic rollback sentinel"
+    },
+    "setting": {
+      "key": "golden_fixture_cursor",
+      "value": "2026-07-01T00:00:00Z"
+    },
+    "expected_entity_count": 0,
+    "expected_setting_count": 0
+  }
+}

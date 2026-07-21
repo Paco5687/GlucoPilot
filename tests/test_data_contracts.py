@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+pytestmark = pytest.mark.risk_critical
+
 from server.data_contracts import (
     DATA_CONTRACT_NAME,
     DATA_CONTRACT_VERSION,

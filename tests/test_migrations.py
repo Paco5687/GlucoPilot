@@ -4,6 +4,8 @@ from threading import Barrier
 
 import pytest
 
+pytestmark = pytest.mark.risk_critical
+
 from server.migrations import (
     MIGRATIONS,
     Migration,

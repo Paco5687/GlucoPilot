@@ -21,6 +21,8 @@ typed repositories are introduced.
   time, provenance, assertion, evidence, confidence, and data-version semantics.
 - [Domain repositories and unit of work](REPOSITORIES.md) — swappable legacy
   adapters, relationship/evidence projections, and atomic transaction rules.
+- [Synthetic golden datasets](GOLDEN_DATASETS.md) — public-safe clinical edge
+  cases, prior-release schema snapshots, expected outcomes, and CI gates.
 
 ## Reproduce the structural audit
 
