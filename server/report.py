@@ -17,11 +17,11 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from . import db
 from .auth import require_login
 from .config import APP_TIMEZONE, DEMO_MODE, OWNER_EMAIL
 from .db import config_value
 from .llm import invoke_llm
+from .repositories import get_repositories
 
 DEMO_NARRATIVE = {
     "headline": "A solid quarter — 91% time in range with steady, well-controlled glucose across the cycle.",
@@ -58,10 +58,14 @@ def _percentile(sorted_vals: list[float], p: float) -> float | None:
 
 
 def _paged(etype: str, since_iso: str) -> list[dict]:
+    repository = get_repositories().entity(etype)
     out, skip = [], 0
     while True:
-        page = db.query_entities(
-            etype, {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since_iso}}, "timestamp", 5000, skip
+        page = repository.query(
+            {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since_iso}},
+            "timestamp",
+            5000,
+            skip,
         )
         out.extend(page)
         if len(page) < 5000:
@@ -165,7 +169,9 @@ def _cycle(tz: ZoneInfo, since_iso: str, glucose: dict) -> dict[str, Any]:
     since_date = since_iso[:10]
     logs = [
         l
-        for l in db.query_entities("PeriodLog", {"owner_email": OWNER_EMAIL}, "date", 5000)
+        for l in get_repositories().entity("PeriodLog").query(
+            {"owner_email": OWNER_EMAIL}, "date", 5000
+        )
         if l.get("date") and l["date"] >= since_date and l.get("phase")
     ]
     if not logs:
@@ -216,8 +222,13 @@ def _avg(rows: list[dict], field: str) -> float | None:
 
 
 def _wellness(days: int) -> dict[str, Any]:
-    oura = db.query_entities("OuraDaily", {"owner_email": OWNER_EMAIL}, "-date", days)
-    fitbit = db.query_entities("FitbitDaily", {"owner_email": OWNER_EMAIL}, "-date", days)
+    repositories = get_repositories()
+    oura = repositories.oura_daily.query(
+        {"owner_email": OWNER_EMAIL}, "-date", days
+    )
+    fitbit = repositories.fitbit_daily.query(
+        {"owner_email": OWNER_EMAIL}, "-date", days
+    )
     out: dict[str, Any] = {"oura": None, "fitbit": None}
     if oura:
         temps = [float(r["readiness_temperature_deviation"]) for r in oura if r.get("readiness_temperature_deviation") is not None]
@@ -241,7 +252,9 @@ def _wellness(days: int) -> dict[str, Any]:
 
 
 def _labs() -> dict[str, Any]:
-    rows = db.query_entities("LabResult", {"owner_email": OWNER_EMAIL}, "collected_date", 5000)
+    rows = get_repositories().labs.query(
+        {"owner_email": OWNER_EMAIL}, "collected_date", 5000
+    )
     by_test: dict[str, list[dict]] = {}
     for r in rows:
         if r.get("value") is None or not r.get("test_name"):

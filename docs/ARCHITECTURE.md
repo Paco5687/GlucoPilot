@@ -25,6 +25,8 @@ uploaded records, and config. One owner per deployment.
 | `schema_registry.py` | canonical entity metadata and generic-API exposure registry |
 | `backup.py` | WAL-consistent backups, checksummed manifests, and clean-target restore verification |
 | `data_contracts.py` | additive v1 identity, time, provenance, assertion, and data-version contracts |
+| `repositories.py` | swappable domain interfaces and legacy JSON-backed adapters |
+| `unit_of_work.py` | atomic transaction boundary shared by repository implementations |
 | `auth.py` | first-run setup, login, **admin vs. read-only provider role**, `require_admin` |
 | `entities.py` | generic entity REST API (writes gated to admin) |
 | `settings_api.py` | in-app settings & secrets (DB-stored, override env) |

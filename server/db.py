@@ -10,6 +10,8 @@ import logging
 import sqlite3
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -30,6 +32,18 @@ def connect() -> sqlite3.Connection:
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA busy_timeout=30000")
     return db
+
+
+@contextmanager
+def _connection_scope(
+    connection: sqlite3.Connection | None,
+) -> Iterator[tuple[sqlite3.Connection, bool]]:
+    """Yield a caller-owned connection or open a compatibility connection."""
+    if connection is not None:
+        yield connection, False
+        return
+    with connect() as opened:
+        yield opened, True
 
 
 def init_db() -> None:
@@ -106,20 +120,31 @@ def config_value(name: str, default: str = "") -> str:
     return os.getenv(name.upper(), default)
 
 
-def set_config_value(name: str, value: str) -> None:
-    set_setting(f"cfg_{name.lower()}", value)
+def set_config_value(
+    name: str,
+    value: str,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> None:
+    set_setting(f"cfg_{name.lower()}", value, connection=connection)
 
 
-def set_setting(key: str, value: str) -> None:
-    with connect() as db:
-        db.execute(
+def set_setting(
+    key: str,
+    value: str,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> None:
+    with _connection_scope(connection) as (handle, owns_connection):
+        handle.execute(
             """
             INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
             """,
             (key, value, int(time.time())),
         )
-        db.commit()
+        if owns_connection:
+            handle.commit()
 
 
 def _now_iso() -> str:
@@ -163,6 +188,8 @@ def query_entities(
     sort: str | None = None,
     limit: int | None = None,
     skip: int = 0,
+    *,
+    connection: sqlite3.Connection | None = None,
 ) -> list[dict[str, Any]]:
     where = ["type = ?"]
     params: list[Any] = [etype]
@@ -191,16 +218,26 @@ def query_entities(
     sql = f"SELECT * FROM entities WHERE {' AND '.join(where)} {_order_clause(sort)}"
     sql += " LIMIT ? OFFSET ?"
     params.extend([int(limit) if limit else -1, int(skip or 0)])
-    with connect() as db:
-        rows = db.execute(sql, params).fetchall()
+    with _connection_scope(connection) as (handle, _):
+        rows = handle.execute(sql, params).fetchall()
     return [_row_to_record(r) for r in rows]
 
 
-def create_entity(etype: str, data: dict[str, Any]) -> dict[str, Any]:
-    return bulk_create_entities(etype, [data])[0]
+def create_entity(
+    etype: str,
+    data: dict[str, Any],
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    return bulk_create_entities(etype, [data], connection=connection)[0]
 
 
-def bulk_create_entities(etype: str, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def bulk_create_entities(
+    etype: str,
+    records: list[dict[str, Any]],
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> list[dict[str, Any]]:
     now = _now_iso()
     created = []
     rows = []
@@ -209,39 +246,60 @@ def bulk_create_entities(etype: str, records: list[dict[str, Any]]) -> list[dict
         rid = uuid.uuid4().hex
         rows.append((rid, etype, json.dumps(data), now, now))
         created.append({**data, "id": rid, "created_date": now, "updated_date": now})
-    with connect() as db:
-        db.executemany(
+    with _connection_scope(connection) as (handle, owns_connection):
+        handle.executemany(
             "INSERT INTO entities (id, type, data, created_date, updated_date) VALUES (?, ?, ?, ?, ?)",
             rows,
         )
-        db.commit()
+        if owns_connection:
+            handle.commit()
     return created
 
 
-def update_entity(etype: str, rid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
-    with connect() as db:
-        row = db.execute("SELECT * FROM entities WHERE id=? AND type=?", (rid, etype)).fetchone()
+def update_entity(
+    etype: str,
+    rid: str,
+    patch: dict[str, Any],
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, Any] | None:
+    with _connection_scope(connection) as (handle, owns_connection):
+        row = handle.execute(
+            "SELECT * FROM entities WHERE id=? AND type=?", (rid, etype)
+        ).fetchone()
         if not row:
             return None
         data = json.loads(row["data"])
         data.update({k: v for k, v in patch.items() if k not in _COLUMN_FIELDS})
         now = _now_iso()
-        db.execute(
+        handle.execute(
             "UPDATE entities SET data=?, updated_date=? WHERE id=?",
             (json.dumps(data), now, rid),
         )
-        db.commit()
+        if owns_connection:
+            handle.commit()
     return {**data, "id": rid, "created_date": row["created_date"], "updated_date": now}
 
 
-def delete_entity(etype: str, rid: str) -> bool:
-    with connect() as db:
-        cur = db.execute("DELETE FROM entities WHERE id=? AND type=?", (rid, etype))
-        db.commit()
+def delete_entity(
+    etype: str,
+    rid: str,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> bool:
+    with _connection_scope(connection) as (handle, owns_connection):
+        cur = handle.execute("DELETE FROM entities WHERE id=? AND type=?", (rid, etype))
+        if owns_connection:
+            handle.commit()
     return cur.rowcount > 0
 
 
-def delete_entities_where(etype: str, filters: dict[str, Any]) -> int:
+def delete_entities_where(
+    etype: str,
+    filters: dict[str, Any],
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> int:
     """Bulk delete helper for source-scoped backfills (Base44 had to loop)."""
     where = ["type = ?"]
     params: list[Any] = [etype]
@@ -250,7 +308,8 @@ def delete_entities_where(etype: str, filters: dict[str, Any]) -> int:
             raise ValueError(f"Invalid filter field: {key}")
         where.append(f"json_extract(data, '$.{key}') = ?")
         params.append(_filter_value(value))
-    with connect() as db:
-        cur = db.execute(f"DELETE FROM entities WHERE {' AND '.join(where)}", params)
-        db.commit()
+    with _connection_scope(connection) as (handle, owns_connection):
+        cur = handle.execute(f"DELETE FROM entities WHERE {' AND '.join(where)}", params)
+        if owns_connection:
+            handle.commit()
     return cur.rowcount

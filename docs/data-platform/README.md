@@ -19,6 +19,8 @@ typed repositories are introduced.
   upgrade, failure, restore, and recovery operations.
 - [Clinical data contracts](DATA_CONTRACTS.md) — versioned canonical identity,
   time, provenance, assertion, evidence, confidence, and data-version semantics.
+- [Domain repositories and unit of work](REPOSITORIES.md) — swappable legacy
+  adapters, relationship/evidence projections, and atomic transaction rules.
 
 ## Reproduce the structural audit
 
