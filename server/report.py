@@ -295,6 +295,7 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
             for f in payload["labs"].get("flagged", [])
         ],
         "symptom_journal": payload.get("symptoms"),
+        "health_history": payload.get("history"),
     }
     try:
         return await invoke_llm(
@@ -303,7 +304,7 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
 Data for the last {payload['days']} days:
 {summary}
 
-Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. If a symptom_journal is present, summarize the symptoms she has actually reported (how often and how severe) and note any that coincide with the data. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Keep it factual and readable.""",
+Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. If a health_history is present, use it as background (diagnoses, exposures, injuries, hospital visits, and the patient's own narrative) to frame what you observe. If a symptom_journal is present, summarize the symptoms she has actually reported (how often and how severe) and note any that coincide with the data. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Keep it factual and readable.""",
             response_json_schema={
                 "type": "object",
                 "properties": {
@@ -343,12 +344,13 @@ async def visit_report(body: ReportBody):
     wellness = _wellness(days)
     labs = _labs()
 
-    from . import conditions, insurance, meds, symptoms
+    from . import conditions, history, insurance, meds, symptoms
 
     payload = {
         "conditions": conditions.report_block(),
         "medications": meds.get_medications(),
         "allergies": meds.get_allergies(),
+        "history": history.report_block(),
         "symptoms": symptoms.report_block(days),
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "days": days,

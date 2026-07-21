@@ -1,7 +1,7 @@
 import { Outlet, Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, LineChart, Brain, GitCompare, Plug, Menu, X, Shield,
-  Heart, LogOut, Settings, Lightbulb, FolderHeart, FileText, Eye, Watch, Sparkles, Syringe, MessageCircleHeart, NotebookPen,
+  Heart, LogOut, Settings, Lightbulb, FolderHeart, FileText, Eye, Watch, Sparkles, Syringe, MessageCircleHeart, NotebookPen, ScrollText,
 } from "lucide-react";
 import { Bug } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -35,6 +35,7 @@ const navGroups = [
     items: [
       { path: "/overview", label: "Overview", icon: Sparkles },
       { path: "/symptoms", label: "Symptoms", icon: NotebookPen, adminOnly: true },
+      { path: "/history", label: "History", icon: ScrollText, adminOnly: true },
       { path: "/period", label: "Cycle", icon: Heart },
       { path: "/wearables", label: "Wearables", icon: Watch },
       { path: "/records", label: "Records", icon: FolderHeart },

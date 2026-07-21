@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import conditions, db, meds, profile, report, symptoms
+from . import conditions, db, history, meds, profile, report, symptoms
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value, set_config_value
 from .llm import invoke_llm
@@ -121,6 +121,7 @@ def _build_context() -> dict[str, Any]:
         "labs_out_of_range": flagged,
         "lab_trends": trends,
         "symptom_journal": symptoms.context_block(WINDOW_DAYS),
+        "health_history": history.context_block(),
         "computed_correlations": _insights_snapshot(),
         "imaging": _imaging_snapshot(),
     }
