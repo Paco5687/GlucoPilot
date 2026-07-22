@@ -112,6 +112,37 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                         "SELECT version, name, checksum FROM schema_migrations ORDER BY version"
                     )
                 ]
+            source_archive = None
+            if all(
+                _table_exists(connection, table)
+                for table in ("source_records", "source_files", "sync_runs")
+            ):
+                source_archive = {
+                    "source_records": dict(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*) AS count,
+                                   COALESCE(SUM(uncompressed_bytes), 0) AS uncompressed_bytes,
+                                   COALESCE(SUM(stored_bytes), 0) AS stored_bytes
+                            FROM source_records
+                            """
+                        ).fetchone()
+                    ),
+                    "source_files": dict(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*) AS count,
+                                   COALESCE(SUM(byte_size), 0) AS referenced_bytes
+                            FROM source_files
+                            """
+                        ).fetchone()
+                    ),
+                    "sync_runs": dict(
+                        connection.execute(
+                            "SELECT COUNT(*) AS count FROM sync_runs"
+                        ).fetchone()
+                    ),
+                }
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:
@@ -124,6 +155,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
         "entity_counts": entity_counts,
         "migrations": migrations,
     }
+    if source_archive is not None:
+        metadata["source_archive"] = source_archive
     if include_references:
         metadata["record_references"] = references
     return metadata
@@ -315,7 +348,10 @@ def restore_backup(backup_dir: Path, target_data_dir: Path) -> dict[str, Any]:
 def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     metadata = _database_metadata(restored_data_dir / DATABASE_NAME, include_references=True)
     expected_database = manifest.get("database") or {}
-    for key in ("entity_total", "entity_counts", "migrations"):
+    keys = ["entity_total", "entity_counts", "migrations"]
+    if "source_archive" in expected_database:
+        keys.append("source_archive")
+    for key in keys:
         if metadata[key] != expected_database.get(key):
             raise BackupError(f"restored database metadata mismatch: {key}")
     actual_records = {
@@ -326,13 +362,21 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
     missing = sorted(reference for reference in references if reference not in actual_records)
     if missing:
         raise BackupError(f"restored database references {len(missing)} missing record files")
-    return {
+    verification = {
         "integrity_check": metadata["integrity_check"],
         "entity_total": metadata["entity_total"],
         "record_file_count": len(actual_records),
         "referenced_record_count": len(references),
         "missing_record_count": 0,
     }
+    if "source_archive" in expected_database:
+        verification.update(
+            {
+                "source_record_count": metadata["source_archive"]["source_records"]["count"],
+                "source_file_reference_count": metadata["source_archive"]["source_files"]["count"],
+            }
+        )
+    return verification
 
 
 def verify_backup(backup_dir: Path) -> dict[str, Any]:

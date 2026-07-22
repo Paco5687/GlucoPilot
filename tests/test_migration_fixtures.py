@@ -11,6 +11,7 @@ from server.schema_registry import ENTITY_SCHEMAS
 pytestmark = pytest.mark.risk_critical
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "migrations"
+MIGRATION_VERSIONS = [migration.version for migration in MIGRATIONS]
 
 
 def _load_snapshot(name: str) -> str:
@@ -40,8 +41,18 @@ def _schema_signature(database: Path) -> tuple[dict[str, list[tuple]], dict[str,
 @pytest.mark.parametrize(
     ("snapshot", "pending", "applied", "entity_id"),
     [
-        ("pre_registry_v0.sql", [1, 2], [1, 2], "synthetic-pre-registry-row"),
-        ("tracked_baseline_v1.sql", [2], [2], "synthetic-tracked-baseline-row"),
+        (
+            "pre_registry_v0.sql",
+            MIGRATION_VERSIONS,
+            MIGRATION_VERSIONS,
+            "synthetic-pre-registry-row",
+        ),
+        (
+            "tracked_baseline_v1.sql",
+            MIGRATION_VERSIONS[1:],
+            MIGRATION_VERSIONS[1:],
+            "synthetic-tracked-baseline-row",
+        ),
     ],
 )
 def test_prior_release_schema_snapshots_upgrade_without_data_loss(
@@ -68,7 +79,7 @@ def test_prior_release_schema_snapshots_upgrade_without_data_loss(
         assert connection.execute("SELECT COUNT(*) FROM entity_schema_registry").fetchone() == (len(ENTITY_SCHEMAS),)
 
     clean = tmp_path / "clean.sqlite3"
-    assert run_migrations(clean) == [1, 2]
+    assert run_migrations(clean) == MIGRATION_VERSIONS
     assert _schema_signature(database) == _schema_signature(clean)
 
 

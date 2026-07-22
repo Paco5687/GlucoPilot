@@ -139,6 +139,116 @@ MIGRATIONS = (
             *_registry_statements(),
         ),
     ),
+    Migration(
+        3,
+        "immutable_source_archive",
+        (
+            Statement(
+                """
+                CREATE TABLE sync_runs (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    parser_version TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('running', 'succeeded', 'failed', 'partial')),
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT,
+                    records_seen INTEGER NOT NULL DEFAULT 0 CHECK(records_seen >= 0),
+                    records_archived INTEGER NOT NULL DEFAULT 0 CHECK(records_archived >= 0),
+                    records_deduplicated INTEGER NOT NULL DEFAULT 0 CHECK(records_deduplicated >= 0),
+                    files_seen INTEGER NOT NULL DEFAULT 0 CHECK(files_seen >= 0),
+                    files_archived INTEGER NOT NULL DEFAULT 0 CHECK(files_archived >= 0),
+                    files_deduplicated INTEGER NOT NULL DEFAULT 0 CHECK(files_deduplicated >= 0),
+                    bytes_received INTEGER NOT NULL DEFAULT 0 CHECK(bytes_received >= 0),
+                    error_summary TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE source_records (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    external_id TEXT,
+                    observed_at TEXT,
+                    received_at TEXT NOT NULL,
+                    payload_hash TEXT NOT NULL CHECK(length(payload_hash) = 71 AND payload_hash LIKE 'sha256:%'),
+                    parser_version TEXT NOT NULL,
+                    sync_run_id TEXT REFERENCES sync_runs(id) ON DELETE RESTRICT,
+                    content_encoding TEXT NOT NULL CHECK(content_encoding = 'json+gzip'),
+                    payload BLOB NOT NULL,
+                    uncompressed_bytes INTEGER NOT NULL CHECK(uncompressed_bytes >= 0),
+                    stored_bytes INTEGER NOT NULL CHECK(stored_bytes >= 0),
+                    created_at TEXT NOT NULL,
+                    UNIQUE(owner_id, source_type, payload_hash)
+                )
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE source_files (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    source_type TEXT NOT NULL,
+                    external_id TEXT,
+                    observed_at TEXT,
+                    received_at TEXT NOT NULL,
+                    file_hash TEXT NOT NULL CHECK(length(file_hash) = 71 AND file_hash LIKE 'sha256:%'),
+                    relative_path TEXT NOT NULL CHECK(
+                        relative_path != '' AND
+                        substr(relative_path, 1, 1) != '/' AND
+                        relative_path != '..' AND
+                        relative_path NOT LIKE '../%' AND
+                        relative_path NOT LIKE '%/../%' AND
+                        relative_path NOT LIKE '%/..'
+                    ),
+                    byte_size INTEGER NOT NULL CHECK(byte_size >= 0),
+                    mime_type TEXT,
+                    parser_version TEXT NOT NULL,
+                    sync_run_id TEXT REFERENCES sync_runs(id) ON DELETE RESTRICT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(owner_id, source_type, file_hash)
+                )
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_source_records_received "
+                "ON source_records(owner_id, source_type, received_at)"
+            ),
+            Statement(
+                "CREATE INDEX idx_source_records_sync_run ON source_records(sync_run_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_source_files_received "
+                "ON source_files(owner_id, source_type, received_at)"
+            ),
+            Statement("CREATE INDEX idx_source_files_sync_run ON source_files(sync_run_id)"),
+            Statement(
+                "CREATE INDEX idx_sync_runs_source_started "
+                "ON sync_runs(owner_id, source_type, started_at)"
+            ),
+            Statement(
+                """
+                CREATE TRIGGER source_records_immutable
+                BEFORE UPDATE ON source_records
+                BEGIN
+                    SELECT RAISE(ABORT, 'source_records are immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER source_files_immutable
+                BEFORE UPDATE ON source_files
+                BEGIN
+                    SELECT RAISE(ABORT, 'source_files are immutable');
+                END
+                """
+            ),
+        ),
+    ),
 )
 
 

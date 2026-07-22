@@ -20,6 +20,7 @@ Core analytics depend on `RepositoryCatalog`, not `db.query_entities`:
 | `WearableRepository` | Oura/Fitbit daily and heart-rate JSON entities |
 | `RelationshipRepository` | Read-only projection of lab→record and message→thread references |
 | `EvidenceRepository` | Read-only projection of Pattern/Insight inline support and ChatMessage sources |
+| `SourceArchiveRepository` | Typed immutable source payload/file metadata and sync-run tables |
 | `EntityRepository` | Compatibility adapter used for remaining registered domains |
 
 Every entity adapter preserves the generic filter, sort, limit, skip, envelope,
@@ -97,7 +98,7 @@ not erase what the user submitted.
 
 ## Compatibility and rollout rules
 
-1. F4 adds no migration or typed table.
+1. F4 added no migration or typed table; I1 adds only the isolated source archive tables.
 2. Default reads and writes remain legacy JSON-backed.
 3. Repository overrides are context-local and tests must restore them.
 4. Typed implementations must pass the same repository compatibility suite.

@@ -23,6 +23,8 @@ typed repositories are introduced.
   adapters, relationship/evidence projections, and atomic transaction rules.
 - [Synthetic golden datasets](GOLDEN_DATASETS.md) — public-safe clinical edge
   cases, prior-release schema snapshots, expected outcomes, and CI gates.
+- [Immutable source archive](SOURCE_ARCHIVE.md) — scrubbed/compressed payloads,
+  file references, sync-run lineage, deduplication, retention, and rollout.
 
 ## Reproduce the structural audit
 
