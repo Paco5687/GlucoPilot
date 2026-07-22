@@ -16,6 +16,8 @@ Core analytics depend on `RepositoryCatalog`, not `db.query_entities`:
 |---|---|
 | `GlucoseRepository` | `GlucoseReading` JSON entities |
 | `TreatmentRepository` | `Treatment` JSON entities |
+| `BasalSegmentRepository` | Strict feature-gated `basal_segments` sidecar |
+| `PumpDailyTotalRepository` | Strict feature-gated `pump_daily_totals` sidecar |
 | `LabRepository` | `LabResult` JSON entities |
 | `WearableRepository` | Oura/Fitbit daily and heart-rate JSON entities |
 | `RelationshipRepository` | Read-only projection of lab→record and message→thread references |
@@ -27,6 +29,12 @@ Core analytics depend on `RepositoryCatalog`, not `db.query_entities`:
 Every entity adapter preserves the generic filter, sort, limit, skip, envelope,
 and mutation behavior used by the existing API. The generic entity routes still
 call `server.db` directly, so F4 does not expand or restrict API exposure.
+
+I4 wraps the legacy Treatment adapter with `TreatmentCompatibilityRepository`.
+Mutations always retain the legacy behavior. Supported domain reads may use the
+strict typed projection only under `TYPED_TREATMENT_READS_ENABLED`; unsupported
+legacy JSON filters fall back to the compatibility store. See
+[Typed treatments](TYPED_TREATMENTS.md).
 
 The relationship and evidence repositories deliberately do not create a hidden
 schema. They project current fields only. G1 and G2 will add reviewed registries

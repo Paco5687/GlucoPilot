@@ -84,6 +84,95 @@
       }
     }
   },
+  "typed_treatments": {
+    "rows": [
+      {
+        "id": "synthetic-treatment-bolus",
+        "timestamp": "2026-01-16T10:00:00Z",
+        "source": "dexcom",
+        "ns_id": "synthetic-dexcom-bolus",
+        "type": "insulin",
+        "event_type": "Insulin",
+        "amount": 1.5,
+        "insulin_type": "rapid",
+        "owner_email": "owner@glucopilot.local"
+      },
+      {
+        "id": "synthetic-treatment-carbs",
+        "timestamp": "2026-01-16T10:05:00Z",
+        "source": "glooko",
+        "ns_id": "synthetic-glooko-carbs",
+        "type": "carb",
+        "event_type": "Carbs",
+        "amount": 22,
+        "owner_email": "owner@glucopilot.local"
+      },
+      {
+        "id": "synthetic-treatment-basal",
+        "timestamp": "2026-01-16T11:00:00Z",
+        "source": "tandem",
+        "ns_id": "synthetic-tandem-basal",
+        "type": "tempbasal",
+        "event_type": "Temp Basal",
+        "absolute": 0.85,
+        "duration": 30,
+        "percent": 110,
+        "owner_email": "owner@glucopilot.local"
+      },
+      {
+        "id": "synthetic-treatment-suspension",
+        "timestamp": "2026-01-16T12:00:00Z",
+        "source": "tandem",
+        "ns_id": "synthetic-tandem-suspension",
+        "type": "suspension",
+        "event_type": "Pump Suspend",
+        "duration": 15,
+        "owner_email": "owner@glucopilot.local"
+      },
+      {
+        "id": "synthetic-treatment-bg",
+        "timestamp": "2026-01-16T12:30:00Z",
+        "source": "csv",
+        "type": "bg",
+        "event_type": "BG Check",
+        "glucose": 118,
+        "glucose_type": "Finger",
+        "owner_email": "owner@glucopilot.local"
+      },
+      {
+        "id": "synthetic-treatment-note",
+        "timestamp": "2026-01-16T13:00:00Z",
+        "source": "nightscout",
+        "type": "note",
+        "event_type": "Exercise",
+        "notes": "Synthetic activity note",
+        "owner_email": "owner@glucopilot.local"
+      },
+      {
+        "id": "synthetic-treatment-total",
+        "timestamp": "2026-01-16T23:59:00Z",
+        "source": "tandem",
+        "ns_id": "synthetic-tandem-total",
+        "type": "insulin",
+        "event_type": "Daily Total",
+        "notes": "Bolus: 7.5U | Basal: 18.25U | Total: 25.75U",
+        "owner_email": "owner@glucopilot.local"
+      }
+    ],
+    "invalid": {
+      "id": "synthetic-treatment-invalid",
+      "timestamp": "not-a-time",
+      "source": "synthetic",
+      "type": "carb",
+      "amount": 10,
+      "owner_email": "owner@glucopilot.local"
+    },
+    "expected": {
+      "typed_count": 7,
+      "basal_count": 2,
+      "daily_total_count": 1
+    }
+  },
   "source_overlap": {
     "existing_readings": [
       {
