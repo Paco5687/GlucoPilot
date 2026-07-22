@@ -214,6 +214,8 @@ are omitted from the time column below for brevity.
 | Connections / `FitbitConnection` | owner singleton | expiry effective; last sync recorded | source fact; device/provider or import |
 | Wearables / `FitbitDaily` | owner + provider date | `date` observed day | source fact; device/provider or import |
 | Wearables / `FitbitHeartRate` | source or legacy | `timestamp` observed UTC | source fact; device/provider or import |
+| Typed wearable daily projection | canonical legacy entity + explicit provider | provider-local observed date | source fact; device/provider or import; mapping version and legacy fingerprint required |
+| Typed wearable sample projection | canonical legacy entity + explicit provider | canonical observed UTC plus original source timestamp/local date | source fact; device/provider or import; strict BPM unit/value |
 | Glucose / `FingerstickReading` | application record | `timestamp` observed UTC | patient report; patient |
 | Typed glucose projection | canonical legacy entity/source identity | canonical observed UTC plus original source timestamp and local date | source fact; device/provider or import; mapping version and legacy fingerprint required |
 | Typed fingerstick projection | canonical application identity | canonical observed UTC plus fixed paired-CGM time when present | patient report; patient; paired CGM remains a separate source fact |

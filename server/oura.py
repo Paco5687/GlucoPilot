@@ -14,6 +14,7 @@ from . import db
 from .config import OWNER_EMAIL, env
 from .connector_provenance import capture_records, latest_observed, source_failure
 from .db import config_value
+from .repositories import get_repositories
 
 OURA_TOKEN_URL = "https://api.ouraring.com/oauth/token"
 OURA_API = "https://api.ouraring.com/v2/usercollection"
@@ -197,7 +198,8 @@ def _sync_intraday_hr(hr_data: list[dict]) -> tuple[int, int]:
     seconds apart, so no tolerance window."""
     if not hr_data:
         return 0, 0
-    existing = db.query_entities("OuraHeartRate", {"owner_email": OWNER_EMAIL}, "timestamp", 1000000)
+    repository = get_repositories().oura_heart_rate
+    existing = repository.query({"owner_email": OWNER_EMAIL}, "timestamp", 1000000)
     seen = {r.get("timestamp") for r in existing}
 
     new_samples = []
@@ -211,7 +213,7 @@ def _sync_intraday_hr(hr_data: list[dict]) -> tuple[int, int]:
         seen.add(iso)
         new_samples.append({"timestamp": iso, "bpm": sample["bpm"], "source": "oura", "owner_email": OWNER_EMAIL})
     if new_samples:
-        db.bulk_create_entities("OuraHeartRate", new_samples)
+        repository.create_many(new_samples)
     return len(new_samples), len(hr_data) - len(new_samples)
 
 
@@ -252,17 +254,18 @@ async def handle_sync(body: dict[str, Any]) -> dict[str, Any]:
 
     by_day = _process_daily(sleep, readiness, activity, hr, spo2)
 
-    existing = db.query_entities("OuraDaily", {"owner_email": OWNER_EMAIL})
+    repository = get_repositories().oura_daily
+    existing = repository.query({"owner_email": OWNER_EMAIL})
     existing_by_date = {e.get("date"): e for e in existing}
 
     created = updated = 0
     for day_key, data in by_day.items():
         record = {**data, "date": day_key, "owner_email": OWNER_EMAIL}
         if day_key in existing_by_date:
-            db.update_entity("OuraDaily", existing_by_date[day_key]["id"], record)
+            repository.update(existing_by_date[day_key]["id"], record)
             updated += 1
         else:
-            db.create_entity("OuraDaily", record)
+            repository.create(record)
             created += 1
 
     hr_created, hr_skipped = _sync_intraday_hr(hr)

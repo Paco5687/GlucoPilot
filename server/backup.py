@@ -247,6 +247,17 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                     )
                     for table in ("glucose_readings", "fingerstick_readings")
                 }
+            typed_wearables = None
+            if all(
+                _table_exists(connection, table)
+                for table in ("wearable_daily", "wearable_samples")
+            ):
+                typed_wearables = {
+                    table: dict(
+                        connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+                    )
+                    for table in ("wearable_daily", "wearable_samples")
+                }
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:
@@ -271,6 +282,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
         metadata["contradiction_ledger"] = contradiction_ledger
     if typed_glucose is not None:
         metadata["typed_glucose"] = typed_glucose
+    if typed_wearables is not None:
+        metadata["typed_wearables"] = typed_wearables
     if include_references:
         metadata["record_references"] = references
     return metadata
@@ -475,6 +488,8 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
         keys.append("contradiction_ledger")
     if "typed_glucose" in expected_database:
         keys.append("typed_glucose")
+    if "typed_wearables" in expected_database:
+        keys.append("typed_wearables")
     for key in keys:
         if metadata[key] != expected_database.get(key):
             raise BackupError(f"restored database metadata mismatch: {key}")
@@ -534,6 +549,13 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
             {
                 "typed_glucose_reading_count": metadata["typed_glucose"]["glucose_readings"]["count"],
                 "typed_fingerstick_reading_count": metadata["typed_glucose"]["fingerstick_readings"]["count"],
+            }
+        )
+    if "typed_wearables" in expected_database:
+        verification.update(
+            {
+                "typed_wearable_daily_count": metadata["typed_wearables"]["wearable_daily"]["count"],
+                "typed_wearable_sample_count": metadata["typed_wearables"]["wearable_samples"]["count"],
             }
         )
     return verification

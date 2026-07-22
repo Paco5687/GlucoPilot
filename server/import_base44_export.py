@@ -25,6 +25,7 @@ from pathlib import Path
 from . import db
 from .config import OWNER_EMAIL
 from .readings import persist_readings_deduped
+from .repositories import get_repositories
 
 READING_TOLERANCE = 240  # seconds
 TREATMENT_TOLERANCE = 90
@@ -145,8 +146,9 @@ def _clean_row(r: dict) -> dict:
 
 
 def import_oura_daily(path: Path) -> tuple[int, int]:
+    repository = get_repositories().oura_daily
     existing_dates = {
-        r.get("date") for r in db.query_entities("OuraDaily", {"owner_email": OWNER_EMAIL}, "date", 1000000)
+        r.get("date") for r in repository.query({"owner_email": OWNER_EMAIL}, "date", 1000000)
     }
     with open(path, newline="") as f:
         rows = [r for r in csv.DictReader(f) if r.get("date") and r.get("is_sample") != "true"]
@@ -161,12 +163,13 @@ def import_oura_daily(path: Path) -> tuple[int, int]:
         record["date"] = r["date"]  # keep as string even if it parsed numeric
         to_create.append(record)
     for i in range(0, len(to_create), 1000):
-        db.bulk_create_entities("OuraDaily", to_create[i : i + 1000])
+        repository.create_many(to_create[i : i + 1000])
     return len(to_create), skipped
 
 
 def import_oura_heartrate(path: Path) -> tuple[int, int]:
-    existing = db.query_entities("OuraHeartRate", {"owner_email": OWNER_EMAIL}, "timestamp", 1000000)
+    repository = get_repositories().oura_heart_rate
+    existing = repository.query({"owner_email": OWNER_EMAIL}, "timestamp", 1000000)
     index = ToleranceIndex([_epoch(r["timestamp"]) for r in existing if r.get("timestamp")])
     with open(path, newline="") as f:
         rows = [r for r in csv.DictReader(f) if r.get("timestamp") and r.get("bpm") and r.get("is_sample") != "true"]
@@ -183,7 +186,7 @@ def import_oura_heartrate(path: Path) -> tuple[int, int]:
         record.setdefault("source", "oura")
         to_create.append(record)
     for i in range(0, len(to_create), 1000):
-        db.bulk_create_entities("OuraHeartRate", to_create[i : i + 1000])
+        repository.create_many(to_create[i : i + 1000])
     return len(to_create), skipped
 
 

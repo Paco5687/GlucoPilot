@@ -33,6 +33,7 @@ the other waits, rechecks the ledger, and applies nothing.
 | 7 | `auditable_medical_record_extraction` | Adds extraction runs, versioned source-located observations, and immutable verification events while retaining `LabResult` compatibility rows. |
 | 8 | `clinical_contradiction_ledger` | Adds versioned rule runs, both-sides contradiction records, and immutable attributed resolution events without changing legacy clinical rows. |
 | 9 | `typed_glucose_and_fingersticks` | Adds strict, indexed, rebuildable glucose and paired-fingerstick projections without changing legacy JSON authority or generic APIs. |
+| 10 | `typed_wearable_storage` | Adds strict, indexed, rebuildable daily wearable and heart-rate sample projections while preserving provider overlap and legacy APIs. |
 
 ## Adding a migration
 

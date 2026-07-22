@@ -43,6 +43,7 @@ from .connector_provenance import (
     source_failure,
 )
 from .db import config_value, set_config_value
+from .repositories import get_repositories
 
 log = logging.getLogger("glucopilot.google_health")
 
@@ -415,10 +416,11 @@ async def _sync_heart_rate(minutes: int = 180) -> dict[str, Any]:
                 break
 
     cutoff_iso = cutoff.isoformat(timespec="seconds").replace("+00:00", "Z")
+    sample_repository = get_repositories().fitbit_heart_rate
     existing = {
         r.get("timestamp")
-        for r in db.query_entities(
-            "FitbitHeartRate", {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": cutoff_iso}}, "-timestamp", 5000
+        for r in sample_repository.query(
+            {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": cutoff_iso}}, "-timestamp", 5000
         )
     }
     to_create = [
@@ -427,7 +429,7 @@ async def _sync_heart_rate(minutes: int = 180) -> dict[str, Any]:
         if k not in existing
     ]
     if to_create:
-        db.bulk_create_entities("FitbitHeartRate", to_create)
+        sample_repository.create_many(to_create)
     if can_advance_freshness():
         set_config_value("google_health_hr_last_sync", _iso_now())
     return {
@@ -450,8 +452,8 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
 
     if action == "status":
         conn = _get_connection()
-        latest = db.query_entities(
-            "FitbitDaily", {"owner_email": OWNER_EMAIL, "source": "google_health"}, "-date", 1
+        latest = get_repositories().fitbit_daily.query(
+            {"owner_email": OWNER_EMAIL, "source": "google_health"}, "-date", 1
         )
         return {
             "configured": bool(
@@ -526,8 +528,9 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
                 log.exception("google health sync failed")
                 return {"error": f"Google Health sync failed: {err}", "_status": 502}
 
-            existing = db.query_entities(
-                "FitbitDaily", {"owner_email": OWNER_EMAIL, "source": "google_health"}
+            repository = get_repositories().fitbit_daily
+            existing = repository.query(
+                {"owner_email": OWNER_EMAIL, "source": "google_health"}
             )
             existing_by_date = {e.get("date"): e for e in existing}
             created = updated = 0
@@ -536,10 +539,10 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
                     continue
                 record = {**data, "date": day_key, "source": "google_health", "owner_email": OWNER_EMAIL}
                 if day_key in existing_by_date:
-                    db.update_entity("FitbitDaily", existing_by_date[day_key]["id"], record)
+                    repository.update(existing_by_date[day_key]["id"], record)
                     updated += 1
                 else:
-                    db.create_entity("FitbitDaily", record)
+                    repository.create(record)
                     created += 1
         if can_advance_freshness():
             set_config_value("google_health_last_sync", _iso_now())

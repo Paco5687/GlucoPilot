@@ -52,6 +52,12 @@ projections. The latter retains the paired CGM entity, value, timestamp, source,
 and signed delta captured at entry. Invalid compatibility rows remain visible
 only in legacy storage and appear as unmappable in parity reports.
 
+Migration 10 adds strict `wearable_daily` and `wearable_samples` projections.
+Fitbit and Google Health rows remain separate even on the same day; provider
+overlap is explicit rather than silently merged. Known metric presence and
+unknown compatibility fields round-trip, while invalid rows remain in legacy
+storage and are reported as unmappable.
+
 ## Clinical profile and narrative records
 
 | Entity | Schema | Identity / mutation | Missing-data behavior |

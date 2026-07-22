@@ -893,6 +893,121 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        10,
+        "typed_wearable_storage",
+        (
+            Statement(
+                """
+                CREATE TABLE wearable_daily (
+                    entity_id TEXT PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE,
+                    canonical_id TEXT NOT NULL UNIQUE,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    owner_email TEXT NOT NULL,
+                    entity_type TEXT NOT NULL CHECK(entity_type IN ('OuraDaily', 'FitbitDaily')),
+                    provider TEXT NOT NULL CHECK(provider != ''),
+                    source_present INTEGER NOT NULL CHECK(source_present IN (0, 1)),
+                    source_record_id TEXT,
+                    source_record_canonical_id TEXT,
+                    observed_date TEXT NOT NULL CHECK(length(observed_date) = 10),
+                    present_fields_json TEXT NOT NULL CHECK(json_valid(present_fields_json)),
+                    compatibility_extra_json TEXT NOT NULL CHECK(json_valid(compatibility_extra_json)),
+                    sleep_score REAL CHECK(sleep_score IS NULL OR sleep_score BETWEEN 0 AND 100),
+                    sleep_total_seconds REAL CHECK(sleep_total_seconds IS NULL OR sleep_total_seconds BETWEEN 0 AND 172800),
+                    sleep_efficiency REAL CHECK(sleep_efficiency IS NULL OR sleep_efficiency BETWEEN 0 AND 100),
+                    sleep_rem_seconds REAL CHECK(sleep_rem_seconds IS NULL OR sleep_rem_seconds BETWEEN 0 AND 172800),
+                    sleep_deep_seconds REAL CHECK(sleep_deep_seconds IS NULL OR sleep_deep_seconds BETWEEN 0 AND 172800),
+                    sleep_latency_seconds REAL CHECK(sleep_latency_seconds IS NULL OR sleep_latency_seconds BETWEEN 0 AND 172800),
+                    readiness_score REAL CHECK(readiness_score IS NULL OR readiness_score BETWEEN 0 AND 100),
+                    readiness_temperature_deviation REAL CHECK(readiness_temperature_deviation IS NULL OR readiness_temperature_deviation BETWEEN -20 AND 20),
+                    readiness_hrv_balance REAL CHECK(readiness_hrv_balance IS NULL OR readiness_hrv_balance BETWEEN 0 AND 100),
+                    activity_score REAL CHECK(activity_score IS NULL OR activity_score BETWEEN 0 AND 100),
+                    activity_steps REAL CHECK(activity_steps IS NULL OR activity_steps BETWEEN 0 AND 1000000),
+                    activity_calories REAL CHECK(activity_calories IS NULL OR activity_calories BETWEEN 0 AND 100000),
+                    activity_active_calories REAL CHECK(activity_active_calories IS NULL OR activity_active_calories BETWEEN 0 AND 100000),
+                    average_heart_rate REAL CHECK(average_heart_rate IS NULL OR average_heart_rate BETWEEN 1 AND 400),
+                    lowest_heart_rate REAL CHECK(lowest_heart_rate IS NULL OR lowest_heart_rate BETWEEN 1 AND 400),
+                    spo2_average REAL CHECK(spo2_average IS NULL OR spo2_average BETWEEN 0 AND 100),
+                    steps REAL CHECK(steps IS NULL OR steps BETWEEN 0 AND 1000000),
+                    calories_out REAL CHECK(calories_out IS NULL OR calories_out BETWEEN 0 AND 100000),
+                    active_minutes REAL CHECK(active_minutes IS NULL OR active_minutes BETWEEN 0 AND 2880),
+                    resting_heart_rate REAL CHECK(resting_heart_rate IS NULL OR resting_heart_rate BETWEEN 1 AND 400),
+                    sleep_minutes REAL CHECK(sleep_minutes IS NULL OR sleep_minutes BETWEEN 0 AND 2880),
+                    spo2_avg REAL CHECK(spo2_avg IS NULL OR spo2_avg BETWEEN 0 AND 100),
+                    spo2_min REAL CHECK(spo2_min IS NULL OR spo2_min BETWEEN 0 AND 100),
+                    breathing_rate REAL CHECK(breathing_rate IS NULL OR breathing_rate BETWEEN 0 AND 100),
+                    skin_temp_deviation REAL CHECK(skin_temp_deviation IS NULL OR skin_temp_deviation BETWEEN -20 AND 20),
+                    hrv REAL CHECK(hrv IS NULL OR hrv BETWEEN 0 AND 1000),
+                    nonrem_heart_rate REAL CHECK(nonrem_heart_rate IS NULL OR nonrem_heart_rate BETWEEN 1 AND 400),
+                    assertion_kind TEXT NOT NULL CHECK(assertion_kind = 'source_fact'),
+                    source_class TEXT NOT NULL CHECK(source_class IN ('device_provider', 'import')),
+                    legacy_fingerprint TEXT NOT NULL CHECK(length(legacy_fingerprint) = 71 AND legacy_fingerprint LIKE 'sha256:%'),
+                    mapping_version TEXT NOT NULL,
+                    received_at TEXT NOT NULL CHECK(received_at LIKE '%Z'),
+                    recorded_at TEXT NOT NULL CHECK(recorded_at LIKE '%Z'),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    updated_at TEXT NOT NULL CHECK(updated_at LIKE '%Z')
+                )
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE wearable_samples (
+                    entity_id TEXT PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE,
+                    canonical_id TEXT NOT NULL UNIQUE,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    owner_email TEXT NOT NULL,
+                    entity_type TEXT NOT NULL CHECK(entity_type IN ('OuraHeartRate', 'FitbitHeartRate')),
+                    provider TEXT NOT NULL CHECK(provider != ''),
+                    source_present INTEGER NOT NULL CHECK(source_present IN (0, 1)),
+                    source_record_id TEXT,
+                    source_record_canonical_id TEXT,
+                    metric_kind TEXT NOT NULL CHECK(metric_kind = 'heart_rate'),
+                    observed_at TEXT NOT NULL CHECK(observed_at LIKE '%Z'),
+                    source_timestamp TEXT NOT NULL,
+                    local_date TEXT NOT NULL CHECK(length(local_date) = 10),
+                    value REAL NOT NULL CHECK(value > 0 AND value <= 400),
+                    unit TEXT NOT NULL CHECK(unit = 'bpm'),
+                    compatibility_extra_json TEXT NOT NULL CHECK(json_valid(compatibility_extra_json)),
+                    assertion_kind TEXT NOT NULL CHECK(assertion_kind = 'source_fact'),
+                    source_class TEXT NOT NULL CHECK(source_class IN ('device_provider', 'import')),
+                    legacy_fingerprint TEXT NOT NULL CHECK(length(legacy_fingerprint) = 71 AND legacy_fingerprint LIKE 'sha256:%'),
+                    mapping_version TEXT NOT NULL,
+                    received_at TEXT NOT NULL CHECK(received_at LIKE '%Z'),
+                    recorded_at TEXT NOT NULL CHECK(recorded_at LIKE '%Z'),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    updated_at TEXT NOT NULL CHECK(updated_at LIKE '%Z')
+                )
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_wearable_daily_owner_type_date "
+                "ON wearable_daily(owner_id, entity_type, observed_date, entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_wearable_daily_owner_provider_date "
+                "ON wearable_daily(owner_id, provider, observed_date, entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_wearable_daily_source_record "
+                "ON wearable_daily(owner_id, provider, source_record_id) "
+                "WHERE source_record_id IS NOT NULL"
+            ),
+            Statement(
+                "CREATE INDEX idx_wearable_samples_owner_type_time "
+                "ON wearable_samples(owner_id, entity_type, observed_at, entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_wearable_samples_owner_provider_time "
+                "ON wearable_samples(owner_id, provider, observed_at, entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_wearable_samples_source_record "
+                "ON wearable_samples(owner_id, provider, source_record_id) "
+                "WHERE source_record_id IS NOT NULL"
+            ),
+        ),
+    ),
 )
 
 

@@ -255,10 +255,12 @@ def bulk_create_entities(
         from .canonical_time import record_entity_times
         from .typed_glucose import record_typed_glucose
         from .typed_treatments import record_typed_treatments
+        from .typed_wearables import record_typed_wearables
 
         record_entity_times(etype, created, connection=handle)
         record_typed_treatments(etype, created, connection=handle)
         record_typed_glucose(etype, created, connection=handle)
+        record_typed_wearables(etype, created, connection=handle)
         if owns_connection:
             handle.commit()
     from .connector_provenance import record_entity_writes
@@ -290,11 +292,13 @@ def update_entity(
         from .canonical_time import record_entity_times
         from .typed_glucose import record_typed_glucose
         from .typed_treatments import record_typed_treatments
+        from .typed_wearables import record_typed_wearables
 
         updated = {**data, "id": rid, "created_date": row["created_date"], "updated_date": now}
         record_entity_times(etype, [updated], connection=handle)
         record_typed_treatments(etype, [updated], connection=handle)
         record_typed_glucose(etype, [updated], connection=handle)
+        record_typed_wearables(etype, [updated], connection=handle)
         if owns_connection:
             handle.commit()
     from .connector_provenance import record_entity_writes
