@@ -60,6 +60,8 @@ SYSTEM = (
     "Ground factual claims in her real data: cite specific numbers, dates, and trends rather than generalities, and "
     "say plainly when the data is old or missing. When she shares how she's feeling or what's happening in her life, "
     "take it seriously and connect it to what you see.\n"
+    "When the dossier contains an unresolved contradiction, show both sides and call it unresolved. Never choose a "
+    "side silently, and never use a blocking contradiction as the basis for a definitive claim.\n"
     "SHARE YOUR ACTUAL ANALYSIS. Connect the dots, name the patterns you see, and give your real interpretation of "
     "what they could mean — including which conditions, mechanisms, or explanations the data is consistent with, and "
     "how her medications or cycle might be driving what she's feeling. Offer these as hypotheses to explore, not "
@@ -264,6 +266,7 @@ def _dossier() -> dict[str, Any]:
         "menstrual_cycle": ctx.get("cycle"),
         "wearables_recent_vs_prior": ctx.get("wearables"),
         "data_quality": ctx.get("data_quality"),
+        "unresolved_contradictions": ctx.get("unresolved_contradictions"),
         "imaging": ctx.get("imaging"),
         "recent_documents": recent_docs[:12],
         "glucose": _glucose_detail() or ctx.get("glucose"),

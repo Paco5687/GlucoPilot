@@ -207,6 +207,35 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                         ).fetchone()
                     ),
                 }
+            contradiction_ledger = None
+            if all(
+                _table_exists(connection, table)
+                for table in ("contradiction_runs", "contradictions", "contradiction_events")
+            ):
+                contradiction_ledger = {
+                    "runs": dict(
+                        connection.execute(
+                            "SELECT COUNT(*) AS count FROM contradiction_runs"
+                        ).fetchone()
+                    ),
+                    "contradictions": dict(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*) AS count,
+                                   COALESCE(SUM(CASE WHEN resolution_state='unresolved' THEN 1 ELSE 0 END), 0)
+                                       AS unresolved_count,
+                                   COALESCE(SUM(CASE WHEN resolution_state='unresolved' AND severity='blocking'
+                                       THEN 1 ELSE 0 END), 0) AS unresolved_blocking_count
+                            FROM contradictions
+                            """
+                        ).fetchone()
+                    ),
+                    "events": dict(
+                        connection.execute(
+                            "SELECT COUNT(*) AS count FROM contradiction_events"
+                        ).fetchone()
+                    ),
+                }
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:
@@ -227,6 +256,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
         metadata["typed_treatments"] = typed_treatments
     if lab_audit is not None:
         metadata["lab_audit"] = lab_audit
+    if contradiction_ledger is not None:
+        metadata["contradiction_ledger"] = contradiction_ledger
     if include_references:
         metadata["record_references"] = references
     return metadata
@@ -427,6 +458,8 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
         keys.append("typed_treatments")
     if "lab_audit" in expected_database:
         keys.append("lab_audit")
+    if "contradiction_ledger" in expected_database:
+        keys.append("contradiction_ledger")
     for key in keys:
         if metadata[key] != expected_database.get(key):
             raise BackupError(f"restored database metadata mismatch: {key}")
@@ -469,6 +502,16 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
                 "lab_extraction_observation_count": metadata["lab_audit"]["observations"]["count"],
                 "lab_verified_observation_count": metadata["lab_audit"]["observations"]["verified_count"],
                 "lab_verification_event_count": metadata["lab_audit"]["verification_events"]["count"],
+            }
+        )
+    if "contradiction_ledger" in expected_database:
+        verification.update(
+            {
+                "contradiction_run_count": metadata["contradiction_ledger"]["runs"]["count"],
+                "contradiction_count": metadata["contradiction_ledger"]["contradictions"]["count"],
+                "unresolved_contradiction_count": metadata["contradiction_ledger"]["contradictions"]["unresolved_count"],
+                "unresolved_blocking_contradiction_count": metadata["contradiction_ledger"]["contradictions"]["unresolved_blocking_count"],
+                "contradiction_event_count": metadata["contradiction_ledger"]["events"]["count"],
             }
         )
     return verification

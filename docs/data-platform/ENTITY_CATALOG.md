@@ -39,6 +39,11 @@ value-free production field/type inventory.
 Migration 7 also adds typed `lab_extraction_runs`, versioned
 `lab_extraction_observations`, and append-only `lab_verification_events`.
 These tables are the audit record; `LabResult` remains the compatibility view.
+
+Migration 8 adds typed `contradiction_runs`, `contradictions`, and append-only
+`contradiction_events`. These rows reference both sides of a disagreement but
+do not replace, delete, or silently choose between the source entities. They are
+not exposed through the generic entity API.
 | `SymptomLog` | Owner; title/description/severity/duration/time-of-day/entry-date. | Random ID; user append/delete; local user date. | Optional text becomes empty string; no not-asked state. |
 | `WeightLog` | Owner; `weight_kg`, `date`. | Appends on profile weight change; no date uniqueness; UTC calendar date. | No interpolation or coverage metadata. |
 

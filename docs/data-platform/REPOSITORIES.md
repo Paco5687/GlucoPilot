@@ -20,6 +20,7 @@ Core analytics depend on `RepositoryCatalog`, not `db.query_entities`:
 | `PumpDailyTotalRepository` | Strict feature-gated `pump_daily_totals` sidecar |
 | `LabRepository` | `LabResult` JSON entities |
 | `LabAuditRepository` | Migration-7 extraction runs/observations/events plus the `LabResult` compatibility projection |
+| `ContradictionRepository` | Migration-8 deterministic detections, both evidence sides, detection state, resolution state, and immutable history |
 | `WearableRepository` | Oura/Fitbit daily and heart-rate JSON entities |
 | `RelationshipRepository` | Read-only projection of lab→record and message→thread references |
 | `EvidenceRepository` | Read-only projection of Pattern/Insight inline support and ChatMessage sources |
@@ -42,6 +43,11 @@ reviews through `SqliteLabAuditRepository`. The repository refreshes unverified
 JSON projections transactionally, preserves approved/edited projections, and
 retains all versioned extraction/history rows. This isolates the additive
 sidecar without expanding the generic entity API.
+
+I8 adds `SqliteContradictionRepository` to the catalog. Rule reconciliation may
+mark a detection active or not current, but it cannot resolve it. Admin
+resolution and reopening are explicit, attributable operations; provider access
+is read-only. The typed sidecar does not expand the generic entity API.
 
 The relationship and evidence repositories deliberately do not create a hidden
 schema. They project current fields only. G1 and G2 will add reviewed registries

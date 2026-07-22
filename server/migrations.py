@@ -671,6 +671,131 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        8,
+        "clinical_contradiction_ledger",
+        (
+            Statement(
+                """
+                CREATE TABLE contradiction_runs (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    rules_version TEXT NOT NULL,
+                    input_data_version TEXT NOT NULL CHECK(
+                        length(input_data_version) = 71 AND input_data_version LIKE 'sha256:%'
+                    ),
+                    status TEXT NOT NULL CHECK(status IN ('running', 'succeeded', 'failed')),
+                    detection_count INTEGER NOT NULL DEFAULT 0 CHECK(detection_count >= 0),
+                    started_at TEXT NOT NULL CHECK(started_at LIKE '%Z'),
+                    completed_at TEXT CHECK(completed_at IS NULL OR completed_at LIKE '%Z'),
+                    error_summary TEXT,
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z')
+                )
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE contradictions (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    contradiction_run_id TEXT NOT NULL REFERENCES contradiction_runs(id) ON DELETE RESTRICT,
+                    detection_key TEXT NOT NULL CHECK(
+                        length(detection_key) = 71 AND detection_key LIKE 'sha256:%'
+                    ),
+                    rule_id TEXT NOT NULL,
+                    rule_version TEXT NOT NULL,
+                    domain TEXT NOT NULL,
+                    subject_type TEXT NOT NULL,
+                    subject_key TEXT NOT NULL,
+                    severity TEXT NOT NULL CHECK(severity IN ('info', 'warning', 'blocking')),
+                    explanation TEXT NOT NULL,
+                    left_json TEXT NOT NULL CHECK(json_valid(left_json)),
+                    right_json TEXT NOT NULL CHECK(json_valid(right_json)),
+                    context_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(context_json)),
+                    detection_state TEXT NOT NULL CHECK(detection_state IN ('active', 'not_current')),
+                    resolution_state TEXT NOT NULL CHECK(resolution_state IN ('unresolved', 'resolved')),
+                    resolution_kind TEXT CHECK(
+                        resolution_kind IS NULL OR resolution_kind IN (
+                            'accepted_left', 'accepted_right', 'both_valid',
+                            'data_corrected', 'not_applicable'
+                        )
+                    ),
+                    resolution_note TEXT NOT NULL DEFAULT '',
+                    resolved_by TEXT,
+                    resolved_at TEXT CHECK(resolved_at IS NULL OR resolved_at LIKE '%Z'),
+                    first_detected_at TEXT NOT NULL CHECK(first_detected_at LIKE '%Z'),
+                    last_detected_at TEXT NOT NULL CHECK(last_detected_at LIKE '%Z'),
+                    no_longer_detected_at TEXT CHECK(
+                        no_longer_detected_at IS NULL OR no_longer_detected_at LIKE '%Z'
+                    ),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    updated_at TEXT NOT NULL CHECK(updated_at LIKE '%Z'),
+                    UNIQUE(owner_id, detection_key),
+                    CHECK(
+                        (resolution_state = 'unresolved' AND resolved_by IS NULL AND resolved_at IS NULL) OR
+                        (resolution_state = 'resolved' AND resolved_by IS NOT NULL AND resolved_at IS NOT NULL)
+                    )
+                )
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE contradiction_events (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    contradiction_id TEXT NOT NULL REFERENCES contradictions(id) ON DELETE RESTRICT,
+                    action TEXT NOT NULL CHECK(action IN ('detected', 'not_current', 'resolved', 'reopened')),
+                    actor_id TEXT NOT NULL,
+                    actor_role TEXT NOT NULL,
+                    actor_name TEXT NOT NULL,
+                    reason TEXT NOT NULL DEFAULT '',
+                    before_json TEXT NOT NULL CHECK(json_valid(before_json)),
+                    after_json TEXT NOT NULL CHECK(json_valid(after_json)),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z')
+                )
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_contradictions_resolution "
+                "ON contradictions(owner_id, resolution_state, detection_state, severity, domain)"
+            ),
+            Statement(
+                "CREATE INDEX idx_contradictions_subject "
+                "ON contradictions(owner_id, subject_type, subject_key, rule_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_contradiction_events_record "
+                "ON contradiction_events(owner_id, contradiction_id, created_at)"
+            ),
+            Statement(
+                """
+                CREATE TRIGGER contradictions_immutable_delete
+                BEFORE DELETE ON contradictions
+                BEGIN
+                    SELECT RAISE(ABORT, 'contradictions are immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER contradiction_events_immutable_update
+                BEFORE UPDATE ON contradiction_events
+                BEGIN
+                    SELECT RAISE(ABORT, 'contradiction_events are immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER contradiction_events_immutable_delete
+                BEFORE DELETE ON contradiction_events
+                BEGIN
+                    SELECT RAISE(ABORT, 'contradiction_events are immutable');
+                END
+                """
+            ),
+        ),
+    ),
 )
 
 

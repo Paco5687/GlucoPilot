@@ -1,0 +1,182 @@
+{
+  "synthetic": true,
+  "subject": {
+    "id": "synthetic-contradiction-subject",
+    "owner_email": "owner@glucopilot.local"
+  },
+  "snapshot": {
+    "tdd_reconciliation": {
+      "input_data_version": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "days": [
+        {
+          "date": "2026-05-01",
+          "pump_reported": {
+            "selected": {
+              "source": "tandem",
+              "total_units": 30.0
+            },
+            "candidates": [],
+            "conflict": false
+          },
+          "calculated": {
+            "total_units": 28.0
+          },
+          "discrepancy": {
+            "units": -2.0,
+            "absolute_units": 2.0,
+            "percent_of_reported": 6.7,
+            "matches_rounding": false
+          }
+        },
+        {
+          "date": "2026-05-02",
+          "pump_reported": {
+            "selected": null,
+            "candidates": [
+              {
+                "source": "nightscout",
+                "total_units": 41.0,
+                "complete": true
+              },
+              {
+                "source": "tandem",
+                "total_units": 36.0,
+                "complete": true
+              }
+            ],
+            "conflict": true
+          },
+          "calculated": {
+            "total_units": null
+          },
+          "discrepancy": null
+        }
+      ]
+    },
+    "fingersticks": [
+      {
+        "id": "synthetic-fingerstick-mismatch",
+        "timestamp": "2026-05-03T12:00:00Z",
+        "value": 100,
+        "cgm_value": 150,
+        "cgm_timestamp": "2026-05-03T12:01:00Z",
+        "source": "manual",
+        "cgm_source": "synthetic_cgm",
+        "owner_email": "owner@glucopilot.local"
+      },
+      {
+        "id": "synthetic-fingerstick-match",
+        "timestamp": "2026-05-04T12:00:00Z",
+        "value": 110,
+        "cgm_value": 115,
+        "source": "manual",
+        "owner_email": "owner@glucopilot.local"
+      }
+    ],
+    "lab_observations": [
+      {
+        "id": "synthetic-lab-unit-a",
+        "record_entity_id": "synthetic-record-a",
+        "normalized_name": "Synthetic Glucose",
+        "normalized_value": 100,
+        "normalized_unit": "mg/dL",
+        "reference_low": 70,
+        "reference_high": 99,
+        "specimen": "serum",
+        "normalized_collected_date": "2026-05-05",
+        "source_page": 1,
+        "verification_status": "unverified",
+        "superseded_at": null
+      },
+      {
+        "id": "synthetic-lab-unit-b",
+        "record_entity_id": "synthetic-record-b",
+        "normalized_name": "Synthetic Glucose",
+        "normalized_value": 5.6,
+        "normalized_unit": "mmol/L",
+        "reference_low": 3.9,
+        "reference_high": 5.5,
+        "specimen": "serum",
+        "normalized_collected_date": "2026-05-05",
+        "source_page": 2,
+        "verification_status": "unverified",
+        "superseded_at": null
+      },
+      {
+        "id": "synthetic-lab-range-a",
+        "record_entity_id": "synthetic-record-c",
+        "normalized_name": "Synthetic TSH",
+        "normalized_value": 2.1,
+        "normalized_unit": "mIU/L",
+        "reference_low": 0.4,
+        "reference_high": 4.0,
+        "specimen": "serum",
+        "normalized_collected_date": "2026-05-06",
+        "source_page": 3,
+        "verification_status": "approved",
+        "superseded_at": null
+      },
+      {
+        "id": "synthetic-lab-range-b",
+        "record_entity_id": "synthetic-record-d",
+        "normalized_name": "Synthetic TSH",
+        "normalized_value": 2.1,
+        "normalized_unit": "mIU/L",
+        "reference_low": 0.5,
+        "reference_high": 4.5,
+        "specimen": "serum",
+        "normalized_collected_date": "2026-05-06",
+        "source_page": 1,
+        "verification_status": "approved",
+        "superseded_at": null
+      }
+    ],
+    "labs": [
+      {
+        "id": "synthetic-hormone-lab",
+        "test_name": "Synthetic Progesterone",
+        "value": 8.1,
+        "unit": "ng/mL",
+        "collected_date": "2026-05-07",
+        "expected_cycle_phase": "luteal",
+        "owner_email": "owner@glucopilot.local"
+      }
+    ],
+    "period_logs": [
+      {
+        "id": "synthetic-period-log",
+        "date": "2026-05-07",
+        "phase": "follicular",
+        "source": "manual",
+        "owner_email": "owner@glucopilot.local"
+      }
+    ],
+    "source_records": [
+      {
+        "id": "src_synthetic_old",
+        "source_type": "synthetic_provider",
+        "external_id": "synthetic-provider-record-1",
+        "observed_at": "2026-05-08T12:00:00Z",
+        "received_at": "2026-05-08T12:05:00Z",
+        "payload_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      {
+        "id": "src_synthetic_revised",
+        "source_type": "synthetic_provider",
+        "external_id": "synthetic-provider-record-1",
+        "observed_at": "2026-05-08T12:00:00Z",
+        "received_at": "2026-05-09T12:05:00Z",
+        "payload_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    ]
+  },
+  "expected_rule_ids": [
+    "glucose.cgm_vs_fingerstick",
+    "labs.hormone_cycle_phase_timing",
+    "labs.conflicting_reference_ranges",
+    "labs.conflicting_units",
+    "pump_tdd.reported_source_conflict",
+    "pump_tdd.reported_vs_calculated",
+    "source.revised_external_record"
+  ]
+}

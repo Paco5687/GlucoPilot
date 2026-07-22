@@ -46,6 +46,9 @@ no health data ever leaves the machine.
 - **Overview** — a cross-domain AI health summary that spots connections across your whole picture, not just glucose.
 - **Records** — upload lab reports and imaging (PDF/photo); a local vision model extracts values into **per-analyte trend charts**.
 - **Visit Report** — a printable 90-day clinical summary (AGP, TIR, per-phase metrics, labs, conditions, medications, symptoms) with an AI "quarter in review" narrative.
+- **Contradiction review** — deterministic checks keep conflicting glucose,
+  pump, lab, timing, and revised-source evidence side by side, with attributed
+  resolution history and no silent winner.
 
 **Track & analyze**
 

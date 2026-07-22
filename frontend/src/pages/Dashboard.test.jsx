@@ -35,6 +35,7 @@ vi.mock("../components/dashboard/FingerstickLogger", () => ({ default: () => nul
 vi.mock("../components/dashboard/SymptomNudge", () => ({ default: () => null }));
 vi.mock("../components/dashboard/GlucoseOuraOverlay", () => ({ default: () => null }));
 vi.mock("../components/dashboard/CorrelationCards", () => ({ default: () => null }));
+vi.mock("../components/ContradictionPanel", () => ({ default: () => null }));
 vi.mock("../components/dashboard/TimeRangePicker", () => ({
   default: () => null,
   RANGES: [{ key: "3h", hours: 3 }],
