@@ -229,6 +229,22 @@ def _document_link(entity_type: str, entity_id: str, data: dict[str, Any]) -> di
 
 
 def _confidence(data: dict[str, Any]) -> dict[str, Any]:
+    analytics = data.get("analytics_confidence")
+    if isinstance(analytics, dict):
+        score = analytics.get("confidence_score")
+        try:
+            numeric = float(score)
+        except (TypeError, ValueError):
+            numeric = None
+        if numeric is not None and 0 <= numeric <= 1:
+            return {
+                "label": analytics.get("confidence_label") or (
+                    "high" if numeric >= 0.85 else "medium" if numeric >= 0.60 else "low"
+                ),
+                "score": numeric,
+                "method": analytics.get("version") or "analytics-confidence",
+                "discovery_status": analytics.get("discovery_status"),
+            }
     verification = str(data.get("verification_status") or "").lower()
     if verification in {"approved", "edited"}:
         return {"label": "high", "score": None, "method": "human_verification_status"}

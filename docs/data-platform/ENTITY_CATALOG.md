@@ -87,8 +87,8 @@ configuration/secret store requiring backup and redaction controls.
 
 | Entity | Schema / producer | Identity and incomplete-data behavior |
 |---|---|---|
-| `Pattern` | Rule engine + optional LLM; title, explanation, type, confidence label, time of day, serialized evidence, occurrences, detection dates, active/dismissed, owner. | Prior rows deactivated and new rows appended. Stops below 50 recent CGM readings; unavailable rule inputs silently do not fire. No algorithm/input version. |
-| `Insight` | Cross-domain engine + optional LLM; title, description, category, severity, generated date, serialized support, read flag, owner. | All owner rows replaced. Requires 14 full CGM days; pairwise missing inputs silently reduce samples. |
+| `Pattern` | Rule engine + optional LLM; title, governed explanation, type, legacy confidence label, versioned analytics-confidence envelope, time of day, serialized evidence, occurrences, detection dates, active/dismissed, owner. | Prior rows deactivated and new rows appended. Requires eligible 14-day CGM quality; unavailable rule inputs do not fire. Small event/day samples remain exploratory and evidence sets preserve numerical confidence. |
+| `Insight` | Cross-domain engine + optional LLM; title, governed description, category, severity, generated date, serialized support, versioned analytics-confidence envelope, read flag, owner. | All owner rows replaced. Requires 14 full CGM days globally; a metric with seven paired days may surface only as exploratory. At 28 pairs, first/later halves explicitly report reproduced or not-reproduced. |
 | `HealthSummary` | Overview synthesis; generated time, serialized data, owner. | Singleton-by-replacement. Empty context sections omitted; no immutable input snapshot/version. |
 | `HealthMemory` | Companion memory; content, category, source, owner. | Append/delete free text without evidence or verification state. |
 | `CompanionThread` | Title, owner, envelope dates. | Random ID; application-only message cascade on delete. |

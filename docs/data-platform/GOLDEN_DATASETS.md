@@ -30,6 +30,7 @@ rows, credentials, or copied health information.
 | Typed wearables | Oura/Fitbit/Google provider overlap, explicit null/extension preservation, strict metric/time mapping, bounded backfill, indexed high-volume reads, parity, rollback, and backup counts remain deterministic. |
 | Relationship projection jobs | Repeated full builds have stable checksums; failed and scoped builds cannot publish mixed generations; authored assertions survive; freshness and backup counts remain observable. |
 | Relationship query API | Anonymous/disabled access, admin/provider GET behavior, owner isolation, deterministic bounds, reverse traversal, evidence paths, and raw-locator redaction remain enforced. |
+| Analytics confidence | Exact effects/intervals/missingness, seven-day exploratory status, reproduced and not-reproduced temporal holdouts, invalid inputs, small-sample language, and confirmed/inferred cycle provenance remain deterministic. |
 
 `clinical_edge_cases.json` stores both the synthetic inputs and their expected
 outcomes. Tests must compare production parser, deduplication, analytics,
@@ -51,6 +52,10 @@ rollback.
 provider identifiers. It pins same-date provider overlap, explicit-null and
 compatibility-extension preservation, invalid metric handling, source/canonical
 time identity, and value-free parity.
+
+`analytics_confidence.json` uses invented linear series, group values, event
+counts, and phase rows. It pins the versioned statistical contract and contains
+no production-derived measurements or dates.
 
 ## Migration snapshots
 

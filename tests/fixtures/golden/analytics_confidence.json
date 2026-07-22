@@ -1,0 +1,96 @@
+{
+  "synthetic": true,
+  "version": "analytics-confidence/1.0.0",
+  "correlations": [
+    {
+      "name": "seven_day_perfect_signal",
+      "days": 7,
+      "relationship": "positive_linear",
+      "expected": {
+        "effect": 1.0,
+        "interval": [1.0, 1.0],
+        "status": "exploratory",
+        "confidence_score": 0.732,
+        "replication_status": "not-attempted"
+      }
+    },
+    {
+      "name": "temporal_holdout_reproduces",
+      "days": 28,
+      "relationship": "positive_linear",
+      "expected": {
+        "effect": 1.0,
+        "interval": [1.0, 1.0],
+        "status": "reproduced",
+        "confidence_score": 1.0,
+        "replication_status": "reproduced"
+      }
+    },
+    {
+      "name": "temporal_holdout_reverses",
+      "days": 28,
+      "relationship": "positive_then_negative",
+      "expected": {
+        "effect": -0.8349,
+        "interval": [-0.9211, -0.6708],
+        "status": "not-reproduced",
+        "confidence_score": 0.739,
+        "replication_status": "not-reproduced"
+      }
+    },
+    {
+      "name": "constant_axis_is_invalid",
+      "days": 7,
+      "relationship": "constant_x",
+      "expected": {
+        "effect": null,
+        "interval": null,
+        "status": "invalid",
+        "confidence_score": 0.0,
+        "replication_status": "not-attempted"
+      }
+    }
+  ],
+  "small_comparison": {
+    "group_a": [80, 82, 78, 81, 79],
+    "group_b": [60, 62, 58, 61, 59],
+    "valid_days": 5,
+    "expected_days": 14,
+    "expected": {
+      "sample_count": 10,
+      "effect": 12.6491,
+      "raw_difference": 20.0,
+      "interval": [18.04, 21.96],
+      "missing_rate": 0.6429,
+      "status": "exploratory",
+      "confidence_score": 0.512
+    }
+  },
+  "small_recurrence": {
+    "successes": 5,
+    "trials": 5,
+    "valid_days": 5,
+    "expected_days": 14,
+    "expected": {
+      "effect": 1.0,
+      "interval": [0.5655, 1.0],
+      "status": "exploratory",
+      "confidence_score": 0.353
+    }
+  },
+  "cycle_phases": {
+    "rows": [
+      {"date": "2026-01-01", "phase": "menstrual", "source": "manual"},
+      {"date": "2026-01-02", "phase": "menstrual", "source": "oura_inferred"},
+      {"date": "2026-01-03", "phase": "follicular", "source": "import"}
+    ],
+    "expected": {
+      "classification": "mixed",
+      "confirmed_days": 2,
+      "inferred_days": 1,
+      "total_days": 3,
+      "menstrual": {"confirmed_days": 1, "inferred_days": 1, "total_days": 2},
+      "follicular": {"confirmed_days": 1, "inferred_days": 0, "total_days": 1}
+    }
+  }
+}

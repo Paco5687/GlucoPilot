@@ -42,7 +42,9 @@ export default function PatternCard({ pattern }) {
           <h3 className="font-semibold text-sm leading-tight">{pattern.title}</h3>
           <div className="flex items-center gap-2 mt-1">
             <span className={cn("text-[10px] px-2 py-0.5 rounded-full border font-medium", CONFIDENCE_STYLES[pattern.confidence])}>
-              {pattern.confidence} confidence
+              {pattern.analytics_confidence?.discovery_status
+                ? `${pattern.analytics_confidence.discovery_status} · ${pattern.confidence} confidence`
+                : `${pattern.confidence} confidence`}
             </span>
             {pattern.time_of_day && (
               <span className="text-xs text-muted-foreground">{TIME_LABELS[pattern.time_of_day]}</span>

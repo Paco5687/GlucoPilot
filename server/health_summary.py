@@ -117,10 +117,26 @@ def _insights_snapshot() -> list:
         quality = insight.get("data_quality")
         if not quality or not all(envelope.get("ai_eligible") for envelope in quality.values()):
             continue
+        confidence = insight.get("analytics_confidence") or {}
+        if (
+            confidence.get("version") != "analytics-confidence/1.0.0"
+            or confidence.get("discovery_status") == "invalid"
+        ):
+            continue
+        try:
+            supporting_data = json.loads(insight.get("supporting_data") or "{}")
+        except (TypeError, ValueError):
+            supporting_data = {}
         output.append({
             "title": insight.get("title"),
             "category": insight.get("category"),
             "severity": insight.get("severity"),
+            "statistics": {
+                key: supporting_data.get(key)
+                for key in ("r", "n", "best_tir", "worst_tir", "highest_avg", "lowest_avg")
+                if supporting_data.get(key) is not None
+            },
+            "analytics_confidence": confidence,
         })
     return output
 
@@ -151,7 +167,8 @@ def _build_context() -> dict[str, Any]:
         "glucose": {k: glucose.get(k) for k in ("available", "tir", "avg", "gmi", "cv", "days")}
         if glucose.get("available") and glucose.get("quality", {}).get("ai_eligible") else None,
         "cycle": {"cycles": cycle.get("cycles_detected"), "avg_length": cycle.get("avg_cycle_length"),
-                  "per_phase": cycle.get("per_phase")}
+                  "per_phase": cycle.get("per_phase"),
+                  "phase_provenance": cycle.get("phase_provenance")}
         if cycle.get("available") and cycle.get("quality", {}).get("ai_eligible") else None,
         "wearables": wearables["metrics"] if wearables["quality"]["ai_eligible"] else {},
         "labs_out_of_range": flagged,
@@ -189,6 +206,9 @@ async def generate() -> dict[str, Any]:
         "Parser confidence is not clinical verification.\n"
         "- Mind contradictions: present both sides of every unresolved conflict and never silently select one. "
         "Treat blocking contradictions as ineligible for a definitive derived claim until explicitly resolved.\n"
+        "- Mind analytics strength: preserve each supplied discovery status and numerical confidence envelope. "
+        "Never turn exploratory, emerging, not-reproduced, or invalid evidence into a definitive claim. "
+        "Distinguish explicitly recorded/imported cycle phases from algorithm-inferred phases.\n"
         "- Aim for 6-9 genuinely distinct observations, richest/most-actionable first. Also give a fuller "
         "'working' (on track) list and a 'watch' list.\n\n"
         f"DATA SNAPSHOT (last {WINDOW_DAYS} days where applicable):\n{json.dumps(context, indent=2, default=str)}"

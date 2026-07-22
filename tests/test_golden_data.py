@@ -257,6 +257,17 @@ def test_report_snapshot_preserves_missing_pump_cycle_lab_range_and_dst_semantic
     assert cycle_snapshot["source"] == cycle_fixture["expected"]["source"]
     assert cycle_snapshot["per_phase"]["menstrual"] == cycle_fixture["expected"]["menstrual"]
     assert cycle_snapshot["per_phase"]["follicular"] == cycle_fixture["expected"]["follicular"]
+    assert cycle_snapshot["phase_provenance"] == {
+        "classification": "mixed",
+        "confirmed_days": 3,
+        "inferred_days": 3,
+        "total_days": 6,
+        "definition": "confirmed means explicitly recorded/imported; inferred means algorithm-estimated",
+        "by_phase": {
+            "follicular": {"confirmed_days": 1, "inferred_days": 1, "total_days": 2},
+            "menstrual": {"confirmed_days": 2, "inferred_days": 2, "total_days": 4},
+        },
+    }
 
     lab_fixture = golden["conflicting_lab_ranges"]
     lab_snapshot = report._labs()

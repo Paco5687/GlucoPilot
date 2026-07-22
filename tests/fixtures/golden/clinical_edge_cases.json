@@ -372,11 +372,15 @@
       "source": "inferred from Oura temperature",
       "menstrual": {
         "days": 4,
+        "confirmed_days": 2,
+        "inferred_days": 2,
         "tir": 75,
         "avg_glucose": 125
       },
       "follicular": {
         "days": 2,
+        "confirmed_days": 1,
+        "inferred_days": 1,
         "tir": 88,
         "avg_glucose": 112
       }
