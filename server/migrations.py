@@ -1229,6 +1229,116 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        12,
+        "evidence_sets_and_observation_windows",
+        (
+            Statement(
+                """
+                CREATE TABLE observation_windows (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    owner_email TEXT NOT NULL CHECK(owner_email != ''),
+                    entity_type TEXT NOT NULL REFERENCES entity_schema_registry(entity_type),
+                    query_definition_json TEXT NOT NULL CHECK(
+                        json_valid(query_definition_json) AND json_type(query_definition_json)='object'
+                    ),
+                    query_checksum TEXT NOT NULL CHECK(
+                        length(query_checksum)=71 AND query_checksum LIKE 'sha256:%'
+                    ),
+                    window_start TEXT NOT NULL CHECK(window_start LIKE '%Z'),
+                    window_end TEXT NOT NULL CHECK(window_end LIKE '%Z'),
+                    observation_count INTEGER NOT NULL CHECK(
+                        observation_count > 0 AND observation_count <= 100000
+                    ),
+                    observation_checksum TEXT NOT NULL CHECK(
+                        length(observation_checksum)=71 AND observation_checksum LIKE 'sha256:%'
+                    ),
+                    member_ids_json TEXT NOT NULL CHECK(
+                        json_valid(member_ids_json) AND json_type(member_ids_json)='array'
+                    ),
+                    summary_json TEXT NOT NULL CHECK(
+                        json_valid(summary_json) AND json_type(summary_json)='object'
+                    ),
+                    summary_checksum TEXT NOT NULL CHECK(
+                        length(summary_checksum)=71 AND summary_checksum LIKE 'sha256:%'
+                    ),
+                    generator_id TEXT NOT NULL CHECK(generator_id != ''),
+                    generator_version TEXT NOT NULL CHECK(generator_version != ''),
+                    status TEXT NOT NULL CHECK(status IN ('valid', 'invalidated')),
+                    invalidated_at TEXT CHECK(invalidated_at IS NULL OR invalidated_at LIKE '%Z'),
+                    invalidation_reason TEXT,
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    UNIQUE(owner_id, query_checksum, observation_checksum, summary_checksum),
+                    CHECK(window_end >= window_start),
+                    CHECK(json_array_length(member_ids_json) = observation_count),
+                    CHECK(
+                        (status='valid' AND invalidated_at IS NULL AND invalidation_reason IS NULL) OR
+                        (status='invalidated' AND invalidated_at IS NOT NULL
+                            AND invalidation_reason IS NOT NULL AND invalidation_reason != '')
+                    )
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE evidence_sets (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    owner_email TEXT NOT NULL CHECK(owner_email != ''),
+                    claim_type TEXT NOT NULL REFERENCES entity_schema_registry(entity_type),
+                    claim_id TEXT NOT NULL CHECK(claim_id != ''),
+                    set_checksum TEXT NOT NULL CHECK(
+                        length(set_checksum)=71 AND set_checksum LIKE 'sha256:%'
+                    ),
+                    summary_json TEXT NOT NULL CHECK(
+                        json_valid(summary_json) AND json_type(summary_json)='object'
+                    ),
+                    generator_id TEXT NOT NULL CHECK(generator_id != ''),
+                    generator_version TEXT NOT NULL CHECK(generator_version != ''),
+                    input_data_version TEXT NOT NULL CHECK(input_data_version != ''),
+                    status TEXT NOT NULL CHECK(status IN ('valid', 'invalidated')),
+                    invalidated_at TEXT CHECK(invalidated_at IS NULL OR invalidated_at LIKE '%Z'),
+                    invalidation_reason TEXT,
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    UNIQUE(owner_id, claim_type, claim_id, set_checksum),
+                    CHECK(
+                        (status='valid' AND invalidated_at IS NULL AND invalidation_reason IS NULL) OR
+                        (status='invalidated' AND invalidated_at IS NOT NULL
+                            AND invalidation_reason IS NOT NULL AND invalidation_reason != '')
+                    )
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE evidence_set_windows (
+                    evidence_set_id TEXT NOT NULL REFERENCES evidence_sets(id) ON DELETE CASCADE,
+                    observation_window_id TEXT NOT NULL REFERENCES observation_windows(id) ON DELETE RESTRICT,
+                    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                    PRIMARY KEY(evidence_set_id, observation_window_id),
+                    UNIQUE(evidence_set_id, ordinal)
+                ) STRICT
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_observation_windows_owner_range "
+                "ON observation_windows(owner_id, entity_type, window_start, window_end, status)"
+            ),
+            Statement(
+                "CREATE INDEX idx_observation_windows_checksum "
+                "ON observation_windows(owner_id, observation_checksum, query_checksum)"
+            ),
+            Statement(
+                "CREATE INDEX idx_evidence_sets_claim "
+                "ON evidence_sets(owner_id, claim_type, claim_id, created_at)"
+            ),
+            Statement(
+                "CREATE INDEX idx_evidence_set_windows_window "
+                "ON evidence_set_windows(observation_window_id, evidence_set_id)"
+            ),
+        ),
+    ),
 )
 
 

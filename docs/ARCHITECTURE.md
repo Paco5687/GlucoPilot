@@ -35,6 +35,7 @@ uploaded records, and config. One owner per deployment.
 | `typed_wearables.py` | strict wearable daily/sample projections, provider overlap, bounded backfill, shadow parity, and rollback |
 | `relationship_registry.py` | migration-governed predicates, assertion statuses, evidence levels, and relationship algorithms |
 | `relationships.py` | strict owner-scoped temporal relationship projection, immutable identity, indexed queries, and compatibility cutover |
+| `evidence_sets.py` | bounded checksum-addressed observation windows, claim evidence sets, drill-down verification, and source-change invalidation |
 | `lab_audit.py` | audited medical-record extraction, validation, verification, correction history, and compatibility projection |
 | `contradictions.py` | deterministic cross-domain contradiction rules, typed ledger, attributed resolution workflow, and API |
 | `auth.py` | first-run setup, login, **admin vs. read-only provider role**, `require_admin` |

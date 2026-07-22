@@ -42,6 +42,9 @@ typed repositories are introduced.
 - [Governed relationship projection](RELATIONSHIP_GRAPH.md) — typed predicates,
   assertion/evidence/algorithm registries, owner validation, temporal/confidence
   indexes, deterministic identity, and compatibility rollback.
+- [Evidence sets and observation windows](EVIDENCE_SETS.md) — bounded time-series
+  membership, deterministic checksums, exact drill-down, invalidation, and
+  feature-gated Pattern citations.
 
 ## Reproduce the structural audit
 

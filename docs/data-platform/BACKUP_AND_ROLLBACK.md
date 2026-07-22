@@ -25,6 +25,8 @@ glucose/fingerstick counts are part of the manifest and clean-restore equality
 check. Typed wearable daily/sample counts receive the same verification.
 Relationship edge, predicate, assertion-status, evidence-level, and algorithm
 registry counts also participate in manifest and clean-restore equality.
+Observation-window, Evidence Set, and set/window-link counts receive the same
+verification when migration 12 is present.
 
 Application startup performs this verified backup automatically before pending
 migrations touch an existing database. The default destination is
@@ -81,6 +83,9 @@ Prefer a read/code rollback over schema reversal:
 - If relationship projection reads fail, set
   `RELATIONSHIP_READS_ENABLED=false`; legacy lab/record and message/thread
   references remain authoritative until the later graph cutover.
+- If Evidence Set projection fails, set both `EVIDENCE_SET_WRITES_ENABLED` and
+  `EVIDENCE_SET_READS_ENABLED` to `false`; inline legacy claim evidence remains
+  available.
 - If a feature fails after an additive migration commits, first disable its
   read/write switches while keeping the migration-compatible image. The
   migration runner intentionally rejects an older image against a newer schema
