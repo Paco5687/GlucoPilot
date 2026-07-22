@@ -155,6 +155,7 @@ def test_isolated_compression_low_does_not_become_a_recurring_pattern(
     outcome = asyncio.run(patterns.analyze())
 
     assert outcome["patternsFound"] == 0
+    assert outcome["quality"]["ai_eligible"] is False
     assert [row["type"] for row in outcome["patterns"]] == fixture["expected"]["pattern_types"]
     assert db.query_entities("Pattern") == []
 

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
+import DataQualityNote from "@/components/DataQualityNote";
 import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope, ScrollText } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, Line, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
@@ -321,6 +322,7 @@ export default function Report() {
       {/* Glucose */}
       <div className="report-section space-y-3">
         <h2 className="font-semibold text-base">Glucose</h2>
+        <DataQualityNote label="CGM" quality={g.quality} />
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <Metric label="Average glucose" value={`${g.avg}`} sub="mg/dL" />
           <Metric label="GMI (est. A1c)" value={`${g.gmi}%`} tone={g.gmi >= 7 ? "text-amber-600" : "text-green-600"} />
@@ -357,6 +359,8 @@ export default function Report() {
           <p className="text-[11px] text-muted-foreground">
             Pump-reported and calculated totals are kept separate. A calculated TDD is shown only for days with complete delivered-basal coverage; Glooko programmed basal is not treated as delivered. Carb totals reflect only logged entries.
           </p>
+          <DataQualityNote label="Pump TDD" quality={i.quality} />
+          <DataQualityNote label="Nutrition" quality={i.nutrition_quality} />
           {i.latest_activity_date && (
             <p className="text-[11px] text-muted-foreground">
               {i.latest_complete_date ? `Complete TDD data through ${i.latest_complete_date}. ` : "No complete TDD in this report period. "}
@@ -382,6 +386,7 @@ export default function Report() {
           <p className="text-xs text-muted-foreground">
             {c.cycles_detected} cycles{c.avg_cycle_length ? `, average ${c.avg_cycle_length} days` : ""} · phases {c.source}.
           </p>
+          <DataQualityNote label="Cycle" quality={c.quality} />
           <div className="report-card bg-card rounded-lg border border-border overflow-hidden">
             <table className="w-full text-sm">
               <thead>
@@ -414,6 +419,8 @@ export default function Report() {
       {(w.oura || w.fitbit) && (
         <div className="report-section space-y-3">
           <h2 className="font-semibold text-base">Sleep, recovery &amp; activity</h2>
+          {w.oura && <DataQualityNote label="Oura" quality={w.quality?.oura} />}
+          {w.fitbit && <DataQualityNote label="Fitbit" quality={w.quality?.fitbit} />}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {w.oura?.avg_sleep_score != null && <Metric label="Sleep score (Oura)" value={w.oura.avg_sleep_score} sub="avg" />}
             {w.oura?.avg_readiness_score != null && <Metric label="Readiness (Oura)" value={w.oura.avg_readiness_score} sub="avg" />}

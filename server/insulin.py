@@ -25,6 +25,7 @@ from zoneinfo import ZoneInfo
 from . import profile
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value
+from .data_quality import assess_cgm, assess_pump_tdd, build_envelope, cgm_points
 from .insulin_reconciliation import reconcile_treatments
 from .repositories import get_repositories
 
@@ -95,6 +96,10 @@ def _category(tdd_per_kg: float | None) -> str:
 def estimate() -> dict[str, Any]:
     repositories = get_repositories()
     reconciliation = _reconciliation()
+    today = datetime.now(_app_timezone()).date()
+    quality = assess_pump_tdd(
+        reconciliation, start_date=today - timedelta(days=WINDOW_DAYS - 1), end_date=today, as_of=today
+    )
     by_day = {}
     source_by_day = {}
     for day in reconciliation["days"]:
@@ -123,6 +128,7 @@ def estimate() -> dict[str, Any]:
             "reconciliation": reconciliation["summary"],
             "algorithm_version": reconciliation["algorithm_version"],
             "input_data_version": reconciliation["input_data_version"],
+            "quality": quality,
         }
 
     prof = profile.get_profile()
@@ -212,6 +218,7 @@ def estimate() -> dict[str, Any]:
         "reconciliation": estimate_reconciliation,
         "algorithm_version": reconciliation["algorithm_version"],
         "input_data_version": reconciliation["input_data_version"],
+        "quality": quality,
         "needs_weight": weight is None,
     }
 
@@ -229,23 +236,43 @@ def absorption() -> dict[str, Any]:
     measures the drop over the next RESPONSE_MIN minutes, and reports drop-per-unit
     and — the key signal — its variability (CV). High CV = the same dose can do
     very different things ('sometimes a lot does little, a little does a lot')."""
-    since = (datetime.now(timezone.utc) - timedelta(days=ABS_WINDOW_DAYS)).isoformat(timespec="seconds").replace("+00:00", "Z")
+    now = datetime.now(timezone.utc)
+    since_at = now - timedelta(days=ABS_WINDOW_DAYS)
+    since = since_at.isoformat(timespec="seconds").replace("+00:00", "Z")
 
     repositories = get_repositories()
-    pts = []
-    for r in repositories.glucose.query(
+    glucose_rows = repositories.glucose.query(
         {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}},
         "timestamp",
         300000,
-    ):
-        e = _epoch(r.get("timestamp"))
-        if e is not None and r.get("value") is not None:
-            pts.append((e, float(r["value"])))
-    pts.sort()
+    )
+    tz = _app_timezone()
+    cgm_quality = assess_cgm(
+        glucose_rows, tz, start=since_at, end=now, as_of=now.astimezone(tz).date()
+    )
+    pts = [(instant.timestamp(), value) for instant, value in cgm_points(
+        glucose_rows, tz, start=since_at, end=now
+    )]
     times = [p[0] for p in pts]
     vals = [p[1] for p in pts]
+
+    def response_quality(samples: list[tuple[float, float]]) -> dict[str, Any]:
+        latest = max((sample[0] for sample in samples), default=None)
+        blockers = () if cgm_quality["ai_eligible"] else ("CGM input did not meet the reliability threshold",)
+        return build_envelope(
+            "insulin_response", observed=len(samples), expected=8, unit="clean_correction_boluses",
+            data_through=datetime.fromtimestamp(latest, tz).date() if latest is not None else None,
+            as_of=now.astimezone(tz).date(), blocking_reasons=blockers,
+            limitations=("Response estimates exclude meal-related and stacked doses.",),
+            input_values=(f"{timestamp}:{value:g}" for timestamp, value in samples),
+        )
+
     if len(times) < 100:
-        return {"available": False, "reason": "Not enough CGM data in range."}
+        quality = response_quality([])
+        return {
+            "available": False, "reason": "Not enough CGM data in range.", "quality": quality,
+            "data_quality": {"cgm": cgm_quality, "insulin_response": quality},
+        }
 
     boluses, carbs, ins_times = [], [], []
     for t in repositories.treatments.query(
@@ -278,7 +305,7 @@ def absorption() -> dict[str, Any]:
                     bd, best = d, vals[j]
         return best
 
-    dpus = []
+    dpus: list[tuple[float, float]] = []
     for e, units in boluses:
         if units < MIN_UNITS:
             continue
@@ -296,26 +323,35 @@ def absorption() -> dict[str, Any]:
         seg = vals[a:b]
         if not seg:
             continue
-        dpus.append((g0 - min(seg)) / units)
+        dpus.append((e, (g0 - min(seg)) / units))
 
+    quality = response_quality(dpus)
     if len(dpus) < 8:
-        return {"available": False, "reason": f"Only {len(dpus)} clean correction boluses in {ABS_WINDOW_DAYS}d — need more."}
+        return {
+            "available": False,
+            "reason": f"Only {len(dpus)} clean correction boluses in {ABS_WINDOW_DAYS}d — need more.",
+            "quality": quality,
+            "data_quality": {"cgm": cgm_quality, "insulin_response": quality},
+        }
 
-    m = mean(dpus)
-    cv = round(pstdev(dpus) / m * 100) if m else None
+    values = [value for _, value in dpus]
+    m = mean(values)
+    cv = round(pstdev(values) / m * 100) if m else None
     consistency = "highly variable" if (cv or 0) >= 50 else "variable" if (cv or 0) >= 30 else "consistent"
     est = estimate()
     return {
         "available": True,
-        "n": len(dpus),
+        "n": len(values),
         "mean_drop_per_unit": round(m, 1),
-        "median_drop_per_unit": round(median(dpus), 1),
+        "median_drop_per_unit": round(median(values), 1),
         "cv_pct": cv,
-        "min_drop_per_unit": round(min(dpus)),
-        "max_drop_per_unit": round(max(dpus)),
+        "min_drop_per_unit": round(min(values)),
+        "max_drop_per_unit": round(max(values)),
         "consistency": consistency,
         "expected_isf": est.get("est_isf_mgdl_per_u") if est.get("available") else None,
         "window_days": ABS_WINDOW_DAYS,
+        "quality": quality,
+        "data_quality": {"cgm": cgm_quality, "insulin_response": quality},
     }
 
 

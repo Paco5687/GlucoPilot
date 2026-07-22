@@ -16,7 +16,7 @@
 | Lively/phone ingest | `PeriodLog` | Local date key and source. | Merge by date; manual rows respected. |
 | CSV/Base44 imports | Glucose, treatment, Oura, period | Timestamp normalization and proximity/date dedup. | Legacy CSV import replaces owner/source=`csv` glucose/treatment. |
 | Manual APIs | Fingersticks, profile/weight, diagnoses, meds, allergies, insurance, symptoms, history | Random IDs and user-supplied dates. | User edit/append/delete per catalog. |
-| Rule/LLM jobs | Patterns, insights, summary, Companion | No source-record, algorithm, or input-data version. | Deactivate/replace/append varies by output. |
+| Rule/LLM jobs | Patterns, insights, summary, Companion | Patterns, insights, and summaries carry versioned quality/input hashes; source-record evidence remains future work. | Deactivate/replace/append varies by output; low-quality pattern/insight windows clear stale conclusions. |
 
 Every source is operationally owned by its module and the deployment owner.
 There is no persisted source-record or sync-run model, so partial pages,
@@ -28,15 +28,15 @@ be reconstructed.
 | Result | Inputs | Current incomplete-data behavior |
 |---|---|---|
 | Dashboard | Glucose, treatment, period, daily wearables/HR, fingersticks | Empty states render; partial windows produce metrics without coverage. |
-| Patterns | 14 days glucose/treatment + timezone | Stops below 50 CGM points; each rule silently skips insufficient events/hours. Confidence is a threshold label. |
-| Cross-domain insights | 90-day CGM, daily wearables/HR, cycle, insulin | Needs 14 days and ≥100 CGM points per included day. Pairwise missing inputs reduce sample count without coverage state. |
-| Insulin estimate | Profile weight, treatment/TDD, glucose | Missing weight suppresses per-kg output. Missing basal can make boluses appear to be TDD unless an authoritative daily total exists. |
-| Insulin response | Insulin, nearby glucose, optional carbs | Events lacking pre/post CGM are skipped; confounding is not represented as evidence. |
+| Patterns | 14 days glucose/treatment + timezone | Requires eligible CGM coverage/freshness; post-meal conclusions also require eligible nutrition coverage. Outputs carry the applicable quality envelopes. |
+| Cross-domain insights | 90-day CGM, daily wearables/HR, cycle, insulin | Each candidate requires eligible quality for its actual domains; low-quality inputs are omitted from LLM conclusions and stale derived rows are removed. |
+| Insulin estimate | Profile weight, treatment/TDD, glucose | Uses only pump-reported or complete-delivery calculated TDD, with explicit coverage, freshness, data-through, and limitations. Missing weight suppresses per-kg output. |
+| Insulin response | Insulin, nearby glucose, optional carbs | Carries CGM and clean-correction sample envelopes; meal-related/stacked events are excluded and low-quality values are withheld from Companion conclusions. |
 | Fingerstick stats | Fingerstick + nearest CGM ±15 minutes | Unpaired readings count but do not enter delta statistics; pairing never refreshes. |
 | Cycle inference | Oura temperature + existing period logs | Rebuilds only inferred rows; existing date wins; insufficient input returns none. |
-| Health Overview | Glucose, treatments, wearables, labs, profile/clinical lists, cycle, symptoms/history | Empty sections omitted; generated singleton has no input snapshot. |
-| Companion | Overview context, insulin outputs, records, memory/chat, optional trusted web | Missing sections omitted; internal claims have no evidence path/data version; memories are unverified. |
-| Visit Report | Windowed glucose/treatment plus profile, clinical lists, labs, symptoms/history, insurance | Missing sections omitted/unavailable; no completeness, reliability, or contradiction object. |
+| Health Overview | Glucose, treatments, wearables, labs, profile/clinical lists, cycle, symptoms/history | CGM, wearable, and cycle values enter the LLM only when their envelopes are eligible; the generated singleton retains those envelopes. |
+| Companion | Overview context, insulin outputs, records, memory/chat, optional trusted web | CGM, pump-TDD, and insulin-response values are gated by their envelopes; other evidence-path work and memory verification remain future work. |
+| Visit Report | Windowed glucose/treatment plus profile, clinical lists, labs, symptoms/history, insurance | CGM, pump TDD, nutrition, cycle, and wearable sections carry visible quality envelopes and low-quality values are omitted from the LLM narrative. |
 
 ## Field-family consumer matrix
 
