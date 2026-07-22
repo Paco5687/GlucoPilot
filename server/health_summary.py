@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from . import conditions, history, meds, profile, report, symptoms
 from .config import APP_TIMEZONE, OWNER_EMAIL
+from .contradictions import contradiction_context
 from .db import config_value, set_config_value
 from .data_quality import assess_daily
 from .llm import invoke_llm
@@ -165,6 +166,7 @@ def _build_context() -> dict[str, Any]:
             "cycle": cycle.get("quality"),
             "wearables": wearables["quality"],
         },
+        "unresolved_contradictions": contradiction_context(refresh=True, limit=50),
     }
 
 
@@ -185,6 +187,8 @@ async def generate() -> dict[str, Any]:
         "when a notable value is old (say, 6+ months) rather than treating it as current.\n"
         "- Mind verification: explicitly call a lab unverified unless its verification status is approved or edited. "
         "Parser confidence is not clinical verification.\n"
+        "- Mind contradictions: present both sides of every unresolved conflict and never silently select one. "
+        "Treat blocking contradictions as ineligible for a definitive derived claim until explicitly resolved.\n"
         "- Aim for 6-9 genuinely distinct observations, richest/most-actionable first. Also give a fuller "
         "'working' (on track) list and a 'watch' list.\n\n"
         f"DATA SNAPSHOT (last {WINDOW_DAYS} days where applicable):\n{json.dumps(context, indent=2, default=str)}"

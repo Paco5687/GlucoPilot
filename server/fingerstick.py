@@ -32,10 +32,10 @@ def _parse(ts: str) -> datetime | None:
         return None
 
 
-def _nearest_cgm(ts_iso: str) -> tuple[float | None, str | None]:
+def _nearest_cgm(ts_iso: str) -> tuple[float | None, str | None, str | None]:
     ts = _parse(ts_iso)
     if ts is None:
-        return None, None
+        return None, None, None
     lo = (ts - timedelta(minutes=MATCH_WINDOW_MIN)).isoformat(timespec="seconds").replace("+00:00", "Z")
     hi = (ts + timedelta(minutes=MATCH_WINDOW_MIN)).isoformat(timespec="seconds").replace("+00:00", "Z")
     rows = db.query_entities(
@@ -50,8 +50,8 @@ def _nearest_cgm(ts_iso: str) -> tuple[float | None, str | None]:
         if best_diff is None or diff < best_diff:
             best, best_diff = r, diff
     if best is None:
-        return None, None
-    return float(best["value"]), best.get("timestamp")
+        return None, None, None
+    return float(best["value"]), best.get("timestamp"), best.get("source")
 
 
 async def handle(body: dict[str, Any]) -> dict[str, Any]:
@@ -65,12 +65,14 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
         if not (10 <= value <= 800):
             return {"error": "Fingerstick value out of range (10–800 mg/dL).", "_status": 400}
         ts_iso = body.get("timestamp") or _now_iso()
-        cgm, _cgm_ts = _nearest_cgm(ts_iso)
+        cgm, cgm_ts, cgm_source = _nearest_cgm(ts_iso)
         delta = round(cgm - value, 1) if cgm is not None else None
         rec = db.create_entity("FingerstickReading", {
             "timestamp": ts_iso,
             "value": value,
             "cgm_value": cgm,
+            "cgm_timestamp": cgm_ts,
+            "cgm_source": cgm_source,
             "delta": delta,          # CGM minus fingerstick: + = CGM reads high
             "note": (body.get("note") or "").strip(),
             "source": "manual",

@@ -229,6 +229,7 @@ are omitted from the time column below for brevity.
 | Companion / `CompanionThread` | application record | envelope only | system source fact or patient report; system or patient |
 | Companion / `ChatMessage` | parent-scoped | envelope only | patient report or algorithm hypothesis; patient or algorithm |
 | Operations / `BugReport` | application record | envelope received/recorded | patient report; patient |
+| Reliability / contradiction ledger | detection fingerprint | first/last detected recorded UTC | versioned rule detection retaining both source assertions; resolution is a separate attributed user action |
 
 Mixed-source legacy types such as `PeriodLog`, `Treatment`, `Diagnosis`, and
 `HealthMemory` choose assertion/source metadata per row; the allowed set is not

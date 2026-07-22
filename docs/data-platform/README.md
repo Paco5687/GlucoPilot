@@ -33,6 +33,8 @@ typed repositories are introduced.
   and pump-total projections, compatibility mapping, parity, and rollout gates.
 - [Auditable lab extraction](AUDITABLE_LAB_EXTRACTION.md) — source locations,
   validation, verification, correction/supersession history, and safe reprocessing.
+- [Clinical contradiction ledger](CONTRADICTIONS.md) — deterministic conflict
+  rules, both-sides display, attributed resolution history, and safe rollback.
 
 ## Reproduce the structural audit
 

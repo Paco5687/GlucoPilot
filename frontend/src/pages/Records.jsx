@@ -6,6 +6,7 @@ import SafetyBanner from "../components/SafetyBanner";
 import RecordUploadQueue from "../components/records/RecordUploadQueue";
 import LabsView from "../components/records/LabsView";
 import MedicalRecordReview from "../components/records/MedicalRecordReview";
+import ContradictionPanel from "../components/ContradictionPanel";
 import { FolderHeart, Loader2, FileText, Trash2, ExternalLink, RefreshCw, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
@@ -108,6 +109,8 @@ export default function Records() {
         </div>
         <FolderHeart className="w-6 h-6 text-primary" />
       </div>
+
+      <ContradictionPanel domains={["labs", "hormone_timing", "source_revision"]} title="Record and lab contradictions" />
 
       {/* Upload queue (admin only) */}
       {isAdmin && <RecordUploadQueue onComplete={load} />}

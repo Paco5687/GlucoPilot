@@ -3,7 +3,7 @@
 Status: additive regression layer
 
 Implementations: `tests/fixtures/`, `tests/test_golden_data.py`,
-`tests/test_migration_fixtures.py`
+`tests/test_migration_fixtures.py`, `tests/test_contradictions.py`
 
 F5 establishes deterministic, public-safe fixtures for clinical interpretation
 and storage risks. The fixtures contain invented values, synthetic identifiers,
@@ -23,12 +23,17 @@ rows, credentials, or copied health information.
 | Conflicting ranges | A report uses the reference range and flag attached to the latest observation instead of reinterpreting the value with an older range. |
 | Source overlap | Readings within the global four-minute window are skipped across sources; the next physiological sample is retained. |
 | DST fall-back | Both UTC observations in the repeated local 1 a.m. hour remain present, while ambiguous local timestamps require an explicit offset. |
+| Clinical contradictions | Seven synthetic conflicts deterministically preserve both sides across glucose, pump TDD, lab unit/range, hormone timing, and revised-source rules. |
 
 `clinical_edge_cases.json` stores both the synthetic inputs and their expected
 outcomes. Tests must compare production parser, deduplication, analytics,
 report, and Companion evidence functions with those outcomes. Incorrect health
 interpretation fixes must add or update a synthetic scenario before changing
 the expected result.
+
+`contradictions.json` separately pins contradiction rule output, order, stable
+fingerprints, changed-evidence behavior, explicit hormone timing declarations,
+blocking resolution requirements, actor history, and source-identity redaction.
 
 ## Migration snapshots
 

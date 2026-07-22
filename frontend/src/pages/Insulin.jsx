@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { base44 } from "@/api/base44Client";
 import SafetyBanner from "../components/SafetyBanner";
 import DataQualityNote from "@/components/DataQualityNote";
+import ContradictionPanel from "@/components/ContradictionPanel";
 import { Syringe, Loader2, TrendingUp, TrendingDown, AlertTriangle } from "lucide-react";
 
 const CAT = {
@@ -64,6 +65,8 @@ export default function Insulin() {
         <h1 className="text-xl font-bold flex items-center gap-2"><Syringe className="w-5 h-5 text-primary" /> Insulin</h1>
         <p className="text-sm text-muted-foreground mt-1">Resistance / sensitivity estimates from your dosing, glucose, cycle, and body profile. Estimates, not clinical settings.</p>
       </div>
+
+      <ContradictionPanel domains={["pump_tdd"]} title="Pump total contradictions" />
 
       {loading ? (
         <div className="flex items-center justify-center h-40"><Loader2 className="w-5 h-5 animate-spin text-primary" /></div>

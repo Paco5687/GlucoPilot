@@ -17,6 +17,7 @@ import FingerstickLogger from "../components/dashboard/FingerstickLogger";
 import SymptomNudge from "../components/dashboard/SymptomNudge";
 import GlucoseOuraOverlay from "../components/dashboard/GlucoseOuraOverlay";
 import CorrelationCards from "../components/dashboard/CorrelationCards";
+import ContradictionPanel from "../components/ContradictionPanel";
 import TimeRangePicker, { RANGES } from "../components/dashboard/TimeRangePicker";
 import { Loader2 } from "lucide-react";
 
@@ -147,6 +148,8 @@ export default function Dashboard() {
         <h1 className="text-lg font-semibold">Dashboard</h1>
         <TimeRangePicker value={range} onChange={setRange} customRange={customRange} onCustomRangeChange={setCustomRange} />
       </div>
+
+      <ContradictionPanel domains={["glucose", "pump_tdd"]} title="Glucose and insulin contradictions" />
 
       <SymptomNudge />
 

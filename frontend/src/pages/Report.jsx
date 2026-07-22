@@ -113,6 +113,24 @@ function importDate(time) {
   return Number.isNaN(parsed.getTime()) ? "" : parsed.toLocaleDateString();
 }
 
+function ContradictionSide({ side }) {
+  const value = side?.value != null ? `${side.value}${side.unit ? ` ${side.unit}` : ""}` : null;
+  const range = side?.reference_low != null || side?.reference_high != null
+    ? `${side.reference_low ?? "—"}–${side.reference_high ?? "—"}${side.unit ? ` ${side.unit}` : ""}`
+    : null;
+  const phases = side?.expected_cycle_phases || side?.cycle_phases;
+  return (
+    <div className="rounded-md border border-border bg-background p-2">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{side?.label || "Evidence"}</div>
+      <div className="text-sm font-medium">{side?.name || value || phases?.join(", ") || side?.source || "Source evidence"}</div>
+      {side?.name && value && <div className="text-xs">{value}</div>}
+      {range && <div className="text-xs">Reference range: {range}</div>}
+      {side?.name && phases?.length > 0 && <div className="text-xs">{phases.join(", ")}</div>}
+      {side?.observed_at && <div className="text-[11px] text-muted-foreground">{side.observed_at}</div>}
+    </div>
+  );
+}
+
 export default function Report() {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -197,6 +215,30 @@ export default function Report() {
           Generated {new Date(report.generated_at).toLocaleDateString()}
         </div>
       </div>
+
+      {report.contradictions?.unresolved?.length > 0 && (
+        <div className="report-section space-y-2">
+          <h2 className="font-semibold text-base flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-600" /> Unresolved data contradictions
+          </h2>
+          <p className="text-xs text-muted-foreground">Both sides are shown. No conflicting value has been selected silently.</p>
+          {report.contradictions.unresolved.map((item) => (
+            <div key={item.id} className={`report-card rounded-lg border p-3 ${item.severity === "blocking" ? "border-red-300 bg-red-50" : "border-amber-200 bg-amber-50"}`}>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-semibold">{item.explanation}</div>
+                <span className="text-[9px] uppercase font-semibold">{item.severity}</span>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2 mt-2">
+                <ContradictionSide side={item.left} />
+                <ContradictionSide side={item.right} />
+              </div>
+              {item.detection_state === "not_current" && (
+                <div className="text-[10px] text-muted-foreground mt-2">The latest evaluation no longer detects this condition, but it remains unresolved until explicitly reviewed.</div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Diagnosed conditions */}
       {report.conditions?.length > 0 && (

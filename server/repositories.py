@@ -12,10 +12,13 @@ import sqlite3
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from collections.abc import Iterator
 
 from . import db
+
+if TYPE_CHECKING:
+    from .contradictions import ContradictionRepository
 
 
 Entity = dict[str, Any]
@@ -231,6 +234,7 @@ class RepositoryCatalog(Protocol):
     clinical_time: ClinicalTimeRepository
     basal_segments: BasalSegmentRepository
     pump_daily_totals: PumpDailyTotalRepository
+    contradictions: ContradictionRepository
 
     def entity(self, entity_type: str) -> EntityRepository: ...
 
@@ -436,12 +440,14 @@ class LegacyRepositoryCatalog:
             SqliteTypedTreatmentRepository,
             TreatmentCompatibilityRepository,
         )
+        from .contradictions import SqliteContradictionRepository
 
         self.source_archive = SqliteSourceArchiveRepository(connection)
         self.clinical_time = SqliteClinicalTimeRepository(connection)
         self.typed_treatments = SqliteTypedTreatmentRepository(connection)
         self.basal_segments = SqliteBasalSegmentRepository(connection)
         self.pump_daily_totals = SqlitePumpDailyTotalRepository(connection)
+        self.contradictions = SqliteContradictionRepository(connection)
         self.treatments = TreatmentCompatibilityRepository(
             legacy_treatments,
             self.typed_treatments,

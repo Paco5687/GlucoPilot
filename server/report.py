@@ -20,6 +20,7 @@ from pydantic import BaseModel
 from .auth import require_login
 from .canonical_time import temporal_metadata
 from .config import APP_TIMEZONE, DEMO_MODE, OWNER_EMAIL
+from .contradictions import contradiction_context
 from .db import config_value
 from .data_quality import assess_cgm, assess_daily, assess_nutrition, assess_pump_tdd, cgm_points
 from .insulin_reconciliation import reconcile_treatments
@@ -468,6 +469,17 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
         "symptom_journal": payload.get("symptoms"),
         "health_history": payload.get("history"),
         "data_quality": quality,
+        "unresolved_contradictions": [
+            {
+                "severity": item["severity"],
+                "domain": item["domain"],
+                "explanation": item["explanation"],
+                "left": item["left"],
+                "right": item["right"],
+                "detection_state": item["detection_state"],
+            }
+            for item in payload.get("contradictions", {}).get("unresolved", [])
+        ],
     }
     # Fast default model: the quality (27B) model is currently GPU-starved and
     # takes minutes for 1500 tokens, which hangs the report. The fast model
@@ -479,7 +491,7 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
 Data for the last {payload['days']} days:
 {summary}
 
-Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. Explicitly call machine-extracted labs "unverified" unless their verification status is approved or edited; never imply that parser confidence is clinical verification. If a health_history is present, use it as background (diagnoses, exposures, injuries, hospital visits, and the patient's own narrative) to frame what you observe. If a symptom_journal is present, summarize the symptoms she has actually reported (how often and how severe) and note any that coincide with the data. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Keep it factual and readable.""",
+Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. Explicitly call machine-extracted labs "unverified" unless their verification status is approved or edited; never imply that parser confidence is clinical verification. For every unresolved contradiction, present both sides and say it remains unresolved; never silently choose one value, especially for a blocking contradiction. If a health_history is present, use it as background (diagnoses, exposures, injuries, hospital visits, and the patient's own narrative) to frame what you observe. If a symptom_journal is present, summarize the symptoms she has actually reported (how often and how severe) and note any that coincide with the data. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Keep it factual and readable.""",
             response_json_schema={
                 "type": "object",
                 "properties": {
@@ -530,6 +542,7 @@ async def visit_report(body: ReportBody):
     cycle = _cycle(tz, since_iso, glucose)
     wellness = _wellness(days)
     labs = _labs()
+    contradictions = contradiction_context(refresh=True, limit=100)
 
     from . import conditions, history, insurance, meds, symptoms
 
@@ -548,6 +561,7 @@ async def visit_report(body: ReportBody):
         "cycle": cycle,
         "wellness": wellness,
         "labs": labs,
+        "contradictions": contradictions,
         "insurance": insurance.report_block(),
     }
     payload["narrative"] = await _narrative(payload)

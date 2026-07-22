@@ -12,6 +12,7 @@ import LivelyImport from "../components/period/LivelyImport";
 import CycleStats from "../components/period/CycleStats";
 import CycleHero, { computeCycleFacts } from "../components/period/CycleHero";
 import TemperatureChart from "../components/period/TemperatureChart";
+import ContradictionPanel from "../components/ContradictionPanel";
 
 export default function PeriodTracker() {
   const [logs, setLogs] = useState([]);
@@ -93,6 +94,8 @@ export default function PeriodTracker() {
           </Button>
         )}
       </div>
+
+      <ContradictionPanel domains={["hormone_timing"]} title="Hormone timing contradictions" />
 
       {/* Data-first: status tiles + the temperature signal */}
       <CycleHero logs={logs} />

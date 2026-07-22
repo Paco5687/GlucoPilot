@@ -17,6 +17,7 @@
 | CSV/Base44 imports | Glucose, treatment, Oura, period | Timestamp normalization and proximity/date dedup. | Legacy CSV import replaces owner/source=`csv` glucose/treatment. |
 | Manual APIs | Fingersticks, profile/weight, diagnoses, meds, allergies, insurance, symptoms, history | Random IDs and user-supplied dates. | User edit/append/delete per catalog. |
 | Rule/LLM jobs | Patterns, insights, summary, Companion | Patterns, insights, and summaries carry versioned quality/input hashes; source-record evidence remains future work. | Deactivate/replace/append varies by output; low-quality pattern/insight windows clear stale conclusions. |
+| Contradiction rules | Typed run, contradiction, and immutable event rows | Rules version plus canonical input hash; each fingerprint includes both evidence sides. | Re-evaluation changes detection presence only. Human resolution is attributable and is never silently reset. |
 
 Every source is operationally owned by its module and the deployment owner.
 There is no persisted source-record or sync-run model, so partial pages,
@@ -37,6 +38,7 @@ be reconstructed.
 | Health Overview | Glucose, treatments, wearables, labs, profile/clinical lists, cycle, symptoms/history | CGM, wearable, and cycle values enter the LLM only when their envelopes are eligible. Invalid/rejected labs are excluded and unverified labs carry explicit qualification. |
 | Companion | Overview context, insulin outputs, records, memory/chat, optional trusted web | CGM, pump-TDD, and insulin-response values are gated by their envelopes. Lab/document context identifies machine-extracted results as unverified unless approved/edited. |
 | Visit Report | Windowed glucose/treatment plus profile, clinical lists, labs, symptoms/history, insurance | Domain quality remains visible. Invalid/rejected labs are excluded; included machine-extracted labs and the generated prompt carry verification qualification. |
+| Contradiction consumers | Pump TDD, paired CGM/meter, labs, cycle timing, immutable source revisions | Every unresolved item retains and displays both sides. Blocking items suppress definitive derived claims until an attributable resolution. |
 
 ## Field-family consumer matrix
 
@@ -59,6 +61,7 @@ be reconstructed.
 | Connection tokens/status/expiry/last-sync | Connector modules and Connections UI; settings APIs expose redacted metadata. |
 | User settings / `app_settings` configuration | Connector setup, scheduler, auth/LLM/feature configuration, history narrative. |
 | Bug-report context/GitHub link | In-app reporter persistence and GitHub issue bridge only. |
+| Contradiction rule/domain/severity/explanation, both JSON sides, detection/resolution state, actor/history | Contextual Dashboard/Records/Insulin/Cycle panels, Visit Report, Health Summary, Companion, verified backup manifests. |
 
 ## Frontend generic-entity queries
 

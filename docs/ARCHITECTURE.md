@@ -32,6 +32,7 @@ uploaded records, and config. One owner per deployment.
 | `canonical_time.py` | canonical event/effective/recorded/received time normalization, DST handling, and sidecar repository |
 | `typed_treatments.py` | feature-gated strict treatment, basal-segment, and pump-total projections, backfill, and parity checks |
 | `lab_audit.py` | audited medical-record extraction, validation, verification, correction history, and compatibility projection |
+| `contradictions.py` | deterministic cross-domain contradiction rules, typed ledger, attributed resolution workflow, and API |
 | `auth.py` | first-run setup, login, **admin vs. read-only provider role**, `require_admin` |
 | `entities.py` | generic entity REST API (writes gated to admin) |
 | `settings_api.py` | in-app settings & secrets (DB-stored, override env) |
@@ -56,6 +57,10 @@ Notable types: `GlucoseReading`, `Treatment`, `Pattern`, `Insight`,
 `AIConversation`, `PeriodLog`, `OuraDaily`, `OuraHeartRate`, `FitbitDaily`,
 `MedicalRecord`, `LabResult`, plus per-source connection records. This mirrors a
 flexible document API, which keeps sync/analysis code simple.
+
+Migration 8 adds a typed contradiction sidecar. It never rewrites either
+clinical source: stable rule detections and append-only resolution events are
+surfaced in contextual panels, reports, summaries, and Companion prompts.
 
 ## Frontend (`frontend/`)
 
