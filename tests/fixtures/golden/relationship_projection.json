@@ -1,0 +1,23 @@
+{
+  "synthetic": true,
+  "owner_email": "owner@glucopilot.local",
+  "algorithm": {
+    "id": "legacy-reference-projection",
+    "version": "1.0.0"
+  },
+  "sources": [
+    {
+      "fixture_key": "lab",
+      "entity_type": "LabResult",
+      "reference_field": "record_id",
+      "target_fixture_key": "record"
+    },
+    {
+      "fixture_key": "message",
+      "entity_type": "ChatMessage",
+      "reference_field": "thread_id",
+      "target_fixture_key": "thread"
+    }
+  ],
+  "expected_full_relationship_count": 4
+}

@@ -273,6 +273,20 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                     )
                     for table in relationship_tables
                 }
+            relationship_builds = None
+            relationship_build_tables = (
+                "relationship_projection_runs",
+                "relationship_projection_run_edges",
+                "relationship_projection_active_edges",
+                "relationship_projection_state",
+            )
+            if all(_table_exists(connection, table) for table in relationship_build_tables):
+                relationship_builds = {
+                    table: dict(
+                        connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+                    )
+                    for table in relationship_build_tables
+                }
             evidence_projection = None
             evidence_tables = ("observation_windows", "evidence_sets", "evidence_set_windows")
             if all(_table_exists(connection, table) for table in evidence_tables):
@@ -310,6 +324,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
         metadata["typed_wearables"] = typed_wearables
     if relationship_projection is not None:
         metadata["relationship_projection"] = relationship_projection
+    if relationship_builds is not None:
+        metadata["relationship_builds"] = relationship_builds
     if evidence_projection is not None:
         metadata["evidence_projection"] = evidence_projection
     if include_references:
@@ -520,6 +536,8 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
         keys.append("typed_wearables")
     if "relationship_projection" in expected_database:
         keys.append("relationship_projection")
+    if "relationship_builds" in expected_database:
+        keys.append("relationship_builds")
     if "evidence_projection" in expected_database:
         keys.append("evidence_projection")
     for key in keys:
@@ -598,6 +616,15 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
                 "assertion_status_registry_count": metadata["relationship_projection"]["assertion_status_registry"]["count"],
                 "evidence_level_registry_count": metadata["relationship_projection"]["evidence_level_registry"]["count"],
                 "relationship_algorithm_registry_count": metadata["relationship_projection"]["relationship_algorithm_registry"]["count"],
+            }
+        )
+    if "relationship_builds" in expected_database:
+        verification.update(
+            {
+                "relationship_projection_run_count": metadata["relationship_builds"]["relationship_projection_runs"]["count"],
+                "relationship_projection_run_edge_count": metadata["relationship_builds"]["relationship_projection_run_edges"]["count"],
+                "relationship_projection_active_edge_count": metadata["relationship_builds"]["relationship_projection_active_edges"]["count"],
+                "relationship_projection_state_count": metadata["relationship_builds"]["relationship_projection_state"]["count"],
             }
         )
     if "evidence_projection" in expected_database:

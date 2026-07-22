@@ -35,6 +35,7 @@ uploaded records, and config. One owner per deployment.
 | `typed_wearables.py` | strict wearable daily/sample projections, provider overlap, bounded backfill, shadow parity, and rollback |
 | `relationship_registry.py` | migration-governed predicates, assertion statuses, evidence levels, and relationship algorithms |
 | `relationships.py` | strict owner-scoped temporal relationship projection, immutable identity, indexed queries, and compatibility cutover |
+| `relationship_projection.py` | versioned full/scoped graph jobs, atomic generation publication, checksums, watermarks, and freshness |
 | `evidence_sets.py` | bounded checksum-addressed observation windows, claim evidence sets, drill-down verification, and source-change invalidation |
 | `lab_audit.py` | audited medical-record extraction, validation, verification, correction history, and compatibility projection |
 | `contradictions.py` | deterministic cross-domain contradiction rules, typed ledger, attributed resolution workflow, and API |
@@ -71,6 +72,14 @@ Migration 11 adds the first relationship-graph projection in the same SQLite
 database. Edges remain rebuildable and subordinate to source entities; governed
 registries, owner/type validation, attribution, input/algorithm versions, and
 temporal/confidence indexes prevent anonymous or untyped graph data.
+
+Migration 13 adds the G3 build lifecycle. A versioned projector derives the
+four governed lab/record and message/thread edges from current authoritative
+entity references. Runs, failures, input watermarks, active-edge membership,
+and graph checksums stay in SQLite. A complete full or entity-scoped output is
+published in one transaction; a failed run leaves the prior active graph and
+freshness state untouched. Independently authored assertions are not projector
+members and therefore survive rebuilds.
 
 ## Frontend (`frontend/`)
 

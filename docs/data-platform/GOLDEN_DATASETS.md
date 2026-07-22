@@ -4,7 +4,8 @@ Status: additive regression layer
 
 Implementations: `tests/fixtures/`, `tests/test_golden_data.py`,
 `tests/test_migration_fixtures.py`, `tests/test_contradictions.py`,
-`tests/test_typed_glucose.py`, and `tests/test_typed_wearables.py`
+`tests/test_typed_glucose.py`, `tests/test_typed_wearables.py`, and
+`tests/test_relationship_projection.py`
 
 F5 establishes deterministic, public-safe fixtures for clinical interpretation
 and storage risks. The fixtures contain invented values, synthetic identifiers,
@@ -27,6 +28,7 @@ rows, credentials, or copied health information.
 | Clinical contradictions | Seven synthetic conflicts deterministically preserve both sides across glucose, pump TDD, lab unit/range, hormone timing, and revised-source rules. |
 | Typed glucose/fingersticks | Exact ±240-second dedup boundary, strict mapping, fixed pairing, restartable backfill, shadow parity, rollback, and backup counts remain deterministic. |
 | Typed wearables | Oura/Fitbit/Google provider overlap, explicit null/extension preservation, strict metric/time mapping, bounded backfill, indexed high-volume reads, parity, rollback, and backup counts remain deterministic. |
+| Relationship projection jobs | Repeated full builds have stable checksums; failed and scoped builds cannot publish mixed generations; authored assertions survive; freshness and backup counts remain observable. |
 
 `clinical_edge_cases.json` stores both the synthetic inputs and their expected
 outcomes. Tests must compare production parser, deduplication, analytics,
@@ -84,7 +86,9 @@ database.
   loss.
 - Relationship graph: governed registry drift/unknowns, subject/object and
   owner validation, temporal/confidence filters, deterministic immutable
-  generations, compatibility reads, indexes, and backup counts.
+  generations, atomic full/scoped replacement, failure rollback, authored
+  assertion preservation, freshness, compatibility reads, indexes, and backup
+  counts.
 - Evidence windows: checksum determinism, bounded membership, exact drill-down,
   source-change invalidation, Pattern citation cardinality, and restore counts.
 

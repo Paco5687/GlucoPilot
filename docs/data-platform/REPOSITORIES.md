@@ -24,6 +24,7 @@ Core analytics depend on `RepositoryCatalog`, not `db.query_entities`:
 | `ContradictionRepository` | Migration-8 deterministic detections, both evidence sides, detection state, resolution state, and immutable history |
 | `WearableRepository` | Oura/Fitbit/Google Health compatibility repositories plus feature-gated strict daily/sample projections |
 | `RelationshipRepository` | Compatibility read adapter over legacy references and the feature-gated strict relationship projection |
+| `RelationshipProjectionRepository` | Durable versioned build outcomes, atomic active-edge publication, graph checksums, watermarks, and freshness |
 | `EvidenceRepository` | Compatibility adapter over inline legacy support and feature-gated checksum-addressed Evidence Sets |
 | `SourceArchiveRepository` | Typed immutable source payload/file metadata, sync runs, outcome counters, freshness, and normalized links |
 | `ClinicalTimeRepository` | Atomic sidecar synchronization, per-entity time metadata, and cross-source canonical timeline queries |
@@ -66,7 +67,18 @@ source operators fall back to legacy JSON.
 G1 adds `SqliteRelationshipRepository` and four reviewed registries. The
 catalog exposes it as `typed_relationships`, while `relationships` retains the
 legacy field projection unless `RELATIONSHIP_READS_ENABLED=true`. No production
-projector or backfill runs in G1; G3 owns that generation lifecycle. The
+projector or backfill runs in G1; G3 owns that generation lifecycle.
+
+G3 adds `RelationshipProjectionRepository` and the versioned
+`LegacyReferenceProjector`. Full and LabResult/ChatMessage-anchored scoped
+builds publish only after every edge validates. Active membership changes,
+global graph checksum, watermark, and successful-run state commit together;
+failed runs are retained without advancing freshness. Directly authored
+patient/clinician assertions have no projector membership and remain visible
+across derived rebuilds. The explicit
+`RELATIONSHIP_PROJECTION_WRITES_ENABLED` gate controls the operational rebuild
+entry point; `RELATIONSHIP_READS_ENABLED` remains the independent read cutover.
+
 G2 adds `SqliteEvidenceSetRepository` as `typed_evidence`. Pattern generation
 may atomically create one bounded CGM window and small claim-level sets under
 `EVIDENCE_SET_WRITES_ENABLED`; `EVIDENCE_SET_READS_ENABLED` independently keeps
