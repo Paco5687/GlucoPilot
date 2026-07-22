@@ -36,6 +36,7 @@ the other waits, rechecks the ledger, and applies nothing.
 | 10 | `typed_wearable_storage` | Adds strict, indexed, rebuildable daily wearable and heart-rate sample projections while preserving provider overlap and legacy APIs. |
 | 11 | `governed_relationship_storage` | Adds strict owner-scoped edges plus governed predicate, assertion-status, evidence-level, and deterministic-algorithm registries without changing legacy relationship reads. |
 | 12 | `evidence_sets_and_observation_windows` | Adds bounded checksum-addressed time-series windows and claim evidence sets without per-sample graph edges or legacy-read changes. |
+| 13 | `relationship_projection_runs` | Adds strict graph build runs, historical run-edge membership, active generated edges, checksums, watermarks, and freshness state for atomic full/scoped rebuilds. |
 
 ## Adding a migration
 

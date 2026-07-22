@@ -41,7 +41,8 @@ typed repositories are introduced.
   explicit provider overlap, bounded backfill, indexed reads, and rollback.
 - [Governed relationship projection](RELATIONSHIP_GRAPH.md) — typed predicates,
   assertion/evidence/algorithm registries, owner validation, temporal/confidence
-  indexes, deterministic identity, and compatibility rollback.
+  indexes, deterministic full/scoped rebuild jobs, atomic publication,
+  freshness, and compatibility rollback.
 - [Evidence sets and observation windows](EVIDENCE_SETS.md) — bounded time-series
   membership, deterministic checksums, exact drill-down, invalidation, and
   feature-gated Pattern citations.

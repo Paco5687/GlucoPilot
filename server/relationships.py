@@ -393,8 +393,13 @@ class SqliteRelationshipRepository:
             parameters.append(min_confidence)
         with self._scope() as (connection, _):
             rows = connection.execute(
-                "SELECT * FROM entity_relationships WHERE "
+                "SELECT edge.* FROM entity_relationships edge WHERE "
                 + " AND ".join(where)
+                + " AND ("
+                + "NOT EXISTS (SELECT 1 FROM relationship_projection_run_edges managed "
+                + "WHERE managed.relationship_id=edge.id) OR "
+                + "EXISTS (SELECT 1 FROM relationship_projection_active_edges active "
+                + "WHERE active.relationship_id=edge.id))"
                 + " ORDER BY predicate, object_type, object_id, id",
                 parameters,
             ).fetchall()

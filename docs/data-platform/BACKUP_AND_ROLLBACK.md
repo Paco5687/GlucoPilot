@@ -83,6 +83,11 @@ Prefer a read/code rollback over schema reversal:
 - If relationship projection reads fail, set
   `RELATIONSHIP_READS_ENABLED=false`; legacy lab/record and message/thread
   references remain authoritative until the later graph cutover.
+- If a graph rebuild job fails, keep
+  `RELATIONSHIP_PROJECTION_WRITES_ENABLED=false` while investigating. Failed
+  runs cannot replace active memberships or advance the graph watermark; the
+  last complete generation remains readable. Verified backups include run,
+  historical run-edge, active-edge, and freshness-state counts.
 - If Evidence Set projection fails, set both `EVIDENCE_SET_WRITES_ENABLED` and
   `EVIDENCE_SET_READS_ENABLED` to `false`; inline legacy claim evidence remains
   available.

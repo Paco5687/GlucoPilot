@@ -1339,6 +1339,136 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        13,
+        "relationship_projection_runs",
+        (
+            Statement(
+                """
+                CREATE TABLE relationship_projection_runs (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    owner_email TEXT NOT NULL CHECK(owner_email != ''),
+                    generator_id TEXT NOT NULL,
+                    generator_version TEXT NOT NULL,
+                    scope_kind TEXT NOT NULL CHECK(scope_kind IN ('full', 'entity')),
+                    scope_json TEXT NOT NULL CHECK(
+                        json_valid(scope_json) AND json_type(scope_json) = 'object'
+                    ),
+                    scope_checksum TEXT NOT NULL CHECK(
+                        length(scope_checksum) = 71 AND scope_checksum LIKE 'sha256:%'
+                    ),
+                    input_data_version TEXT NOT NULL CHECK(input_data_version != ''),
+                    input_hash TEXT NOT NULL CHECK(
+                        length(input_hash) = 71 AND input_hash LIKE 'sha256:%'
+                    ),
+                    watermark TEXT CHECK(watermark IS NULL OR watermark LIKE '%Z'),
+                    status TEXT NOT NULL CHECK(status IN ('running', 'succeeded', 'failed')),
+                    relationship_count INTEGER CHECK(
+                        relationship_count IS NULL OR relationship_count >= 0
+                    ),
+                    relationship_checksum TEXT CHECK(
+                        relationship_checksum IS NULL OR (
+                            length(relationship_checksum) = 71
+                            AND relationship_checksum LIKE 'sha256:%'
+                        )
+                    ),
+                    error_json TEXT CHECK(
+                        error_json IS NULL OR (
+                            json_valid(error_json) AND json_type(error_json) = 'object'
+                        )
+                    ),
+                    started_at TEXT NOT NULL CHECK(started_at LIKE '%Z'),
+                    completed_at TEXT CHECK(completed_at IS NULL OR completed_at LIKE '%Z'),
+                    published_at TEXT CHECK(published_at IS NULL OR published_at LIKE '%Z'),
+                    FOREIGN KEY(generator_id, generator_version)
+                        REFERENCES relationship_algorithm_registry(algorithm_id, version),
+                    CHECK(
+                        (status = 'running' AND relationship_count IS NULL
+                            AND relationship_checksum IS NULL AND error_json IS NULL
+                            AND completed_at IS NULL AND published_at IS NULL) OR
+                        (status = 'succeeded' AND relationship_count IS NOT NULL
+                            AND relationship_checksum IS NOT NULL AND error_json IS NULL
+                            AND completed_at IS NOT NULL AND published_at IS NOT NULL) OR
+                        (status = 'failed' AND relationship_count IS NULL
+                            AND relationship_checksum IS NULL AND error_json IS NOT NULL
+                            AND completed_at IS NOT NULL AND published_at IS NULL)
+                    )
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE relationship_projection_run_edges (
+                    run_id TEXT NOT NULL REFERENCES relationship_projection_runs(id)
+                        ON DELETE CASCADE,
+                    relationship_id TEXT NOT NULL REFERENCES entity_relationships(id)
+                        ON DELETE RESTRICT,
+                    scope_key TEXT NOT NULL CHECK(scope_key != ''),
+                    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                    PRIMARY KEY(run_id, relationship_id),
+                    UNIQUE(run_id, ordinal)
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE relationship_projection_active_edges (
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    generator_id TEXT NOT NULL,
+                    generator_version TEXT NOT NULL,
+                    scope_key TEXT NOT NULL CHECK(scope_key != ''),
+                    relationship_id TEXT NOT NULL REFERENCES entity_relationships(id)
+                        ON DELETE RESTRICT,
+                    run_id TEXT NOT NULL REFERENCES relationship_projection_runs(id)
+                        ON DELETE RESTRICT,
+                    PRIMARY KEY(owner_id, generator_id, generator_version, relationship_id),
+                    FOREIGN KEY(generator_id, generator_version)
+                        REFERENCES relationship_algorithm_registry(algorithm_id, version)
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE relationship_projection_state (
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    owner_email TEXT NOT NULL CHECK(owner_email != ''),
+                    generator_id TEXT NOT NULL,
+                    generator_version TEXT NOT NULL,
+                    graph_checksum TEXT NOT NULL CHECK(
+                        length(graph_checksum) = 71 AND graph_checksum LIKE 'sha256:%'
+                    ),
+                    relationship_count INTEGER NOT NULL CHECK(relationship_count >= 0),
+                    watermark TEXT CHECK(watermark IS NULL OR watermark LIKE '%Z'),
+                    last_successful_run_id TEXT NOT NULL
+                        REFERENCES relationship_projection_runs(id) ON DELETE RESTRICT,
+                    published_at TEXT NOT NULL CHECK(published_at LIKE '%Z'),
+                    PRIMARY KEY(owner_id, generator_id, generator_version),
+                    FOREIGN KEY(generator_id, generator_version)
+                        REFERENCES relationship_algorithm_registry(algorithm_id, version)
+                ) STRICT
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_relationship_projection_runs_status "
+                "ON relationship_projection_runs(owner_id, generator_id, generator_version, "
+                "started_at DESC, status)"
+            ),
+            Statement(
+                "CREATE INDEX idx_relationship_projection_run_edges_scope "
+                "ON relationship_projection_run_edges(run_id, scope_key, ordinal)"
+            ),
+            Statement(
+                "CREATE INDEX idx_relationship_projection_active_scope "
+                "ON relationship_projection_active_edges("
+                "owner_id, generator_id, generator_version, scope_key)"
+            ),
+            Statement(
+                "CREATE INDEX idx_relationship_projection_active_relationship "
+                "ON relationship_projection_active_edges(relationship_id)"
+            ),
+        ),
+    ),
 )
 
 
