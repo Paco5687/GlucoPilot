@@ -90,6 +90,31 @@ def test_validation_preserves_originals_and_detects_edge_cases(audit_case):
     assert invalid_range["reference_high"] is None
 
 
+def test_titer_detection_handles_adversarial_whitespace_without_regex_backtracking():
+    extracted = {
+        "record_date": "2026-05-11",
+        "lab_results": [
+            {
+                "test_name": "Synthetic ANA Titer",
+                "original_value": "  1  :  160  ",
+                "source_page": 1,
+            },
+            {
+                "test_name": "Synthetic malformed titer",
+                "original_value": (" " * 50_000) + "1 : 160" + (" " * 50_000) + "x",
+                "source_page": 2,
+            },
+        ],
+    }
+
+    rows = lab_audit.normalize_and_validate(extracted, "synthetic-titer-record")
+
+    assert rows[0]["value_kind"] == "titer"
+    assert rows[0]["normalized_value"] == 160
+    assert rows[1]["value_kind"] == "qualitative"
+    assert rows[1]["normalized_value"] is None
+
+
 def test_review_history_supersession_and_reprocess_preserve_correction(
     audit_case,
     audit_database,

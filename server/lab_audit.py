@@ -119,6 +119,23 @@ def _issue(code: str, severity: str, message: str) -> dict[str, str]:
     return {"code": code, "severity": severity, "message": message}
 
 
+def _titer_denominator(value: str) -> float | None:
+    """Parse the common ``1:number`` form in linear time.
+
+    Extraction text is untrusted and may be arbitrarily long, so this avoids
+    overlapping whitespace regexes that can exhibit polynomial backtracking.
+    """
+    numerator, separator, denominator = value.strip().partition(":")
+    if separator != ":" or numerator.strip() != "1":
+        return None
+    denominator = denominator.strip()
+    if not denominator or denominator.count(".") > 1:
+        return None
+    if any(character not in "0123456789." for character in denominator):
+        return None
+    return _finite(denominator)
+
+
 def _value_parts(row: dict[str, Any]) -> tuple[str, float | None, str]:
     raw = row.get("original_value")
     if raw is None:
@@ -127,8 +144,10 @@ def _value_parts(row: dict[str, Any]) -> tuple[str, float | None, str]:
         raw = row.get("value")
     original = _text(raw)
     explicit = _text(row.get("value_kind")).lower()
-    if explicit == "titer" or re.fullmatch(r"\s*1\s*:\s*\d+(?:\.\d+)?\s*", original):
-        denominator = _finite(original.split(":", 1)[1]) if ":" in original else _finite(row.get("value"))
+    denominator = _titer_denominator(original)
+    if explicit == "titer" or denominator is not None:
+        if denominator is None:
+            denominator = _finite(row.get("value"))
         return original, denominator, "titer"
     numeric = _finite(row.get("normalized_value"))
     if numeric is None:
