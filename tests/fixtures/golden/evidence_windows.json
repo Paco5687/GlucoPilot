@@ -1,0 +1,11 @@
+{
+  "synthetic": true,
+  "owner_email": "owner@glucopilot.local",
+  "window_start": "2026-03-02T13:00:00.000Z",
+  "window_end": "2026-03-02T13:10:00.000Z",
+  "observations": [
+    {"timestamp": "2026-03-02T13:00:00.000Z", "value": 101, "source": "synthetic"},
+    {"timestamp": "2026-03-02T13:05:00.000Z", "value": 112, "source": "synthetic"},
+    {"timestamp": "2026-03-02T13:10:00.000Z", "value": 123, "source": "synthetic"}
+  ]
+}

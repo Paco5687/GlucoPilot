@@ -85,6 +85,8 @@ database.
 - Relationship graph: governed registry drift/unknowns, subject/object and
   owner validation, temporal/confidence filters, deterministic immutable
   generations, compatibility reads, indexes, and backup counts.
+- Evidence windows: checksum determinism, bounded membership, exact drill-down,
+  source-change invalidation, Pattern citation cardinality, and restore counts.
 
 ## CI gate
 

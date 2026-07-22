@@ -206,6 +206,13 @@ is idempotent; new input produces a new row, preserving the prior generation
 for later supersession or complete rebuild. See
 [Governed relationship projection](RELATIONSHIP_GRAPH.md).
 
+Bounded Evidence Sets apply the same rule to time series: query definition,
+ordered membership, canonical observation checksum, summary, generator, and
+input-data version are recorded once per window. Sample observations remain
+source entities and are opened on demand. A checksum mismatch invalidates the
+window rather than silently changing the evidence behind a claim. See
+[Evidence sets and observation windows](EVIDENCE_SETS.md).
+
 ## Entity-level destination map
 
 All 34 registered entity types map to the v1 primitives. Envelope

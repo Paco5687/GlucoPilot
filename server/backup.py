@@ -273,6 +273,15 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                     )
                     for table in relationship_tables
                 }
+            evidence_projection = None
+            evidence_tables = ("observation_windows", "evidence_sets", "evidence_set_windows")
+            if all(_table_exists(connection, table) for table in evidence_tables):
+                evidence_projection = {
+                    table: dict(
+                        connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+                    )
+                    for table in evidence_tables
+                }
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:
@@ -301,6 +310,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
         metadata["typed_wearables"] = typed_wearables
     if relationship_projection is not None:
         metadata["relationship_projection"] = relationship_projection
+    if evidence_projection is not None:
+        metadata["evidence_projection"] = evidence_projection
     if include_references:
         metadata["record_references"] = references
     return metadata
@@ -509,6 +520,8 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
         keys.append("typed_wearables")
     if "relationship_projection" in expected_database:
         keys.append("relationship_projection")
+    if "evidence_projection" in expected_database:
+        keys.append("evidence_projection")
     for key in keys:
         if metadata[key] != expected_database.get(key):
             raise BackupError(f"restored database metadata mismatch: {key}")
@@ -585,6 +598,14 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
                 "assertion_status_registry_count": metadata["relationship_projection"]["assertion_status_registry"]["count"],
                 "evidence_level_registry_count": metadata["relationship_projection"]["evidence_level_registry"]["count"],
                 "relationship_algorithm_registry_count": metadata["relationship_projection"]["relationship_algorithm_registry"]["count"],
+            }
+        )
+    if "evidence_projection" in expected_database:
+        verification.update(
+            {
+                "observation_window_count": metadata["evidence_projection"]["observation_windows"]["count"],
+                "evidence_set_count": metadata["evidence_projection"]["evidence_sets"]["count"],
+                "evidence_set_window_count": metadata["evidence_projection"]["evidence_set_windows"]["count"],
             }
         )
     return verification

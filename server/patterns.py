@@ -10,6 +10,8 @@ from .config import APP_TIMEZONE, OWNER_EMAIL
 from .data_quality import assess_cgm, assess_nutrition, cgm_points
 from .db import config_value
 from .llm import invoke_llm
+from .evidence_sets import evidence_set_writes_enabled
+from .unit_of_work import unit_of_work
 
 
 def _parse_ts(value: str) -> datetime | None:
@@ -349,10 +351,6 @@ IMPORTANT: This is educational only. Always frame suggestions as "discuss with y
             # LLM enrichment is best-effort; statistical patterns still save.
             pass
 
-    # Deactivate old active patterns, insert new
-    for old in db.query_entities("Pattern", {"is_active": True, "owner_email": OWNER_EMAIL}):
-        db.update_entity("Pattern", old["id"], {"is_active": False})
-
     now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     to_create = [
         {
@@ -375,8 +373,32 @@ IMPORTANT: This is educational only. Always frame suggestions as "discuss with y
         }
         for p in patterns
     ]
-    if to_create:
-        db.bulk_create_entities("Pattern", to_create)
+    with unit_of_work() as work:
+        pattern_repository = work.repositories.entity("Pattern")
+        for old in pattern_repository.query({"is_active": True, "owner_email": OWNER_EMAIL}):
+            pattern_repository.update(old["id"], {"is_active": False})
+        created = pattern_repository.create_many(to_create) if to_create else []
+        if created and evidence_set_writes_enabled():
+            window = work.repositories.typed_evidence.capture_window(
+                owner_email=OWNER_EMAIL,
+                entity_type="GlucoseReading",
+                time_field="timestamp",
+                window_start=since.isoformat().replace("+00:00", "Z"),
+                window_end=now,
+                observations=readings,
+                filters={"owner_email": OWNER_EMAIL},
+                summary={"data_quality": quality},
+            )
+            for pattern, source in zip(created, to_create):
+                work.repositories.typed_evidence.create_set(
+                    owner_email=OWNER_EMAIL,
+                    claim_type="Pattern",
+                    claim_id=pattern["id"],
+                    window_ids=[window["id"]],
+                    summary=json.loads(source["supporting_evidence"]),
+                    input_data_version=quality["input_data_version"],
+                )
+        work.commit()
 
     return {
         "success": True,

@@ -267,6 +267,7 @@ class RepositoryCatalog(Protocol):
     relationships: RelationshipRepository
     typed_relationships: RelationshipRepository
     evidence: EvidenceRepository
+    typed_evidence: EvidenceRepository
     source_archive: SourceArchiveRepository
     clinical_time: ClinicalTimeRepository
     basal_segments: BasalSegmentRepository
@@ -469,7 +470,7 @@ class LegacyRepositoryCatalog:
             for entity_type in ("OuraDaily", "OuraHeartRate", "FitbitDaily", "FitbitHeartRate")
         }
         legacy_relationships = LegacyRelationshipRepository(self)
-        self.evidence = LegacyEvidenceRepository(self)
+        legacy_evidence = LegacyEvidenceRepository(self)
         from .source_archive import SqliteSourceArchiveRepository
         from .canonical_time import SqliteClinicalTimeRepository
         from .typed_treatments import (
@@ -490,6 +491,7 @@ class LegacyRepositoryCatalog:
         )
         from .contradictions import SqliteContradictionRepository
         from .relationships import RelationshipCompatibilityRepository, SqliteRelationshipRepository
+        from .evidence_sets import EvidenceCompatibilityRepository, SqliteEvidenceSetRepository
 
         self.source_archive = SqliteSourceArchiveRepository(connection)
         self.clinical_time = SqliteClinicalTimeRepository(connection)
@@ -502,6 +504,8 @@ class LegacyRepositoryCatalog:
             legacy_relationships,
             self.typed_relationships,
         )
+        self.typed_evidence = SqliteEvidenceSetRepository(connection, repositories=self)
+        self.evidence = EvidenceCompatibilityRepository(legacy_evidence, self.typed_evidence)
         self.typed_glucose = SqliteTypedGlucoseRepository(connection)
         self.typed_fingersticks = SqliteTypedFingerstickRepository(connection)
         self.glucose = GlucoseCompatibilityRepository(
