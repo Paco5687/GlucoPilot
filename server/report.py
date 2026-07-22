@@ -21,6 +21,7 @@ from .auth import require_login
 from .canonical_time import temporal_metadata
 from .config import APP_TIMEZONE, DEMO_MODE, OWNER_EMAIL
 from .db import config_value
+from .insulin_reconciliation import reconcile_treatments
 from .llm import invoke_llm
 from .repositories import get_repositories
 
@@ -142,27 +143,72 @@ def _glucose(tz: ZoneInfo, since_iso: str) -> dict[str, Any]:
 def _insulin(tz: ZoneInfo, since_iso: str, glucose_days: int) -> dict[str, Any]:
     treatments = _paged("Treatment", since_iso)
     days = max(glucose_days, 1)
-    total_bolus = 0.0
-    bolus_count = 0
     total_carbs = 0.0
-    basal_est = 0.0
     for t in treatments:
         ttype = t.get("type")
-        if ttype == "insulin" and t.get("amount") and t.get("event_type") != "Daily Total":
-            total_bolus += float(t["amount"])
-            bolus_count += 1
-        elif ttype == "carb" and t.get("amount"):
+        if ttype == "carb" and t.get("amount"):
             total_carbs += float(t["amount"])
-        elif ttype == "tempbasal" and t.get("absolute") is not None and t.get("duration"):
-            basal_est += float(t["absolute"]) * float(t["duration"]) / 60.0
+
+    reconciliation = reconcile_treatments(treatments, tz)
+    reconciled_days = reconciliation["days"]
+    total_bolus = sum(float(day["calculated"]["bolus_units"]) for day in reconciled_days)
+    bolus_count = sum(int(day["calculated"]["bolus_events"]) for day in reconciled_days)
+    reported_days = [day for day in reconciled_days if day["pump_reported"]["selected"]]
+    calculated_days = [day for day in reconciled_days if day["calculated"]["total_units"] is not None]
+    scheduled_days = [day for day in reconciled_days if day["scheduled_basal"]["coverage_pct"] > 0]
+    pump_reported_avg_basal = (
+        round(
+            sum(float(day["pump_reported"]["selected"]["basal_units"]) for day in reported_days)
+            / len(reported_days),
+            1,
+        )
+        if reported_days
+        else None
+    )
+    calculated_avg_basal = (
+        round(
+            sum(float(day["calculated"]["delivered_basal_units"]) for day in calculated_days)
+            / len(calculated_days),
+            1,
+        )
+        if calculated_days
+        else None
+    )
+    scheduled_avg_basal = (
+        round(sum(float(day["scheduled_basal"]["units"]) for day in scheduled_days) / len(scheduled_days), 1)
+        if scheduled_days
+        else None
+    )
+    summary = reconciliation["summary"]
+    preferred_tdd = summary["pump_reported_avg_tdd"]
+    if preferred_tdd is None:
+        preferred_tdd = summary["calculated_avg_tdd"]
     return {
-        "available": bolus_count > 0 or basal_est > 0,
+        "available": bool(bolus_count or reported_days or calculated_days or scheduled_days),
         "avg_daily_bolus": round(total_bolus / days, 1),
         "boluses_per_day": round(bolus_count / days, 1),
         "avg_daily_carbs": round(total_carbs / days),
-        "avg_daily_basal_est": round(basal_est / days, 1),
-        "avg_tdd_est": round((total_bolus + basal_est) / days, 1),
-        "has_basal": basal_est > 0,
+        "pump_reported_avg_tdd": summary["pump_reported_avg_tdd"],
+        "pump_reported_avg_basal": pump_reported_avg_basal,
+        "pump_reported_days": summary["pump_reported_days"],
+        "pump_reported_sources": summary["pump_reported_sources"],
+        "calculated_avg_tdd": summary["calculated_avg_tdd"],
+        "calculated_avg_daily_basal": calculated_avg_basal,
+        "calculated_days": summary["calculated_days"],
+        "calculated_source": summary["calculated_source"],
+        "scheduled_avg_daily_basal": scheduled_avg_basal,
+        "scheduled_days": len(scheduled_days),
+        "avg_daily_basal_est": calculated_avg_basal,
+        "avg_tdd_est": preferred_tdd,
+        "has_basal": pump_reported_avg_basal is not None or calculated_avg_basal is not None,
+        "latest_complete_date": summary["latest_complete_date"],
+        "latest_activity_date": summary["latest_activity_date"],
+        "incomplete_days": summary["incomplete_days"],
+        "discrepancy_days": summary["discrepancy_days"],
+        "discrepancies": summary["discrepancies"],
+        "limitations": summary["limitations"],
+        "algorithm_version": reconciliation["algorithm_version"],
+        "input_data_version": reconciliation["input_data_version"],
     }
 
 
