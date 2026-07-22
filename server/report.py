@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
+from .analytics_confidence import phase_provenance
 from .auth import require_login
 from .canonical_time import temporal_metadata
 from .config import APP_TIMEZONE, DEMO_MODE, OWNER_EMAIL
@@ -260,6 +261,7 @@ def _cycle(tz: ZoneInfo, since_iso: str, glucose: dict) -> dict[str, Any]:
     phase_days: dict[str, set[str]] = {}
     for l in logs:
         phase_days.setdefault(l["phase"], set()).add(l["date"])
+    provenance = phase_provenance(logs)
 
     daily_tir = {d["date"]: d["tir"] for d in glucose.get("daily", [])}
     daily_avg = {d["date"]: d["avg"] for d in glucose.get("daily", [])}
@@ -270,6 +272,8 @@ def _cycle(tz: ZoneInfo, since_iso: str, glucose: dict) -> dict[str, Any]:
         avgs = [daily_avg[d] for d in dates if d in daily_avg]
         per_phase[phase] = {
             "days": len(dates),
+            "confirmed_days": provenance["by_phase"].get(phase, {}).get("confirmed_days", 0),
+            "inferred_days": provenance["by_phase"].get(phase, {}).get("inferred_days", 0),
             "tir": round(sum(tirs) / len(tirs)) if tirs else None,
             "avg_glucose": round(sum(avgs) / len(avgs)) if avgs else None,
         }
@@ -294,6 +298,7 @@ def _cycle(tz: ZoneInfo, since_iso: str, glucose: dict) -> dict[str, Any]:
         "cycles_detected": len(starts),
         "avg_cycle_length": round(sum(lengths) / len(lengths), 1) if lengths else None,
         "source": "inferred from Oura temperature" if any(l.get("source") == "oura_inferred" for l in logs) else "logged",
+        "phase_provenance": provenance,
         "quality": quality,
     }
 
@@ -454,6 +459,7 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
             "cycles": payload["cycle"].get("cycles_detected"),
             "avg_length": payload["cycle"].get("avg_cycle_length"),
             "per_phase": payload["cycle"].get("per_phase"),
+            "phase_provenance": payload["cycle"].get("phase_provenance"),
         }
         if payload["cycle"].get("available") and payload["cycle"].get("quality", {}).get("ai_eligible")
         else None,
@@ -491,7 +497,7 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
 Data for the last {payload['days']} days:
 {summary}
 
-Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. Explicitly call machine-extracted labs "unverified" unless their verification status is approved or edited; never imply that parser confidence is clinical verification. For every unresolved contradiction, present both sides and say it remains unresolved; never silently choose one value, especially for a blocking contradiction. If a health_history is present, use it as background (diagnoses, exposures, injuries, hospital visits, and the patient's own narrative) to frame what you observe. If a symptom_journal is present, summarize the symptoms she has actually reported (how often and how severe) and note any that coincide with the data. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Keep it factual and readable.""",
+Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. Explicitly call machine-extracted labs "unverified" unless their verification status is approved or edited; never imply that parser confidence is clinical verification. For every unresolved contradiction, present both sides and say it remains unresolved; never silently choose one value, especially for a blocking contradiction. If a health_history is present, use it as background (diagnoses, exposures, injuries, hospital visits, and the patient's own narrative) to frame what you observe. If a symptom_journal is present, summarize the symptoms she has actually reported (how often and how severe) and note any that coincide with the data. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Distinguish explicitly recorded/imported cycle phase days from algorithm-inferred days. Scale every analytics claim to its supplied discovery status and numerical confidence metadata; exploratory, emerging, or not-reproduced results cannot be presented as definitive. Keep it factual and readable.""",
             response_json_schema={
                 "type": "object",
                 "properties": {

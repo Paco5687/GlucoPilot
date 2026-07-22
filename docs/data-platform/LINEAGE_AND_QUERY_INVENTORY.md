@@ -29,8 +29,8 @@ be reconstructed.
 | Result | Inputs | Current incomplete-data behavior |
 |---|---|---|
 | Dashboard | Glucose, treatment, period, daily wearables/HR, fingersticks | Empty states render; partial windows produce metrics without coverage. |
-| Patterns | 14 days glucose/treatment + timezone | Requires eligible CGM coverage/freshness; post-meal conclusions also require eligible nutrition coverage. Outputs carry the applicable quality envelopes. |
-| Cross-domain insights | 90-day CGM, daily wearables/HR, cycle, insulin | Each candidate requires eligible quality for its actual domains; low-quality inputs are omitted from LLM conclusions and stale derived rows are removed. |
+| Patterns | 14 days glucose/treatment + timezone | Requires eligible CGM coverage/freshness; post-meal conclusions also require eligible nutrition coverage. Outputs carry quality plus sample/rate/Wilson-interval, missingness, status, and non-definitive language metadata. |
+| Cross-domain insights | 90-day CGM, daily wearables/HR, cycle, insulin | Each candidate requires eligible quality for its actual domains. Correlations/group comparisons carry effect/interval/missingness/status metadata; seven paired days are exploratory and eligible 28-pair correlations receive a temporal holdout. |
 | Insulin estimate | Profile weight, treatment/TDD, glucose | Uses only pump-reported or complete-delivery calculated TDD, with explicit coverage, freshness, data-through, and limitations. Missing weight suppresses per-kg output. |
 | Insulin response | Insulin, nearby glucose, optional carbs | Carries CGM and clean-correction sample envelopes; meal-related/stacked events are excluded and low-quality values are withheld from Companion conclusions. |
 | Fingerstick stats | Fingerstick + nearest CGM ±15 minutes | Unpaired readings count but do not enter delta statistics; pairing never refreshes. |
@@ -48,7 +48,7 @@ be reconstructed.
 | Treatment time/type/event/amount/basal fields | Dashboard timeline/summary, pattern and insight engines, insulin estimate/response, Overview, Companion, Visit Report, connector dedup. |
 | Daily wearable date + sleep/readiness/activity/HRV/SpO2 fields | Dashboard and Wearables views, cycle inference (Oura temperature), insights, Overview, Companion, Visit Report. |
 | Intraday HR timestamp/BPM/source | Live dashboard and glucose overlay, Wearables, cross-domain daily-HR aggregation. |
-| Period date/phase/source/notes | Dashboard, Period Tracker, insights cycle comparisons, Overview, Companion, Visit Report. |
+| Period date/phase/source/notes | Dashboard, Period Tracker, insights cycle comparisons, Overview, Companion, Visit Report; analytical/report consumers preserve confirmed versus inferred phase-day counts. |
 | Fingerstick value/time/CGM/delta | Dashboard marker/logger, discrepancy statistics, insulin/clinical context. |
 | Typed glucose/fingerstick identity, canonical/source time, value, source, trend, fixed pair, fingerprint/version | Shadow parity, future typed reads, contradiction evaluation, verified backup manifests. |
 | Typed wearable identity, provider/date or canonical/source time, daily metrics or BPM, fingerprint/version | Shadow parity, indexed high-volume reads, cycle/Insights consumers, and verified backups. |
@@ -57,7 +57,7 @@ be reconstructed.
 | Profile/weight/demographic fields | Settings, BMI/age computation, insulin per-kg estimate, Overview, Companion, Visit Report. |
 | Diagnoses, medications, allergies, insurance | Settings/dedicated editors, Overview context, Companion, Visit Report. |
 | Symptoms and history fields | Journal/history pages, rollups, Overview, Companion, Visit Report. |
-| Pattern/insight titles, descriptions, confidence/evidence/status | Overview/dashboard cards and prior Patterns/Insights compatibility consumers. |
+| Pattern/insight titles, descriptions, confidence/evidence/status | Overview/dashboard cards, Health Summary, Evidence Bundles, and compatibility consumers; governed rows include numerical analytics-confidence and replication metadata. |
 | Summary serialized payload and generated time | Overview and Companion dossier. |
 | Companion thread/message/memory fields | Companion thread list/history, memory controls, dossier/prompt construction. |
 | Connection tokens/status/expiry/last-sync | Connector modules and Connections UI; settings APIs expose redacted metadata. |

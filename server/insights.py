@@ -12,6 +12,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .analytics_confidence import (
+    comparison_confidence,
+    correlation_confidence,
+    phase_provenance,
+    safe_analytics_text,
+)
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .data_quality import assess_cgm, assess_daily, assess_pump_tdd, cgm_points
 from .insulin_reconciliation import reconcile_treatments
@@ -21,7 +27,8 @@ from .repositories import get_repositories
 from .unit_of_work import unit_of_work
 
 WINDOW_DAYS = 90
-MIN_PAIRS = 14
+MIN_ANALYSIS_DAYS = 14
+MIN_CORRELATION_PAIRS = 7
 R_THRESHOLD = 0.3
 
 
@@ -37,20 +44,6 @@ def _parse_ts(value: str) -> datetime | None:
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     except (ValueError, TypeError):
         return None
-
-
-def _pearson(pairs: list[tuple[float, float]]) -> float | None:
-    n = len(pairs)
-    if n < MIN_PAIRS:
-        return None
-    xs, ys = [p[0] for p in pairs], [p[1] for p in pairs]
-    mx, my = sum(xs) / n, sum(ys) / n
-    cov = sum((x - mx) * (y - my) for x, y in pairs)
-    sx = math.sqrt(sum((x - mx) ** 2 for x in xs))
-    sy = math.sqrt(sum((y - my) ** 2 for y in ys))
-    if sx == 0 or sy == 0:
-        return None
-    return cov / (sx * sy)
 
 
 def _daily_glucose_metrics(
@@ -125,13 +118,18 @@ def _correlation_candidates(glucose: dict, oura_by_day: dict) -> list[dict[str, 
     ]
     out = []
     for oura_field, oura_label, g_field, g_label, category, positive_good in axes:
-        pairs = []
+        pairs: list[tuple[str, float, float]] = []
         for day, g in glucose.items():
             o = oura_by_day.get(day, {})
             if o.get(oura_field) is not None:
-                pairs.append((float(o[oura_field]), float(g[g_field])))
-        r = _pearson(pairs)
-        if r is None or abs(r) < R_THRESHOLD:
+                pairs.append((day, float(o[oura_field]), float(g[g_field])))
+        r, confidence = correlation_confidence(
+            pairs,
+            expected_days=WINDOW_DAYS,
+            temporal_direction="same-day contemporaneous association",
+            effect_threshold=R_THRESHOLD,
+        )
+        if len(pairs) < MIN_CORRELATION_PAIRS or r is None or abs(r) < R_THRESHOLD:
             continue
         favorable = (r > 0) == positive_good
         out.append(
@@ -143,14 +141,19 @@ def _correlation_candidates(glucose: dict, oura_by_day: dict) -> list[dict[str, 
                 "y": g_label,
                 "r": round(r, 2),
                 "n": len(pairs),
+                "analytics_confidence": confidence,
             }
         )
     return out
 
 
 def _group_mean(glucose: dict, days: set[str], field: str) -> float | None:
-    vals = [glucose[d][field] for d in days if d in glucose]
+    vals = _group_values(glucose, days, field)
     return sum(vals) / len(vals) if len(vals) >= 5 else None
+
+
+def _group_values(glucose: dict, days: set[str], field: str) -> list[float]:
+    return [float(glucose[d][field]) for d in days if d in glucose]
 
 
 async def analyze() -> dict[str, Any]:
@@ -167,7 +170,7 @@ async def analyze() -> dict[str, Any]:
             "message": "CGM coverage or freshness is below the insight-analysis threshold.",
             "quality": {"cgm": glucose_quality},
         }
-    if len(glucose) < MIN_PAIRS:
+    if len(glucose) < MIN_ANALYSIS_DAYS:
         _clear_derived_insights()
         return {
             "insights": [],
@@ -203,7 +206,8 @@ async def analyze() -> dict[str, Any]:
                 merged[dst_key] = f[src_key]
 
     # Daily average HR from the intraday minute-buckets (FitbitHeartRate). Only
-    # covers recent/backfilled days, so it joins in once ≥MIN_PAIRS accrue.
+    # covers recent/backfilled days, so it joins once the shared confidence
+    # framework has enough pairs to label the result exploratory.
     hr_by_day: dict[str, list[float]] = {}
     for hr in repositories.fitbit_heart_rate.query(
         {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since.isoformat().replace("+00:00", "Z")}},
@@ -239,6 +243,7 @@ async def analyze() -> dict[str, Any]:
     for p in period_rows:
         if p.get("date") and p.get("phase"):
             phase_days.setdefault(p["phase"], set()).add(p["date"])
+    cycle_provenance = phase_provenance(period_rows)
 
     cycle_quality = assess_daily(
         "cycle", period_rows, tz,
@@ -257,6 +262,9 @@ async def analyze() -> dict[str, Any]:
         best = max(phase_tir, key=phase_tir.get)
         worst = min(phase_tir, key=phase_tir.get)
         if phase_tir[best] - phase_tir[worst] >= 5:
+            best_values = _group_values(glucose, phase_days[best], "tir")
+            worst_values = _group_values(glucose, phase_days[worst], "tir")
+            included = (phase_days[best] | phase_days[worst]) & set(glucose)
             candidates.append(
                 {
                     "kind": "cycle_comparison",
@@ -267,6 +275,16 @@ async def analyze() -> dict[str, Any]:
                     "worst_phase": worst,
                     "worst_tir": round(phase_tir[worst], 1),
                     "all_phases_tir": {ph: round(v, 1) for ph, v in phase_tir.items()},
+                    "analytics_confidence": comparison_confidence(
+                        best_values,
+                        worst_values,
+                        valid_days=len(included),
+                        expected_days=WINDOW_DAYS,
+                        unit="percentage_points",
+                        phase_provenance=phase_provenance(
+                            period_rows, included_dates=included
+                        ),
+                    ),
                 }
             )
 
@@ -277,6 +295,9 @@ async def analyze() -> dict[str, Any]:
         hi = max(phase_avg, key=phase_avg.get)
         lo = min(phase_avg, key=phase_avg.get)
         if phase_avg[hi] - phase_avg[lo] >= 10:
+            high_values = _group_values(glucose, phase_days[hi], "avg")
+            low_values = _group_values(glucose, phase_days[lo], "avg")
+            included = (phase_days[hi] | phase_days[lo]) & set(glucose)
             candidates.append(
                 {
                     "kind": "cycle_glucose",
@@ -287,6 +308,16 @@ async def analyze() -> dict[str, Any]:
                     "lowest_phase": lo,
                     "lowest_avg": round(phase_avg[lo]),
                     "all_phases_avg": {ph: round(v) for ph, v in phase_avg.items()},
+                    "analytics_confidence": comparison_confidence(
+                        high_values,
+                        low_values,
+                        valid_days=len(included),
+                        expected_days=WINDOW_DAYS,
+                        unit="mg/dL",
+                        phase_provenance=phase_provenance(
+                            period_rows, included_dates=included
+                        ),
+                    ),
                 }
             )
 
@@ -311,7 +342,7 @@ async def analyze() -> dict[str, Any]:
             insulin_by_day[reconciled_day["date"]] = float(calculated)
 
     def _phase_insulin_mean(days: set[str]) -> float | None:
-        vals = [insulin_by_day[d] for d in days if insulin_by_day.get(d)]
+        vals = [insulin_by_day[d] for d in days if insulin_by_day.get(d) is not None]
         return sum(vals) / len(vals) if len(vals) >= 5 else None
 
     phase_insulin = {ph: _phase_insulin_mean(days) for ph, days in phase_days.items()}
@@ -320,6 +351,9 @@ async def analyze() -> dict[str, Any]:
         hi = max(phase_insulin, key=phase_insulin.get)
         lo = min(phase_insulin, key=phase_insulin.get)
         if phase_insulin[lo] > 0 and (phase_insulin[hi] - phase_insulin[lo]) / phase_insulin[lo] >= 0.10:
+            high_values = [insulin_by_day[d] for d in phase_days[hi] if d in insulin_by_day]
+            low_values = [insulin_by_day[d] for d in phase_days[lo] if d in insulin_by_day]
+            included = (phase_days[hi] | phase_days[lo]) & set(insulin_by_day)
             candidates.append(
                 {
                     "kind": "cycle_insulin",
@@ -331,6 +365,16 @@ async def analyze() -> dict[str, Any]:
                     "lowest_units_per_day": round(phase_insulin[lo], 1),
                     "pct_difference": round((phase_insulin[hi] - phase_insulin[lo]) / phase_insulin[lo] * 100),
                     "all_phases_units": {ph: round(v, 1) for ph, v in phase_insulin.items()},
+                    "analytics_confidence": comparison_confidence(
+                        high_values,
+                        low_values,
+                        valid_days=len(included),
+                        expected_days=WINDOW_DAYS,
+                        unit="units/day",
+                        phase_provenance=phase_provenance(
+                            period_rows, included_dates=included
+                        ),
+                    ),
                 }
             )
 
@@ -339,6 +383,8 @@ async def analyze() -> dict[str, Any]:
     weekend_days = set(glucose) - weekday_days
     wd, we = _group_mean(glucose, weekday_days, "tir"), _group_mean(glucose, weekend_days, "tir")
     if wd is not None and we is not None and abs(wd - we) >= 5:
+        weekday_values = _group_values(glucose, weekday_days, "tir")
+        weekend_values = _group_values(glucose, weekend_days, "tir")
         candidates.append(
             {
                 "kind": "weekday_weekend",
@@ -346,6 +392,13 @@ async def analyze() -> dict[str, Any]:
                 "severity": "info",
                 "weekday_tir": round(wd, 1),
                 "weekend_tir": round(we, 1),
+                "analytics_confidence": comparison_confidence(
+                    weekday_values,
+                    weekend_values,
+                    valid_days=len(weekday_days | weekend_days),
+                    expected_days=WINDOW_DAYS,
+                    unit="percentage_points",
+                ),
             }
         )
 
@@ -356,6 +409,8 @@ async def analyze() -> dict[str, Any]:
         r_tir = _group_mean(glucose, set(recent), "tir")
         p_tir = _group_mean(glucose, set(prior), "tir")
         if r_tir is not None and p_tir is not None and abs(r_tir - p_tir) >= 3:
+            recent_values = _group_values(glucose, set(recent), "tir")
+            prior_values = _group_values(glucose, set(prior), "tir")
             candidates.append(
                 {
                     "kind": "trend",
@@ -363,6 +418,14 @@ async def analyze() -> dict[str, Any]:
                     "severity": "positive" if r_tir > p_tir else "warning",
                     "recent_tir": round(r_tir, 1),
                     "prior_tir": round(p_tir, 1),
+                    "analytics_confidence": comparison_confidence(
+                        recent_values,
+                        prior_values,
+                        valid_days=len(set(recent) | set(prior)),
+                        expected_days=60,
+                        temporal_direction="prior-period to recent-period",
+                        unit="percentage_points",
+                    ),
                 }
             )
 
@@ -386,6 +449,10 @@ async def analyze() -> dict[str, Any]:
             f"""You are a diabetes data analyst (NOT a doctor). For EACH detected relationship below, write:
 - title: short, concrete (e.g. "Better sleep lines up with more time in range")
 - description: 2-3 sentences: what the data shows, in plain language with the actual numbers, and a gentle educational note. Correlation is not causation; frame action ideas as "worth discussing with your healthcare team".
+
+Each relationship includes governed numerical confidence metadata and a required
+language lead. Preserve its discovery status, do not use definitive/causal
+language, and distinguish confirmed from inferred cycle phase days.
 
 Detected relationships (r = Pearson correlation over n days; TIR = % time 70-180 mg/dL):
 {json.dumps([{**c, 'index': i} for i, c in enumerate(candidates)], indent=2)}""",
@@ -441,11 +508,16 @@ Detected relationships (r = Pearson correlation over n days; TIR = % time 70-180
     to_create = [
         {
             "title": titles.get(i, {}).get("title") or fallback_title(c),
-            "description": titles.get(i, {}).get("description") or "",
+            "description": safe_analytics_text(
+                titles.get(i, {}).get("description"),
+                c["analytics_confidence"],
+                fallback_title(c),
+            ),
             "category": c["category"],
             "severity": c["severity"],
             "date_generated": now,
             "supporting_data": json.dumps(c),
+            "analytics_confidence": c["analytics_confidence"],
             "data_quality": candidate_quality(c),
             "is_read": False,
             "owner_email": OWNER_EMAIL,
@@ -462,11 +534,19 @@ Detected relationships (r = Pearson correlation over n days; TIR = % time 70-180
     return {
         "success": True,
         "insightsFound": len(to_create),
-        "insights": [{"title": t["title"], "severity": t["severity"]} for t in to_create],
+        "insights": [
+            {
+                "title": t["title"],
+                "severity": t["severity"],
+                "discovery_status": t["analytics_confidence"]["discovery_status"],
+            }
+            for t in to_create
+        ],
         "quality": {
             "cgm": glucose_quality,
             "wearables": wearable_quality,
             "cycle": cycle_quality,
             "pump_tdd": pump_quality,
         },
+        "cycle_phase_provenance": cycle_provenance,
     }

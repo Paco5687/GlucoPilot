@@ -201,11 +201,20 @@ def test_pattern_writer_cites_one_bounded_window_when_enabled(
     monkeypatch.setenv("EVIDENCE_SET_WRITES_ENABLED", "true")
     outcome = asyncio.run(patterns.analyze())
     assert outcome["patternsFound"] >= 1
+    stored_patterns = db.query_entities("Pattern", {"owner_email": cases["owner_email"]})
+    assert all(pattern["analytics_confidence"]["version"] == "analytics-confidence/1.0.0" for pattern in stored_patterns)
+    assert all(pattern["analytics_confidence"]["language"]["definitive_allowed"] is False for pattern in stored_patterns)
+    assert all("definitive" not in pattern["explanation"].lower() for pattern in stored_patterns)
     with sqlite3.connect(evidence_database) as connection:
         pattern_count = connection.execute("SELECT count(*) FROM entities WHERE type='Pattern'").fetchone()[0]
         assert connection.execute("SELECT count(*) FROM observation_windows").fetchone() == (1,)
         assert connection.execute("SELECT count(*) FROM evidence_sets").fetchone() == (pattern_count,)
         assert connection.execute("SELECT count(*) FROM evidence_set_windows").fetchone() == (pattern_count,)
+        summaries = [
+            json.loads(row[0])
+            for row in connection.execute("SELECT summary_json FROM evidence_sets")
+        ]
+        assert all(summary["analytics_confidence"]["sample_count"] > 0 for summary in summaries)
 
 
 def test_verified_backup_preserves_evidence_projection_counts(cases, evidence_database, tmp_path):

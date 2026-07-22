@@ -6,6 +6,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import db
+from .analytics_confidence import proportion_confidence, safe_analytics_text
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .data_quality import assess_cgm, assess_nutrition, cgm_points
 from .db import config_value
@@ -109,6 +110,29 @@ async def analyze() -> dict[str, Any]:
     def local(record):
         return record["_time"].astimezone(tz)
 
+    valid_days = min(14, len({local(record).date().isoformat() for record in readings}))
+
+    def with_confidence(
+        pattern: dict[str, Any],
+        *,
+        successes: int,
+        trials: int,
+        temporal_direction: str = "repeated-observation",
+        observation_days: int | None = None,
+    ) -> dict[str, Any]:
+        confidence = proportion_confidence(
+            successes,
+            trials,
+            valid_days=valid_days if observation_days is None else observation_days,
+            expected_days=14,
+            temporal_direction=temporal_direction,
+        )
+        return {
+            **pattern,
+            "confidence": confidence["confidence_label"],
+            "analytics_confidence": confidence,
+        }
+
     patterns: list[dict[str, Any]] = []
 
     # Rules 1 & 2: recurring highs/lows by hour of day
@@ -125,17 +149,28 @@ async def analyze() -> dict[str, Any]:
         low_pct = sum(1 for v in vals if v < 70) / len(vals)
         avg = round(sum(vals) / len(vals))
         if high_pct > 0.5:
-            high_hours.append({"hour": h, "avg": avg, "pct": high_pct, "count": sum(1 for v in vals if v > 180)})
+            high_hours.append({
+                "hour": h,
+                "avg": avg,
+                "pct": high_pct,
+                "count": sum(1 for v in vals if v > 180),
+                "total": len(vals),
+            })
         if low_pct > 0.15:
-            low_hours.append({"hour": h, "avg": avg, "pct": low_pct, "count": sum(1 for v in vals if v < 70)})
+            low_hours.append({
+                "hour": h,
+                "avg": avg,
+                "pct": low_pct,
+                "count": sum(1 for v in vals if v < 70),
+                "total": len(vals),
+            })
 
     for group in _group_consecutive(high_hours):
         avg_pct = sum(g["pct"] for g in group) / len(group)
         patterns.append(
-            {
+            with_confidence({
                 "pattern_type": "recurring_high",
                 "time_of_day": _time_of_day(group[0]["hour"]),
-                "confidence": "high" if avg_pct > 0.65 else "medium",
                 "occurrences": sum(g["count"] for g in group),
                 "supporting_evidence": json.dumps(
                     {
@@ -146,16 +181,15 @@ async def analyze() -> dict[str, Any]:
                         "hours": [g["hour"] for g in group],
                     }
                 ),
-            }
+            }, successes=sum(g["count"] for g in group), trials=sum(g["total"] for g in group))
         )
 
     for group in _group_consecutive(low_hours):
         avg_pct = sum(g["pct"] for g in group) / len(group)
         patterns.append(
-            {
+            with_confidence({
                 "pattern_type": "recurring_low",
                 "time_of_day": _time_of_day(group[0]["hour"]),
-                "confidence": "high" if avg_pct > 0.25 else "medium",
                 "occurrences": sum(g["count"] for g in group),
                 "supporting_evidence": json.dumps(
                     {
@@ -165,17 +199,21 @@ async def analyze() -> dict[str, Any]:
                         "hours": [g["hour"] for g in group],
                     }
                 ),
-            }
+            }, successes=sum(g["count"] for g in group), trials=sum(g["total"] for g in group))
         )
 
     # Rule 3: post-meal spikes
     carb_events = [t for t in treatments if t.get("type") == "carb" and t.get("amount")]
     spikes = []
+    eligible_meals = 0
+    eligible_meal_days: set[str] = set()
     for carb in carb_events:
         ct = carb["_time"]
         pre = [r for r in readings if ct - timedelta(minutes=15) <= r["_time"] <= ct + timedelta(minutes=5)]
         post = [r for r in readings if ct + timedelta(minutes=30) < r["_time"] <= ct + timedelta(minutes=150)]
         if pre and post:
+            eligible_meals += 1
+            eligible_meal_days.add(local(carb).date().isoformat())
             pre_avg = sum(r["value"] for r in pre) / len(pre)
             post_max = max(r["value"] for r in post)
             if post_max - pre_avg > 60:
@@ -190,15 +228,16 @@ async def analyze() -> dict[str, Any]:
                 )
     if nutrition_quality["ai_eligible"] and len(spikes) >= 3:
         patterns.append(
-            {
+            with_confidence({
                 "pattern_type": "post_meal_spike",
                 "time_of_day": "all_day",
-                "confidence": "high" if len(spikes) >= 5 else "medium",
                 "occurrences": len(spikes),
                 "supporting_evidence": json.dumps(
                     {"avgSpike": round(sum(s["spike"] for s in spikes) / len(spikes)), "samples": spikes[:5]}
                 ),
-            }
+            }, successes=len(spikes), trials=eligible_meals,
+                temporal_direction="meal-to-following-glucose-window",
+                observation_days=len(eligible_meal_days))
         )
 
     # Rules 4 & 5 share a per-local-day map
@@ -222,15 +261,15 @@ async def analyze() -> dict[str, Any]:
                 dawn_count += 1
     if dawn_count >= 3 and dawn_days >= 5:
         patterns.append(
-            {
+            with_confidence({
                 "pattern_type": "dawn_phenomenon",
                 "time_of_day": "morning",
-                "confidence": "high" if dawn_count / dawn_days > 0.6 else "medium",
                 "occurrences": dawn_count,
                 "supporting_evidence": json.dumps(
                     {"dawnDays": dawn_count, "totalDays": dawn_days, "pct": round(dawn_count / dawn_days * 100)}
                 ),
-            }
+            }, successes=dawn_count, trials=dawn_days,
+                temporal_direction="overnight-to-morning", observation_days=dawn_days)
         )
 
     # Rule 5: overnight drift
@@ -251,15 +290,15 @@ async def analyze() -> dict[str, Any]:
     for count, direction in ((drift_up, "rising"), (drift_down, "falling")):
         if count >= 3 and night_days >= 5:
             patterns.append(
-                {
+                with_confidence({
                     "pattern_type": "overnight_drift",
                     "time_of_day": "overnight",
-                    "confidence": "high" if count / night_days > 0.5 else "medium",
                     "occurrences": count,
                     "supporting_evidence": json.dumps(
                         {"direction": direction, "nights": count, "totalNights": night_days}
                     ),
-                }
+                }, successes=count, trials=night_days,
+                    temporal_direction="early-night-to-late-night", observation_days=night_days)
             )
 
     # Rule 6: ineffective corrections
@@ -267,6 +306,8 @@ async def analyze() -> dict[str, Any]:
         t for t in treatments if t.get("type") == "insulin" and t.get("amount") and t.get("event_type") != "Daily Total"
     ]
     ineffective = []
+    eligible_corrections = 0
+    eligible_correction_days: set[str] = set()
     for ins in insulin_events:
         it = ins["_time"]
         at_dose = [r for r in readings if it - timedelta(minutes=10) <= r["_time"] <= it + timedelta(minutes=10)]
@@ -274,6 +315,8 @@ async def analyze() -> dict[str, Any]:
             continue
         after = [r for r in readings if it + timedelta(minutes=90) < r["_time"] <= it + timedelta(minutes=240)]
         if after:
+            eligible_corrections += 1
+            eligible_correction_days.add(local(ins).date().isoformat())
             after_avg = sum(r["value"] for r in after) / len(after)
             if after_avg > 170:
                 ineffective.append(
@@ -286,13 +329,14 @@ async def analyze() -> dict[str, Any]:
                 )
     if len(ineffective) >= 3:
         patterns.append(
-            {
+            with_confidence({
                 "pattern_type": "ineffective_correction",
                 "time_of_day": "all_day",
-                "confidence": "high" if len(ineffective) >= 5 else "medium",
                 "occurrences": len(ineffective),
                 "supporting_evidence": json.dumps({"samples": ineffective[:5]}),
-            }
+            }, successes=len(ineffective), trials=eligible_corrections,
+                temporal_direction="correction-to-following-glucose-window",
+                observation_days=len(eligible_correction_days))
         )
 
     # AI enrichment: titles + educational explanations
@@ -306,6 +350,7 @@ async def analyze() -> dict[str, Any]:
                 "type": p["pattern_type"],
                 "time_of_day": p["time_of_day"],
                 "confidence": p["confidence"],
+                "analytics_confidence": p["analytics_confidence"],
                 "occurrences": p["occurrences"],
                 "evidence": p["supporting_evidence"],
             }
@@ -316,6 +361,9 @@ async def analyze() -> dict[str, Any]:
                 f"""You are a diabetes data analyst (NOT a doctor). Analyze these detected glucose patterns and provide clear, educational titles and explanations.
 
 Context: {len(readings)} CGM readings over 14 days, average {avg} mg/dL, {in_range}% TIR.
+Each pattern includes governed numerical confidence metadata and a required
+language lead. Preserve its discovery status and do not use definitive or
+causal language.
 
 Detected patterns:
 {json.dumps(patterns_for_ai, indent=2)}
@@ -355,11 +403,16 @@ IMPORTANT: This is educational only. Always frame suggestions as "discuss with y
     to_create = [
         {
             "title": p.get("title") or f"{p['pattern_type'].replace('_', ' ')} detected",
-            "explanation": p.get("explanation") or "",
+            "explanation": safe_analytics_text(
+                p.get("explanation"),
+                p["analytics_confidence"],
+                f"Observed {p['occurrences']} qualifying occurrences.",
+            ),
             "pattern_type": p["pattern_type"],
             "confidence": p["confidence"],
             "time_of_day": p["time_of_day"],
             "supporting_evidence": p["supporting_evidence"],
+            "analytics_confidence": p["analytics_confidence"],
             "data_quality": {
                 "cgm": quality,
                 **({"nutrition": nutrition_quality} if p["pattern_type"] == "post_meal_spike" else {}),
@@ -395,7 +448,10 @@ IMPORTANT: This is educational only. Always frame suggestions as "discuss with y
                     claim_type="Pattern",
                     claim_id=pattern["id"],
                     window_ids=[window["id"]],
-                    summary=json.loads(source["supporting_evidence"]),
+                    summary={
+                        **json.loads(source["supporting_evidence"]),
+                        "analytics_confidence": source["analytics_confidence"],
+                    },
                     input_data_version=quality["input_data_version"],
                 )
         work.commit()
@@ -403,7 +459,15 @@ IMPORTANT: This is educational only. Always frame suggestions as "discuss with y
     return {
         "success": True,
         "patternsFound": len(to_create),
-        "patterns": [{"title": p["title"], "type": p["pattern_type"], "confidence": p["confidence"]} for p in to_create],
+        "patterns": [
+            {
+                "title": p["title"],
+                "type": p["pattern_type"],
+                "confidence": p["confidence"],
+                "discovery_status": p["analytics_confidence"]["discovery_status"],
+            }
+            for p in to_create
+        ],
         "quality": quality,
         "data_quality": {"cgm": quality, "nutrition": nutrition_quality},
     }

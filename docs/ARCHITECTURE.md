@@ -95,6 +95,14 @@ budget. The canonical query plus exact public-content hash identifies each
 bundle and its bounded process-local cache; blocking contradictions are kept
 outside ranking so they cannot be displaced by a small item budget.
 
+G6 adds no schema or database. A versioned analytics-confidence contract gives
+Patterns, cross-domain Insights, range-local dashboard correlations, reports,
+Health Summary, and Evidence Bundles the same sample/effect/interval,
+missingness, temporal-direction, discovery, and replication semantics. A
+seven-day result remains exploratory regardless of effect size; only a
+same-direction later temporal holdout may use `reproduced`. Cycle analytics
+retain explicitly recorded/imported versus algorithm-inferred phase-day counts.
+
 ## Frontend (`frontend/`)
 
 React + Vite + Tailwind + shadcn/ui, charts via Recharts, canvas Explorer chart.

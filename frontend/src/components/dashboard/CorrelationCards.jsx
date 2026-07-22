@@ -1,26 +1,15 @@
 import { useMemo } from "react";
 import { Moon, Activity, Flame, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { correlationConfidence } from "@/lib/analyticsConfidence";
 
-function computeCorrelation(pairs) {
-  if (pairs.length < 5) return null;
-  const n = pairs.length;
-  const sumX = pairs.reduce((s, p) => s + p.x, 0);
-  const sumY = pairs.reduce((s, p) => s + p.y, 0);
-  const sumXY = pairs.reduce((s, p) => s + p.x * p.y, 0);
-  const sumX2 = pairs.reduce((s, p) => s + p.x * p.x, 0);
-  const sumY2 = pairs.reduce((s, p) => s + p.y * p.y, 0);
-  const num = n * sumXY - sumX * sumY;
-  const den = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY));
-  if (den === 0) return null;
-  return num / den;
-}
-
-function buildInsight(label, r, highLabel, lowLabel) {
+function buildInsight(label, confidence, highLabel, lowLabel) {
+  const r = confidence.effect_size.value;
   if (r == null) return null;
-  const strength = Math.abs(r) >= 0.5 ? "strong" : Math.abs(r) >= 0.3 ? "moderate" : Math.abs(r) >= 0.15 ? "weak" : null;
+  const strength = confidence.effect_size.magnitude;
+  if (strength === "negligible" || strength === "small") return null;
   if (!strength) return null;
   const direction = r > 0 ? highLabel : lowLabel;
-  return { label, r, strength, direction };
+  return { label, r, strength, direction, confidence };
 }
 
 function CorrelationCard({ icon: Icon, label, color, bgColor, insight, pairs }) {
@@ -35,9 +24,8 @@ function CorrelationCard({ icon: Icon, label, color, bgColor, insight, pairs }) 
   const diff = avgHigh != null && avgLow != null ? avgHigh - avgLow : null;
 
   const strengthColors = {
-    strong: "text-primary font-semibold",
+    large: "text-primary font-semibold",
     moderate: "text-foreground font-medium",
-    weak: "text-muted-foreground",
   };
 
   return (
@@ -48,11 +36,11 @@ function CorrelationCard({ icon: Icon, label, color, bgColor, insight, pairs }) 
         </div>
         <span className="text-xs font-medium">{label} × Glucose</span>
         <span className={`text-[10px] px-1.5 py-0.5 rounded-full ml-auto ${
-          insight.strength === "strong" ? "bg-primary/10 text-primary" :
+          insight.confidence.discovery_status === "reproduced" ? "bg-primary/10 text-primary" :
           insight.strength === "moderate" ? "bg-accent text-accent-foreground" :
           "bg-muted text-muted-foreground"
         }`}>
-          {insight.strength}
+          {insight.confidence.discovery_status} · {insight.strength} effect
         </span>
       </div>
       <p className={`text-sm ${strengthColors[insight.strength]}`}>
@@ -67,7 +55,7 @@ function CorrelationCard({ icon: Icon, label, color, bgColor, insight, pairs }) 
         </div>
       )}
       <div className="text-[10px] text-muted-foreground mt-1">
-        r = {insight.r.toFixed(2)} · {pairs.length} days analyzed
+        r = {insight.r.toFixed(2)} · 95% CI {insight.confidence.confidence_interval?.lower.toFixed(2)} to {insight.confidence.confidence_interval?.upper.toFixed(2)} · {pairs.length} days analyzed
       </div>
     </div>
   );
@@ -101,32 +89,32 @@ export default function CorrelationCards({ readings, ouraData }) {
     for (const [day, tir] of Object.entries(tirByDay)) {
       const o = ouraByDay[day];
       if (!o) continue;
-      if (o.sleep_score != null) sleepPairs.push({ x: o.sleep_score, y: tir });
-      if (o.readiness_score != null) readinessPairs.push({ x: o.readiness_score, y: tir });
-      if (o.activity_score != null) activityPairs.push({ x: o.activity_score, y: tir });
+      if (o.sleep_score != null) sleepPairs.push({ day, x: o.sleep_score, y: tir });
+      if (o.readiness_score != null) readinessPairs.push({ day, x: o.readiness_score, y: tir });
+      if (o.activity_score != null) activityPairs.push({ day, x: o.activity_score, y: tir });
     }
 
-    const sleepR = computeCorrelation(sleepPairs);
-    const readinessR = computeCorrelation(readinessPairs);
-    const activityR = computeCorrelation(activityPairs);
+    const sleepConfidence = correlationConfidence(sleepPairs);
+    const readinessConfidence = correlationConfidence(readinessPairs);
+    const activityConfidence = correlationConfidence(activityPairs);
 
     return {
       sleep: {
-        insight: buildInsight("Sleep", sleepR,
+        insight: buildInsight("Sleep", sleepConfidence,
           "Better sleep scores tend to come with higher Time in Range",
           "Lower sleep scores tend to come with higher Time in Range"
         ),
         pairs: sleepPairs,
       },
       readiness: {
-        insight: buildInsight("Readiness", readinessR,
+        insight: buildInsight("Readiness", readinessConfidence,
           "Higher readiness scores are associated with better glucose control",
           "Lower readiness scores appear linked to better glucose days"
         ),
         pairs: readinessPairs,
       },
       activity: {
-        insight: buildInsight("Activity", activityR,
+        insight: buildInsight("Activity", activityConfidence,
           "More active days correlate with better Time in Range",
           "Higher activity days appear linked to lower Time in Range"
         ),

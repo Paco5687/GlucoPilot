@@ -48,8 +48,9 @@ Every successful response contains:
 - unresolved contradictions with both sides preserved;
 - missing-data caveats for every requested domain;
 - authenticated source links and immutable provenance references; and
-- source-level confidence plus an explicitly unassessed bundle-level
-  confidence envelope.
+- source-level confidence (including versioned analytics confidence and
+  discovery status for Pattern/Insight sources) plus an explicitly unassessed
+  bundle-level confidence envelope.
 
 The requested item budget is shared by ranked observations, derived metrics,
 documents, and relationships. Unresolved blocking contradictions are a

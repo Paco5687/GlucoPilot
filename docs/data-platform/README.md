@@ -52,6 +52,9 @@ typed repositories are introduced.
 - [Deterministic Evidence Bundle API](EVIDENCE_BUNDLES.md) — owner-scoped
   cross-domain queries, strict budgets, protected blocking contradictions,
   source links, content-addressed caching, and semantic invalidation.
+- [Analytics confidence and replication](ANALYTICS_CONFIDENCE.md) — shared
+  samples/effect/interval/missingness metadata, discovery/replication statuses,
+  cycle-phase provenance, strength-scaled language, and AI handoff rules.
 
 ## Reproduce the structural audit
 
