@@ -106,6 +106,50 @@ class EvidenceRepository(Protocol):
 
 
 @runtime_checkable
+class SourceArchiveRepository(Protocol):
+    """Immutable raw payloads, file references, and sync-run metadata."""
+
+    def start_sync_run(
+        self,
+        source_type: str,
+        parser_version: str,
+        *,
+        started_at: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def finish_sync_run(
+        self,
+        run_id: str,
+        status: str,
+        *,
+        completed_at: str | None = None,
+        error_summary: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def archive_payload(
+        self,
+        source_type: str,
+        payload: Any,
+        parser_version: str,
+        **metadata: Any,
+    ) -> tuple[dict[str, Any], bool]: ...
+
+    def register_file(
+        self,
+        source_type: str,
+        relative_path: str,
+        file_hash: str,
+        byte_size: int,
+        parser_version: str,
+        **metadata: Any,
+    ) -> tuple[dict[str, Any], bool]: ...
+
+    def stats(self) -> dict[str, Any]: ...
+
+    def prune_before(self, cutoff: str) -> dict[str, int]: ...
+
+
+@runtime_checkable
 class RepositoryCatalog(Protocol):
     glucose: GlucoseRepository
     treatments: TreatmentRepository
@@ -116,6 +160,7 @@ class RepositoryCatalog(Protocol):
     fitbit_heart_rate: WearableRepository
     relationships: RelationshipRepository
     evidence: EvidenceRepository
+    source_archive: SourceArchiveRepository
 
     def entity(self, entity_type: str) -> EntityRepository: ...
 
@@ -313,6 +358,9 @@ class LegacyRepositoryCatalog:
         self.fitbit_heart_rate = self.entity("FitbitHeartRate")
         self.relationships = LegacyRelationshipRepository(self)
         self.evidence = LegacyEvidenceRepository(self)
+        from .source_archive import SqliteSourceArchiveRepository
+
+        self.source_archive = SqliteSourceArchiveRepository(connection)
 
     def entity(self, entity_type: str) -> LegacyJsonEntityRepository:
         if entity_type not in self._entities:

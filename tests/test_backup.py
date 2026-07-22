@@ -8,6 +8,7 @@ pytestmark = pytest.mark.risk_critical
 
 from server import backup, db
 from server.backup import BackupError, create_verified_backup, preflight_backup, restore_backup, verify_backup
+from server.migrations import MIGRATIONS
 
 
 def _hash(path):
@@ -193,4 +194,4 @@ def test_startup_backs_up_existing_database_before_migration(tmp_path, monkeypat
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        ).fetchall() == [(1,), (2,)]
+        ).fetchall() == [(migration.version,) for migration in MIGRATIONS]

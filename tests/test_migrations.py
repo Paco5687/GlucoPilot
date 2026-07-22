@@ -16,6 +16,8 @@ from server.migrations import (
 )
 from server.schema_registry import ENTITY_SCHEMAS, GENERIC_API_TYPES
 
+MIGRATION_VERSIONS = [migration.version for migration in MIGRATIONS]
+
 
 def _create_legacy_database(path):
     with sqlite3.connect(path) as connection:
@@ -81,8 +83,8 @@ def test_clean_and_legacy_databases_converge_without_data_loss(tmp_path):
     upgraded = tmp_path / "upgraded.sqlite3"
     _create_legacy_database(upgraded)
 
-    assert run_migrations(clean) == [1, 2]
-    assert run_migrations(upgraded) == [1, 2]
+    assert run_migrations(clean) == MIGRATION_VERSIONS
+    assert run_migrations(upgraded) == MIGRATION_VERSIONS
 
     assert _schema_snapshot(clean) == _schema_snapshot(upgraded)
     with sqlite3.connect(upgraded) as connection:
@@ -94,8 +96,8 @@ def test_clean_and_legacy_databases_converge_without_data_loss(tmp_path):
 def test_migrations_are_idempotent_and_checksummed(tmp_path):
     database = tmp_path / "app.sqlite3"
 
-    assert pending_migration_versions(database) == [1, 2]
-    assert run_migrations(database) == [1, 2]
+    assert pending_migration_versions(database) == MIGRATION_VERSIONS
+    assert run_migrations(database) == MIGRATION_VERSIONS
     assert pending_migration_versions(database) == []
     assert run_migrations(database) == []
 
@@ -114,7 +116,7 @@ def test_failed_pending_migration_rolls_back_the_entire_invocation(tmp_path):
     broken = (
         *MIGRATIONS,
         Migration(
-            3,
+            len(MIGRATIONS) + 1,
             "broken_migration",
             (
                 Statement("CREATE TABLE should_roll_back (id INTEGER)"),
@@ -123,14 +125,19 @@ def test_failed_pending_migration_rolls_back_the_entire_invocation(tmp_path):
         ),
     )
 
-    with pytest.raises(MigrationError, match=r"migration 3 \(broken_migration\) failed"):
+    with pytest.raises(
+        MigrationError,
+        match=rf"migration {len(MIGRATIONS) + 1} \(broken_migration\) failed",
+    ):
         run_migrations(database, broken)
 
     with sqlite3.connect(database) as connection:
         assert connection.execute(
             "SELECT 1 FROM sqlite_master WHERE name='should_roll_back'"
         ).fetchone() is None
-        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone() == (2,)
+        assert connection.execute("SELECT MAX(version) FROM schema_migrations").fetchone() == (
+            len(MIGRATIONS),
+        )
 
 
 def test_applied_migration_drift_prevents_startup(tmp_path):
@@ -142,7 +149,7 @@ def test_applied_migration_drift_prevents_startup(tmp_path):
             MIGRATIONS[0].name,
             (*MIGRATIONS[0].statements, Statement("SELECT 1")),
         ),
-        MIGRATIONS[1],
+        *MIGRATIONS[1:],
     )
 
     with pytest.raises(MigrationError, match="checksum drift"):
@@ -167,7 +174,8 @@ def test_newer_database_prevents_downgrade_startup(tmp_path):
     run_migrations(database)
     with sqlite3.connect(database) as connection:
         connection.execute(
-            "INSERT INTO schema_migrations VALUES (3, 'future', 'future', 'future', 0)"
+            "INSERT INTO schema_migrations VALUES (?, 'future', 'future', 'future', 0)",
+            (len(MIGRATIONS) + 1,),
         )
 
     with pytest.raises(MigrationError, match="newer than this application"):
@@ -185,9 +193,11 @@ def test_concurrent_runners_apply_each_migration_once(tmp_path):
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: migrate(), range(2)))
 
-    assert sorted(results, key=len) == [[], [1, 2]]
+    assert sorted(results, key=len) == [[], MIGRATION_VERSIONS]
     with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (2,)
+        assert connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone() == (
+            len(MIGRATIONS),
+        )
 
 
 def test_registry_covers_all_known_types_without_expanding_generic_api():

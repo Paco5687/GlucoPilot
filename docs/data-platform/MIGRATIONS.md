@@ -26,6 +26,7 @@ the other waits, rechecks the ledger, and applies nothing.
 |---:|---|---|
 | 1 | `legacy_json_store_baseline` | Converges clean and existing installations on `app_settings`, `entities`, and the three legacy indexes without rewriting rows. |
 | 2 | `entity_schema_registry` | Persists the 34-type F0 schema catalog while preserving the 19-type generic API allowlist. |
+| 3 | `immutable_source_archive` | Adds typed immutable source payload/file metadata and sync-run tables without changing legacy JSON reads or writes. |
 
 ## Adding a migration
 
