@@ -25,6 +25,7 @@ from fastapi.responses import RedirectResponse
 from . import db
 from .auth import require_admin
 from .config import OWNER_EMAIL, dexcom_base_url, env
+from .connector_provenance import can_advance_freshness, capture_records, latest_observed, source_failure
 from .db import config_value
 from .readings import persist_readings_deduped
 
@@ -209,8 +210,9 @@ def _persist(readings: list[dict], events: list[dict]) -> dict[str, int]:
     # Global cross-source dedup: Share/Nightscout usually stored these same
     # readings an hour before the official API delivers them.
     created = 0
+    reading_skipped = 0
     if readings:
-        created, _skipped = persist_readings_deduped(readings)
+        created, reading_skipped = persist_readings_deduped(readings)
 
     new_events = []
     if events:
@@ -223,7 +225,12 @@ def _persist(readings: list[dict], events: list[dict]) -> dict[str, int]:
 
     if new_events:
         db.bulk_create_entities("Treatment", new_events)
-    return {"readings_synced": created, "events_synced": len(new_events)}
+    return {
+        "readings_synced": created,
+        "readings_skipped": reading_skipped,
+        "events_synced": len(new_events),
+        "events_skipped": len(events) - len(new_events),
+    }
 
 
 async def _sync(days: int | None = None) -> dict[str, Any]:
@@ -250,16 +257,29 @@ async def _sync(days: int | None = None) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=60) as client:
         token = await _access_token(client)
         egvs = await _fetch_range(client, token, "/v3/users/self/egvs", start, now)
+        capture_records(
+            egvs,
+            external_id="/v3/users/self/egvs",
+            observed_at=latest_observed(egvs, "systemTime", "displayTime"),
+            metadata={"endpoint": "egvs"},
+        )
         try:
             raw_events = await _fetch_range(client, token, "/v3/users/self/events", start, now)
-        except HTTPException:
+            capture_records(
+                raw_events,
+                external_id="/v3/users/self/events",
+                observed_at=latest_observed(raw_events, "systemTime", "displayTime"),
+                metadata={"endpoint": "events"},
+            )
+        except HTTPException as error:
+            source_failure(error)
             raw_events = []  # events scope/endpoint is best-effort
 
     readings = [m for m in (_map_egv(r) for r in egvs) if m]
     events = [m for m in (_map_event(r) for r in raw_events) if m]
     result = _persist(readings, events)
     conn = _get_connection()
-    if conn:
+    if conn and can_advance_freshness():
         db.update_entity("DexcomConnection", conn["id"], {"last_sync": _iso(now)})
     return {"ok": True, **result}
 

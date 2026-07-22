@@ -21,6 +21,7 @@ from typing import Any
 
 from . import db
 from .config import OWNER_EMAIL
+from .connector_provenance import can_advance_freshness, capture_records, latest_observed
 from .db import config_value, set_config_value
 from .readings import persist_readings_deduped
 
@@ -65,11 +66,19 @@ def _fetch_readings(minutes: int, max_count: int) -> list[dict[str, Any]]:
         _cached_client = _client()
         readings = _cached_client.get_glucose_readings(minutes=minutes, max_count=max_count) or []
     mapped = []
+    raw = []
     for r in readings:
         dt = r.datetime
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         trend = r.trend_direction if r.trend_direction in VALID_TRENDS else "Unknown"
+        raw.append(
+            {
+                "mg_dl": r.mg_dl,
+                "datetime": _iso(dt),
+                "trend_direction": r.trend_direction,
+            }
+        )
         mapped.append(
             {
                 "value": round(r.mg_dl),
@@ -79,6 +88,12 @@ def _fetch_readings(minutes: int, max_count: int) -> list[dict[str, Any]]:
                 "owner_email": OWNER_EMAIL,
             }
         )
+    capture_records(
+        raw,
+        external_id="share-glucose-readings",
+        observed_at=latest_observed(raw, "datetime"),
+        metadata={"feed": "dexcom_share"},
+    )
     return mapped
 
 
@@ -144,8 +159,9 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
                 log.exception("dexcom share sync failed")
                 return {"error": f"Dexcom Share sync failed: {err}", "_status": 502}
             created, skipped = persist_readings_deduped(mapped)
-        set_config_value("dexcom_share_verified", "true")
-        set_config_value("dexcom_share_last_sync", _iso(datetime.now(timezone.utc)))
+        if can_advance_freshness():
+            set_config_value("dexcom_share_verified", "true")
+            set_config_value("dexcom_share_last_sync", _iso(datetime.now(timezone.utc)))
         return {"ok": True, "readings_synced": created, "readings_skipped": skipped, "fetched": len(mapped)}
 
     return {"error": "Unknown action", "_status": 400}

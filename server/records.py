@@ -26,6 +26,7 @@ from fastapi.responses import FileResponse
 from . import db
 from .auth import require_admin, require_login
 from .config import DATA_DIR, OWNER_EMAIL
+from .connector_provenance import capture_file, run_connector, source_failure
 from .llm import invoke_llm
 
 log = logging.getLogger("glucopilot.records")
@@ -167,6 +168,16 @@ async def _extract_document(page_paths: list[Path]) -> dict:
 
 @router.post("/api/records/upload", dependencies=[Depends(require_admin)])
 async def upload(file: UploadFile):
+    return await run_connector(
+        "medical_record_upload",
+        "upload",
+        lambda: _upload(file),
+        trigger_type="upload",
+        run_kind="upload",
+    )
+
+
+async def _upload(file: UploadFile):
     suffix = Path(file.filename or "upload").suffix.lower()
     if suffix not in ALLOWED_SUFFIXES:
         raise HTTPException(status_code=400, detail=f"Unsupported file type {suffix}. Use PDF, PNG, or JPG.")
@@ -182,9 +193,18 @@ async def upload(file: UploadFile):
     )
     if dupes:
         prior = dupes[0]
+        if prior.get("stored_as"):
+            capture_file(
+                prior["stored_as"],
+                "sha256:" + content_hash,
+                len(content),
+                external_id=prior["id"],
+                mime_type=file.content_type,
+            )
         return {
             "ok": True,
             "duplicate": True,
+            "skipped": 1,
             "duplicate_of": prior.get("filename"),
             "record": prior,
             "lab_results": prior.get("lab_count", 0),
@@ -194,6 +214,13 @@ async def upload(file: UploadFile):
     rid = uuid.uuid4().hex
     stored = RECORDS_DIR / f"{rid}{suffix}"
     stored.write_bytes(content)
+    capture_file(
+        stored.name,
+        "sha256:" + content_hash,
+        len(content),
+        external_id=rid,
+        mime_type=file.content_type,
+    )
 
     record = db.create_entity(
         "MedicalRecord",
@@ -209,6 +236,8 @@ async def upload(file: UploadFile):
 
     try:
         record = await _extract_and_store(record, stored, suffix)
+        if record.get("partial"):
+            source_failure(record.get("error") or "medical-record extraction was partial")
         return {"ok": True, "record": record, "lab_results": record.get("lab_count", 0)}
     except Exception as err:
         log.exception("record extraction failed")
@@ -347,6 +376,16 @@ def _make_title(source_name: str | None, record_date: str, filename: str | None)
 
 @router.post("/api/records/{rid}/reprocess", dependencies=[Depends(require_admin)])
 async def reprocess(rid: str):
+    return await run_connector(
+        "medical_record_upload",
+        "reprocess",
+        lambda: _reprocess(rid),
+        trigger_type="reprocess",
+        run_kind="reprocess",
+    )
+
+
+async def _reprocess(rid: str):
     rows = db.query_entities("MedicalRecord", {"id": rid, "owner_email": OWNER_EMAIL}, limit=1)
     if not rows:
         raise HTTPException(status_code=404, detail="Record not found")
@@ -354,9 +393,17 @@ async def reprocess(rid: str):
     stored = RECORDS_DIR / (record.get("stored_as") or "")
     if not record.get("stored_as") or not stored.is_file():
         raise HTTPException(status_code=404, detail="Stored file missing — please re-upload this document.")
+    capture_file(
+        stored.name,
+        "sha256:" + hashlib.sha256(stored.read_bytes()).hexdigest(),
+        stored.stat().st_size,
+        external_id=rid,
+    )
     db.update_entity("MedicalRecord", rid, {"status": "processing"})
     try:
         record = await _extract_and_store(record, stored, stored.suffix.lower())
+        if record.get("partial"):
+            source_failure(record.get("error") or "medical-record extraction was partial")
         return {"ok": True, "record": record, "lab_results": record.get("lab_count", 0)}
     except Exception as err:
         log.exception("record reprocess failed")

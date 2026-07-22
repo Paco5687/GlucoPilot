@@ -143,6 +143,12 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                         ).fetchone()
                     ),
                 }
+                if _table_exists(connection, "normalized_source_links"):
+                    source_archive["normalized_source_links"] = dict(
+                        connection.execute(
+                            "SELECT COUNT(*) AS count FROM normalized_source_links"
+                        ).fetchone()
+                    )
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:

@@ -25,6 +25,7 @@ import httpx
 
 from . import db
 from .config import OWNER_EMAIL
+from .connector_provenance import can_advance_freshness, capture_records, latest_observed, source_failure
 from .db import config_value, set_config_value
 
 log = logging.getLogger("glucopilot.glooko")
@@ -146,8 +147,24 @@ async def _fetch_list(client: httpx.AsyncClient, path: str, key: str, since: dat
         )
         if response.status_code >= 400:
             log.warning("glooko %s failed: %s %s", path, response.status_code, response.text[:200])
+            source_failure(f"Glooko {path} failed with status {response.status_code}")
             break
         data = response.json()
+        page = data.get(key) if isinstance(data, dict) else data if isinstance(data, list) else []
+        page = page if isinstance(page, list) else []
+        capture_records(
+            page,
+            external_id=path,
+            observed_at=latest_observed(
+                page,
+                "pumpTimestamp",
+                "timestamp",
+                "deviceTimestamp",
+                "displayTime",
+                "lastUpdatedAt",
+            ),
+            metadata={"path": path},
+        )
         if not isinstance(data, dict):
             items.extend(data if isinstance(data, list) else [])
             break
@@ -436,8 +453,9 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
             except Exception as err:
                 log.exception("glooko sync failed")
                 return {"error": f"Glooko sync failed: {err}", "_status": 502}
-        set_config_value("glooko_verified", "true")
-        set_config_value("glooko_last_sync", _iso(datetime.now(timezone.utc)))
+        if can_advance_freshness():
+            set_config_value("glooko_verified", "true")
+            set_config_value("glooko_last_sync", _iso(datetime.now(timezone.utc)))
         return result
 
     return {"error": "Unknown action", "_status": 400}

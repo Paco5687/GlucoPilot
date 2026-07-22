@@ -25,6 +25,8 @@ typed repositories are introduced.
   cases, prior-release schema snapshots, expected outcomes, and CI gates.
 - [Immutable source archive](SOURCE_ARCHIVE.md) — scrubbed/compressed payloads,
   file references, sync-run lineage, deduplication, retention, and rollout.
+- [Connector provenance](CONNECTOR_PROVENANCE.md) — connector/upload coverage,
+  complete outcomes, normalized evidence links, freshness, and rollout gates.
 
 ## Reproduce the structural audit
 

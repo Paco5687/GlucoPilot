@@ -21,6 +21,7 @@ import httpx
 
 from . import db
 from .config import OWNER_EMAIL, env
+from .connector_provenance import can_advance_freshness, capture_records, latest_observed, source_failure
 from .db import config_value, set_config_value
 
 log = logging.getLogger("glucopilot.fitbit")
@@ -88,8 +89,21 @@ async def _get(client: httpx.AsyncClient, token: str, path: str) -> Any:
     res = await client.get(f"{API}{path}", headers={"Authorization": f"Bearer {token}"})
     if res.status_code >= 400:
         log.warning("fitbit %s failed: %s %s", path, res.status_code, res.text[:200])
+        source_failure(f"Fitbit {path} failed with status {res.status_code}")
         return None
-    return res.json()
+    payload = res.json()
+    records = []
+    if isinstance(payload, list):
+        records = payload
+    elif isinstance(payload, dict):
+        records = [item for value in payload.values() if isinstance(value, list) for item in value]
+    capture_records(
+        records,
+        external_id=path,
+        observed_at=latest_observed(records, "dateTime", "dateOfSleep"),
+        metadata={"path": path},
+    )
+    return payload
 
 
 def _chunks(start: date, end: date, max_days: int):
@@ -226,7 +240,8 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
                 else:
                     db.create_entity("FitbitDaily", record)
                     created += 1
-        set_config_value("fitbit_last_sync", _iso_now())
+        if can_advance_freshness():
+            set_config_value("fitbit_last_sync", _iso_now())
         return {"success": True, "created": created, "updated": updated, "days_synced": len(by_day)}
 
     return {"error": "Unknown action", "_status": 400}

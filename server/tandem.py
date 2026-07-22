@@ -14,6 +14,7 @@ if Tandem changes it, bump the tconnectsync version.
 """
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -22,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 from . import db
 from .config import APP_TIMEZONE, OWNER_EMAIL
+from .connector_provenance import can_advance_freshness, capture_payload
 from .db import config_value, set_config_value
 from .nightscout import map_treatment
 
@@ -68,6 +70,12 @@ class EntityStoreNightscout:
         if entity != "treatments":
             return  # CGM entries feature is disabled; Dexcom owns glucose
         entry = dict(ns_format)
+        capture_payload(
+            {"entity": entity, "entry": json.loads(json.dumps(entry, default=str))},
+            external_id=str(entry.get("pump_event_id") or "") or None,
+            observed_at=_iso(ts) if (ts := _parse_ts(entry.get("created_at"))) else None,
+            fetched_count=1,
+        )
         et = entry.get("eventType") or ""
         entry["eventType"] = EVENTTYPE_ALIASES.get(et, et)
 
@@ -98,6 +106,12 @@ class EntityStoreNightscout:
         rid = ns_format.get("_id")
         if not rid:
             return
+        capture_payload(
+            {"entity": entity, "entry": json.loads(json.dumps(ns_format, default=str))},
+            external_id=str(rid),
+            observed_at=_iso(ts) if (ts := _parse_ts(ns_format.get("created_at"))) else None,
+            fetched_count=1,
+        )
         patch = {k: v for k, v in ns_format.items() if k != "_id"}
         if "created_at" in patch:
             ts = _parse_ts(patch.pop("created_at"))
@@ -259,8 +273,9 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
             except Exception as err:
                 log.exception("tandem sync failed")
                 return {"error": f"Tandem sync failed: {err}", "_status": 502}
-        set_config_value("tandem_verified", "true")
-        set_config_value("tandem_last_sync", _iso(now))
+        if can_advance_freshness():
+            set_config_value("tandem_verified", "true")
+            set_config_value("tandem_last_sync", _iso(now))
         if result.get("pump_serial"):
             set_config_value("tandem_pump_serial_seen", str(result["pump_serial"]))
         return result

@@ -48,10 +48,13 @@ _QUERY_SECRET_RE = re.compile(
     r"(?i)([?&](?:access_token|refresh_token|id_token|api_key|client_secret|password)=)[^&\s]+"
 )
 _ASSIGNMENT_SECRET_RE = re.compile(
-    r"(?i)\b(access_token|refresh_token|id_token|api_key|client_secret|password)\s*[:=]\s*[^\s,;&]+"
+    r"(?i)\b(access_token|refresh_token|id_token|api_key|client_secret|password)"
+    r"\b[\"']?\s*[:=]\s*[\"']?[^\"'\s,;&}]+"
 )
 _VALID_HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _FINAL_STATUSES = {"succeeded", "failed", "partial"}
+_RUN_KINDS = {"archive", "connector", "upload", "ingest", "reprocess"}
+_TRIGGER_TYPES = {"unknown", "scheduled", "manual", "backfill", "upload", "ingest", "reprocess"}
 
 
 class SourceArchiveError(RuntimeError):
@@ -217,17 +220,26 @@ class SqliteSourceArchiveRepository:
         parser_version: str,
         *,
         started_at: str | None = None,
+        run_kind: str = "archive",
+        trigger_type: str = "unknown",
+        connector_version: str = "legacy",
     ) -> dict[str, Any]:
         source_type = _label(source_type, "source_type")
         parser_version = _label(parser_version, "parser_version")
+        connector_version = _label(connector_version, "connector_version")
+        if run_kind not in _RUN_KINDS:
+            raise SourceArchiveError(f"invalid run kind: {run_kind}")
+        if trigger_type not in _TRIGGER_TYPES:
+            raise SourceArchiveError(f"invalid trigger type: {trigger_type}")
         started_at = _timestamp(started_at, default_now=True)
         run_id = "sync_" + uuid.uuid4().hex
         with self._scope() as connection:
             connection.execute(
                 """
                 INSERT INTO sync_runs (
-                    id, owner_id, source_type, parser_version, status, started_at, created_at
-                ) VALUES (?, ?, ?, ?, 'running', ?, ?)
+                    id, owner_id, source_type, parser_version, status, started_at,
+                    created_at, run_kind, trigger_type, connector_version
+                ) VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -236,6 +248,9 @@ class SqliteSourceArchiveRepository:
                     parser_version,
                     started_at,
                     _now_iso(),
+                    run_kind,
+                    trigger_type,
+                    connector_version,
                 ),
             )
             return self._sync_run(connection, run_id)
@@ -247,21 +262,48 @@ class SqliteSourceArchiveRepository:
         *,
         completed_at: str | None = None,
         error_summary: str | None = None,
+        fetched_count: int = 0,
+        created_count: int = 0,
+        updated_count: int = 0,
+        skipped_count: int = 0,
+        failed_count: int = 0,
+        stale_count: int = 0,
+        last_successful_data_at: str | None = None,
     ) -> dict[str, Any]:
         if status not in _FINAL_STATUSES:
             raise SourceArchiveError(f"invalid final sync status: {status}")
         safe_error = _scrub_text(str(error_summary))[:1000] if error_summary else None
+        counters = {
+            "fetched_count": fetched_count,
+            "created_count": created_count,
+            "updated_count": updated_count,
+            "skipped_count": skipped_count,
+            "failed_count": failed_count,
+            "stale_count": stale_count,
+        }
+        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in counters.values()):
+            raise SourceArchiveError("sync counters must be non-negative integers")
+        successful_data = _timestamp(last_successful_data_at) if status == "succeeded" else None
         with self._scope() as connection:
             cursor = connection.execute(
                 """
                 UPDATE sync_runs
-                SET status=?, completed_at=?, error_summary=?
+                SET status=?, completed_at=?, error_summary=?,
+                    fetched_count=?, created_count=?, updated_count=?, skipped_count=?,
+                    failed_count=?, stale_count=?, last_successful_data_at=?
                 WHERE id=? AND owner_id=? AND status='running'
                 """,
                 (
                     status,
                     _timestamp(completed_at, default_now=True),
                     safe_error,
+                    fetched_count,
+                    created_count,
+                    updated_count,
+                    skipped_count,
+                    failed_count,
+                    stale_count,
+                    successful_data,
                     run_id,
                     DEPLOYMENT_OWNER_ID,
                 ),
@@ -269,6 +311,60 @@ class SqliteSourceArchiveRepository:
             if cursor.rowcount != 1:
                 raise SourceArchiveError("sync run does not exist or is already complete")
             return self._sync_run(connection, run_id)
+
+    def link_entity(
+        self,
+        entity_type: str,
+        entity_id: str,
+        sync_run_id: str,
+        parser_version: str,
+        *,
+        source_record_id: str | None = None,
+        source_file_id: str | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        entity_type = _label(entity_type, "entity_type")
+        entity_id = _label(entity_id, "entity_id")
+        parser_version = _label(parser_version, "parser_version")
+        if bool(source_record_id) == bool(source_file_id):
+            raise SourceArchiveError("exactly one source record or source file is required")
+        evidence_kind = "record" if source_record_id else "file"
+        evidence_id = source_record_id or source_file_id
+        link_id = "link_" + hashlib.sha256(
+            f"{DEPLOYMENT_OWNER_ID}\0{entity_type}\0{entity_id}\0{evidence_kind}\0{evidence_id}\0{sync_run_id}".encode()
+        ).hexdigest()
+        with self._scope() as connection:
+            self._require_sync_run_exists(connection, sync_run_id)
+            evidence_table = "source_records" if source_record_id else "source_files"
+            if not connection.execute(
+                f"SELECT 1 FROM {evidence_table} WHERE id=? AND owner_id=?",
+                (evidence_id, DEPLOYMENT_OWNER_ID),
+            ).fetchone():
+                raise SourceArchiveError("source evidence does not exist")
+            cursor = connection.execute(
+                """
+                INSERT INTO normalized_source_links (
+                    id, owner_id, entity_type, entity_id, source_record_id,
+                    source_file_id, sync_run_id, parser_version, linked_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (
+                    link_id,
+                    DEPLOYMENT_OWNER_ID,
+                    entity_type,
+                    entity_id,
+                    source_record_id,
+                    source_file_id,
+                    sync_run_id,
+                    parser_version,
+                    _now_iso(),
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM normalized_source_links WHERE id=? AND owner_id=?",
+                (link_id, DEPLOYMENT_OWNER_ID),
+            ).fetchone()
+            return dict(row), cursor.rowcount == 1
 
     def archive_payload(
         self,
@@ -415,6 +511,45 @@ class SqliteSourceArchiveRepository:
                 raise SourceArchiveError("unsupported source payload encoding")
             return json.loads(gzip.decompress(row["payload"]))
 
+    def links_for_entity(self, entity_type: str, entity_id: str) -> list[dict[str, Any]]:
+        entity_type = _label(entity_type, "entity_type")
+        entity_id = _label(entity_id, "entity_id")
+        with self._scope() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM normalized_source_links
+                WHERE owner_id=? AND entity_type=? AND entity_id=?
+                ORDER BY linked_at, id
+                """,
+                (DEPLOYMENT_OWNER_ID, entity_type, entity_id),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def recent_sync_runs(
+        self,
+        source_type: str | None = None,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 500:
+            raise SourceArchiveError("sync run limit must be between 1 and 500")
+        with self._scope() as connection:
+            if source_type is None:
+                rows = connection.execute(
+                    "SELECT * FROM sync_runs WHERE owner_id=? ORDER BY started_at DESC, id DESC LIMIT ?",
+                    (DEPLOYMENT_OWNER_ID, limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT * FROM sync_runs
+                    WHERE owner_id=? AND source_type=?
+                    ORDER BY started_at DESC, id DESC LIMIT ?
+                    """,
+                    (DEPLOYMENT_OWNER_ID, _label(source_type, "source_type"), limit),
+                ).fetchall()
+            return [dict(row) for row in rows]
+
     def stats(self) -> dict[str, Any]:
         with self._scope() as connection:
             records = connection.execute(
@@ -440,10 +575,19 @@ class SqliteSourceArchiveRepository:
                 """
                 SELECT COUNT(*) AS count,
                        COALESCE(SUM(records_deduplicated), 0) AS records_deduplicated,
-                       COALESCE(SUM(files_deduplicated), 0) AS files_deduplicated
+                       COALESCE(SUM(files_deduplicated), 0) AS files_deduplicated,
+                       COALESCE(SUM(status = 'succeeded'), 0) AS succeeded,
+                       COALESCE(SUM(status = 'partial'), 0) AS partial,
+                       COALESCE(SUM(status = 'failed'), 0) AS failed,
+                       MAX(last_successful_data_at) AS last_successful_data_at,
+                       MAX(completed_at) AS last_completed_at
                 FROM sync_runs
                 WHERE owner_id=?
                 """,
+                (DEPLOYMENT_OWNER_ID,),
+            ).fetchone()
+            links = connection.execute(
+                "SELECT COUNT(*) AS count FROM normalized_source_links WHERE owner_id=?",
                 (DEPLOYMENT_OWNER_ID,),
             ).fetchone()
         return {
@@ -456,6 +600,7 @@ class SqliteSourceArchiveRepository:
             "records": dict(records),
             "files": dict(files),
             "sync_runs": dict(runs),
+            "normalized_links": dict(links),
         }
 
     def prune_before(self, cutoff: str) -> dict[str, int]:
@@ -481,6 +626,14 @@ class SqliteSourceArchiveRepository:
             ).fetchone()
         ):
             raise SourceArchiveError("sync run does not exist or is not running")
+
+    @staticmethod
+    def _require_sync_run_exists(connection: sqlite3.Connection, run_id: str) -> None:
+        if not connection.execute(
+            "SELECT 1 FROM sync_runs WHERE id=? AND owner_id=?",
+            (run_id, DEPLOYMENT_OWNER_ID),
+        ).fetchone():
+            raise SourceArchiveError("sync run does not exist")
 
     @staticmethod
     def _sync_run(connection: sqlite3.Connection, run_id: str) -> dict[str, Any]:

@@ -115,6 +115,9 @@ class SourceArchiveRepository(Protocol):
         parser_version: str,
         *,
         started_at: str | None = None,
+        run_kind: str = "archive",
+        trigger_type: str = "unknown",
+        connector_version: str = "legacy",
     ) -> dict[str, Any]: ...
 
     def finish_sync_run(
@@ -124,6 +127,13 @@ class SourceArchiveRepository(Protocol):
         *,
         completed_at: str | None = None,
         error_summary: str | None = None,
+        fetched_count: int = 0,
+        created_count: int = 0,
+        updated_count: int = 0,
+        skipped_count: int = 0,
+        failed_count: int = 0,
+        stale_count: int = 0,
+        last_successful_data_at: str | None = None,
     ) -> dict[str, Any]: ...
 
     def archive_payload(
@@ -143,6 +153,28 @@ class SourceArchiveRepository(Protocol):
         parser_version: str,
         **metadata: Any,
     ) -> tuple[dict[str, Any], bool]: ...
+
+    def link_entity(
+        self,
+        entity_type: str,
+        entity_id: str,
+        sync_run_id: str,
+        parser_version: str,
+        *,
+        source_record_id: str | None = None,
+        source_file_id: str | None = None,
+    ) -> tuple[dict[str, Any], bool]: ...
+
+    def links_for_entity(self, entity_type: str, entity_id: str) -> list[dict[str, Any]]: ...
+
+    def recent_sync_runs(
+        self,
+        source_type: str | None = None,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]: ...
+
+    def read_payload(self, record_id: str) -> Any: ...
 
     def stats(self) -> dict[str, Any]: ...
 

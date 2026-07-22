@@ -12,6 +12,7 @@ import httpx
 
 from . import db
 from .config import OWNER_EMAIL, env
+from .connector_provenance import capture_records, latest_observed, source_failure
 from .db import config_value
 
 OURA_TOKEN_URL = "https://api.ouraring.com/oauth/token"
@@ -118,9 +119,17 @@ async def _fetch(client: httpx.AsyncClient, endpoint: str, token: str, start: st
             f"{OURA_API}/{endpoint}", params=params, headers={"Authorization": f"Bearer {token}"}
         )
         if res.status_code >= 400:
+            source_failure(f"Oura {endpoint} failed with status {res.status_code}")
             break
         payload = res.json()
-        items.extend(payload.get("data") or [])
+        page = payload.get("data") or []
+        capture_records(
+            page,
+            external_id=endpoint,
+            observed_at=latest_observed(page, "timestamp", "day"),
+            metadata={"endpoint": endpoint},
+        )
+        items.extend(page)
         next_token = payload.get("next_token")
         if not next_token:
             break
@@ -182,12 +191,12 @@ def _parse_ts(value: str) -> datetime | None:
         return None
 
 
-def _sync_intraday_hr(hr_data: list[dict]) -> int:
+def _sync_intraday_hr(hr_data: list[dict]) -> tuple[int, int]:
     """Insert HR samples not already stored. Dedup is by exact timestamp (not
     a high-water mark) so historical backfills work; Oura samples can be
     seconds apart, so no tolerance window."""
     if not hr_data:
-        return 0
+        return 0, 0
     existing = db.query_entities("OuraHeartRate", {"owner_email": OWNER_EMAIL}, "timestamp", 1000000)
     seen = {r.get("timestamp") for r in existing}
 
@@ -203,7 +212,7 @@ def _sync_intraday_hr(hr_data: list[dict]) -> int:
         new_samples.append({"timestamp": iso, "bpm": sample["bpm"], "source": "oura", "owner_email": OWNER_EMAIL})
     if new_samples:
         db.bulk_create_entities("OuraHeartRate", new_samples)
-    return len(new_samples)
+    return len(new_samples), len(hr_data) - len(new_samples)
 
 
 async def handle_sync(body: dict[str, Any]) -> dict[str, Any]:
@@ -256,11 +265,12 @@ async def handle_sync(body: dict[str, Any]) -> dict[str, Any]:
             db.create_entity("OuraDaily", record)
             created += 1
 
-    hr_created = _sync_intraday_hr(hr)
+    hr_created, hr_skipped = _sync_intraday_hr(hr)
     return {
         "success": True,
         "created": created,
         "updated": updated,
         "days_synced": len(by_day),
         "hr_samples": hr_created,
+        "hr_samples_skipped": hr_skipped,
     }

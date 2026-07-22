@@ -40,7 +40,8 @@ def test_migration_adds_typed_archive_tables_constraints_and_repository(archive_
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         triggers = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='trigger'")}
     assert {"source_records", "source_files", "sync_runs"} <= tables
-    assert {"source_records_immutable", "source_files_immutable"} <= triggers
+    assert {"source_records_immutable", "source_files_immutable", "normalized_source_links_immutable"} <= triggers
+    assert "normalized_source_links" in tables
     assert isinstance(LegacyRepositoryCatalog().source_archive, SourceArchiveRepository)
 
 
@@ -127,6 +128,14 @@ def test_payloads_are_scrubbed_before_hash_compression_and_deduplication(
     assert completed["records_deduplicated"] == 1
     assert "synthetic-error-secret" not in completed["error_summary"]
     assert "synthetic-assignment" not in completed["error_summary"]
+
+    second_run = archive.start_sync_run("synthetic-api", "parser-1.0.0")
+    quoted = archive.finish_sync_run(
+        second_run["id"],
+        "failed",
+        error_summary='provider returned {"access_token":"synthetic-json-token"}',
+    )
+    assert "synthetic-json-token" not in quoted["error_summary"]
 
     with sqlite3.connect(archive_database) as connection:
         assert connection.execute("SELECT COUNT(*) FROM source_records").fetchone() == (1,)
@@ -325,6 +334,7 @@ def test_verified_backup_preserves_source_archive_metadata(
     assert archive_metadata["source_records"]["stored_bytes"] > 0
     assert archive_metadata["source_files"] == {"count": 1, "referenced_bytes": 256}
     assert archive_metadata["sync_runs"] == {"count": 1}
+    assert archive_metadata["normalized_source_links"] == {"count": 0}
     assert verification["source_record_count"] == 1
     assert verification["source_file_reference_count"] == 1
     assert verify_backup(backup_dir) == verification
