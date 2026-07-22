@@ -25,7 +25,7 @@ const PRINT_CSS = `
 }
 `;
 
-function Metric({ label, value, sub, tone }) {
+function Metric({ label, value, sub = null, tone = "" }) {
   return (
     <div className="report-card bg-card rounded-lg border border-border p-3">
       <div className="text-[11px] text-muted-foreground">{label}</div>
@@ -343,14 +343,35 @@ export default function Report() {
         <div className="report-section space-y-3">
           <h2 className="font-semibold text-base">Insulin & carbs</h2>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Metric label="Total daily dose (est.)" value={`${i.avg_tdd_est}`} sub="units/day" />
+            {i.pump_reported_avg_tdd != null && (
+              <Metric label="Pump-reported TDD" value={`${i.pump_reported_avg_tdd}`} sub={`${i.pump_reported_days} complete day${i.pump_reported_days === 1 ? "" : "s"} · ${Object.keys(i.pump_reported_sources || {}).join(", ")}`} />
+            )}
+            {i.calculated_avg_tdd != null && (
+              <Metric label="Calculated TDD" value={`${i.calculated_avg_tdd}`} sub={`${i.calculated_days} full-coverage day${i.calculated_days === 1 ? "" : "s"}`} />
+            )}
             <Metric label="Bolus insulin" value={`${i.avg_daily_bolus}`} sub={`${i.boluses_per_day}/day`} />
-            {i.has_basal && <Metric label="Basal (est.)" value={`${i.avg_daily_basal_est}`} sub="units/day" />}
+            {i.calculated_avg_daily_basal != null && <Metric label="Delivered basal (calc.)" value={`${i.calculated_avg_daily_basal}`} sub="units/day · full coverage only" />}
+            {i.scheduled_avg_daily_basal != null && <Metric label="Programmed basal" value={`${i.scheduled_avg_daily_basal}`} sub="units/day · not confirmed delivery" />}
             <Metric label="Carbs logged" value={`${i.avg_daily_carbs}`} sub="g/day" />
           </div>
           <p className="text-[11px] text-muted-foreground">
-            Basal and total daily dose are estimated from available pump records; carb totals reflect only logged entries.
+            Pump-reported and calculated totals are kept separate. A calculated TDD is shown only for days with complete delivered-basal coverage; Glooko programmed basal is not treated as delivered. Carb totals reflect only logged entries.
           </p>
+          {i.latest_activity_date && (
+            <p className="text-[11px] text-muted-foreground">
+              {i.latest_complete_date ? `Complete TDD data through ${i.latest_complete_date}. ` : "No complete TDD in this report period. "}
+              Latest insulin activity: {i.latest_activity_date}.
+            </p>
+          )}
+          {i.limitations?.map((limitation) => (
+            <p key={limitation} className="text-[11px] text-muted-foreground">{limitation}</p>
+          ))}
+          {i.incomplete_days > 0 && (
+            <p className="text-[11px] text-amber-700">{i.incomplete_days} day{i.incomplete_days === 1 ? "" : "s"} with insulin activity lacked a complete TDD and were excluded.</p>
+          )}
+          {i.discrepancy_days > 0 && (
+            <p className="text-[11px] text-amber-700">{i.discrepancy_days} day{i.discrepancy_days === 1 ? "" : "s"} had a difference greater than rounding between pump-reported and calculated TDD; both values remain separate.</p>
+          )}
         </div>
       )}
 

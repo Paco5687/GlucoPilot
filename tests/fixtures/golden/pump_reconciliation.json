@@ -1,0 +1,56 @@
+{
+  "synthetic": true,
+  "subject": {
+    "id": "synthetic-pump-subject",
+    "owner_email": "owner@glucopilot.local"
+  },
+  "cases": {
+    "complete_and_matching": {
+      "treatments": [
+        {"id": "synthetic-basal-complete", "ns_id": "tandem-basal-1", "owner_email": "owner@glucopilot.local", "source": "tandem", "type": "tempbasal", "event_type": "Temp Basal", "timestamp": "2026-01-10T00:00:00Z", "duration": 1440, "absolute": 1},
+        {"id": "synthetic-bolus-complete", "ns_id": "tandem-bolus-1", "owner_email": "owner@glucopilot.local", "source": "tandem", "type": "insulin", "event_type": "Bolus", "timestamp": "2026-01-10T12:00:00Z", "amount": 4},
+        {"id": "synthetic-total-complete", "ns_id": "tandem-total-1", "owner_email": "owner@glucopilot.local", "source": "tandem", "type": "insulin", "event_type": "Daily Total", "timestamp": "2026-01-10T23:59:00Z", "notes": "Bolus: 4U | Basal: 24U | Total: 28U"}
+      ],
+      "expected": {"completeness": "complete_reported", "pump_reported_total": 28, "calculated_total": 28, "delivered_basal": 24, "coverage_pct": 100, "discrepancy_units": 0}
+    },
+    "partial_delivery": {
+      "treatments": [
+        {"id": "synthetic-basal-partial", "ns_id": "tandem-basal-partial", "owner_email": "owner@glucopilot.local", "source": "tandem", "type": "tempbasal", "event_type": "Temp Basal", "timestamp": "2026-01-11T00:00:00Z", "duration": 720, "absolute": 1},
+        {"id": "synthetic-bolus-partial", "ns_id": "tandem-bolus-partial", "owner_email": "owner@glucopilot.local", "source": "tandem", "type": "insulin", "event_type": "Bolus", "timestamp": "2026-01-11T09:00:00Z", "amount": 3}
+      ],
+      "expected": {"completeness": "partial_delivered_basal", "calculated_total": null, "delivered_basal": 12, "coverage_pct": 50}
+    },
+    "scheduled_not_delivered": {
+      "treatments": [
+        {"id": "synthetic-glooko-schedule", "ns_id": "glooko-schedule-1", "owner_email": "owner@glucopilot.local", "source": "glooko", "type": "tempbasal", "event_type": "Temp Basal", "timestamp": "2026-01-12T00:00:00Z", "duration": 1440, "absolute": 0.8},
+        {"id": "synthetic-glooko-bolus", "ns_id": "glooko-bolus-1", "owner_email": "owner@glucopilot.local", "source": "glooko", "type": "insulin", "event_type": "Insulin (logged)", "timestamp": "2026-01-12T13:00:00Z", "amount": 5}
+      ],
+      "expected": {"completeness": "scheduled_basal_only", "calculated_total": null, "scheduled_basal": 19.2, "scheduled_coverage_pct": 100}
+    },
+    "conflicting_reported_totals": {
+      "treatments": [
+        {"id": "synthetic-total-tandem", "ns_id": "tandem-total-conflict", "owner_email": "owner@glucopilot.local", "source": "tandem", "type": "insulin", "event_type": "Daily Total", "timestamp": "2026-01-13T23:58:00Z", "notes": "Bolus: 4U | Basal: 24U | Total: 28U"},
+        {"id": "synthetic-total-csv", "ns_id": "csv-total-conflict", "owner_email": "owner@glucopilot.local", "source": "csv", "type": "insulin", "event_type": "Daily Total", "timestamp": "2026-01-13T23:59:00Z", "notes": "Bolus: 5U | Basal: 25U | Total: 30U"}
+      ],
+      "expected": {"completeness": "conflicting_reported_totals", "selected": null, "conflict": true, "candidate_totals": [28, 30]}
+    },
+    "duplicates": {
+      "treatments": [
+        {"id": "synthetic-dup-basal-a", "ns_id": "tandem-basal-dup", "owner_email": "owner@glucopilot.local", "source": "tandem", "type": "tempbasal", "event_type": "Temp Basal", "timestamp": "2026-01-14T00:00:00Z", "duration": 1440, "absolute": 1},
+        {"id": "synthetic-dup-basal-b", "ns_id": "tandem-basal-dup", "owner_email": "owner@glucopilot.local", "source": "tandem", "type": "tempbasal", "event_type": "Temp Basal", "timestamp": "2026-01-14T00:00:00Z", "duration": 1440, "absolute": 1},
+        {"id": "synthetic-dup-bolus-a", "ns_id": "tandem-bolus-dup", "owner_email": "owner@glucopilot.local", "source": "tandem", "type": "insulin", "event_type": "Bolus", "timestamp": "2026-01-14T12:00:00Z", "amount": 4},
+        {"id": "synthetic-dup-bolus-b", "ns_id": "tandem-bolus-dup", "owner_email": "owner@glucopilot.local", "source": "tandem", "type": "insulin", "event_type": "Bolus", "timestamp": "2026-01-14T12:00:00Z", "amount": 4},
+        {"id": "synthetic-dup-bolus-cross-source", "ns_id": "nightscout-bolus-dup", "owner_email": "owner@glucopilot.local", "source": "nightscout", "type": "insulin", "event_type": "Bolus", "timestamp": "2026-01-14T12:00:30Z", "amount": 4},
+        {"id": "synthetic-dup-total-a", "ns_id": "tandem-total-dup", "owner_email": "owner@glucopilot.local", "source": "tandem", "type": "insulin", "event_type": "Daily Total", "timestamp": "2026-01-14T23:59:00Z", "notes": "Bolus: 4U | Basal: 24U | Total: 28U"},
+        {"id": "synthetic-dup-total-b", "ns_id": "tandem-total-dup", "owner_email": "owner@glucopilot.local", "source": "tandem", "type": "insulin", "event_type": "Daily Total", "timestamp": "2026-01-14T23:59:00Z", "notes": "Bolus: 4U | Basal: 24U | Total: 28U"}
+      ],
+      "expected": {"pump_reported_total": 28, "calculated_total": 28, "bolus_units": 4, "duplicates_suppressed": 4}
+    },
+    "missing_basal": {
+      "treatments": [
+        {"id": "synthetic-bolus-only", "ns_id": "glooko-bolus-only", "owner_email": "owner@glucopilot.local", "source": "glooko", "type": "insulin", "event_type": "Insulin (logged)", "timestamp": "2026-01-15T12:00:00Z", "amount": 6}
+      ],
+      "expected": {"completeness": "bolus_only", "calculated_total": null, "bolus_units": 6}
+    }
+  }
+}

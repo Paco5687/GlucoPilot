@@ -221,7 +221,7 @@ def test_report_snapshot_preserves_missing_pump_cycle_lab_range_and_dst_semantic
         "2026-04-01T00:00:00Z",
         pump_fixture["glucose_days"],
     )
-    assert insulin_snapshot == pump_fixture["expected"]
+    assert {key: insulin_snapshot[key] for key in pump_fixture["expected"]} == pump_fixture["expected"]
 
     cycle_fixture = golden["cycle_effects"]
     cycle_snapshot = report._cycle(

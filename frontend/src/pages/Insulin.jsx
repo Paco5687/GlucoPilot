@@ -11,7 +11,7 @@ const CAT = {
   unknown: { label: "—", cls: "text-muted-foreground", bg: "bg-muted" },
 };
 
-function Stat({ label, value, unit, sub }) {
+function Stat({ label, value, unit = null, sub = null }) {
   return (
     <div className="bg-card rounded-xl border border-border p-4">
       <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
@@ -53,7 +53,7 @@ export default function Insulin() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const stale = r?.data_through && daysAgo(r.data_through) > 14;
+  const stale = r?.available && r.current === false;
   const cat = CAT[r?.category] || CAT.unknown;
 
   return (
@@ -67,15 +67,17 @@ export default function Insulin() {
       {loading ? (
         <div className="flex items-center justify-center h-40"><Loader2 className="w-5 h-5 animate-spin text-primary" /></div>
       ) : !r?.available ? (
-        <div className="bg-card rounded-xl border border-border p-8 text-center text-sm text-muted-foreground">
-          {r?.needs_weight ? "Add your weight in Settings → Body profile to compute TDD/kg." : (r?.reason || "Not enough pump data yet — needs Daily Total (basal + bolus) records.")}
+        <div className="bg-card rounded-xl border border-border p-8 text-center text-sm text-muted-foreground space-y-2">
+          <p>{r?.needs_weight ? "Add your weight in Settings → Body profile to compute TDD/kg." : (r?.reason || "Not enough pump data yet — needs Daily Total (basal + bolus) records.")}</p>
+          {r?.latest_insulin_activity && <p className="text-xs">Latest insulin activity: {r.latest_insulin_activity}. It is not labeled as complete TDD.</p>}
+          {r?.reconciliation?.limitations?.map((limitation) => <p key={limitation} className="text-xs">{limitation}</p>)}
         </div>
       ) : (
         <>
           {stale && (
             <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800 flex items-start gap-2">
               <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-              <span>Based on your most recent <b>complete pump data through {r.data_through}</b> ({daysAgo(r.data_through)} days ago). Recent months only have bolus data (no basal), so this reflects that earlier period — not necessarily today.</span>
+              <span>Based on the most recent <b>complete pump data through {r.data_through}</b> ({daysAgo(r.data_through)} days ago). Newer insulin activity may lack a complete delivered-basal record, so this describes an earlier period—not current dosing.</span>
             </div>
           )}
 
@@ -90,12 +92,39 @@ export default function Insulin() {
               <div className="text-[11px] text-muted-foreground mt-2">Rule of thumb: &lt;0.4 sensitive · 0.4–0.6 typical · 0.6–0.8 elevated · &gt;0.8 resistant.</div>
             </div>
             <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <Stat label="Avg TDD" value={r.avg_tdd} unit="U/day" sub={`over ${r.n_days} days`} />
+              <Stat label="Selected complete TDD" value={r.avg_tdd} unit="U/day" sub={`over ${r.n_days} days`} />
               <Stat label="Basal share" value={r.basal_pct} unit="%" sub="of total insulin" />
               <Stat label="Est. ISF" value={r.est_isf_mgdl_per_u} unit="mg/dL/U" sub="1800 rule" />
               <Stat label="Est. carb ratio" value={r.est_carb_ratio_g_per_u} unit="g/U" sub="500 rule" />
             </div>
           </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Stat
+              label="Pump-reported TDD"
+              value={r.reconciliation?.pump_reported_avg_tdd}
+              unit="U/day"
+              sub={`${r.reconciliation?.pump_reported_days || 0} complete day${r.reconciliation?.pump_reported_days === 1 ? "" : "s"} · ${Object.keys(r.reconciliation?.pump_reported_sources || {}).join(", ") || "no source"}`}
+            />
+            <Stat
+              label="Calculated TDD"
+              value={r.reconciliation?.calculated_avg_tdd}
+              unit="U/day"
+              sub={`${r.reconciliation?.calculated_days || 0} full delivered-basal day${r.reconciliation?.calculated_days === 1 ? "" : "s"}`}
+            />
+          </div>
+
+          {r.reconciliation?.limitations?.length > 0 && (
+            <div className="bg-muted/40 rounded-xl border border-border p-3 text-xs text-muted-foreground space-y-1">
+              {r.reconciliation.limitations.map((limitation) => <p key={limitation}>{limitation}</p>)}
+            </div>
+          )}
+
+          {r.reconciliation?.discrepancy_days > 0 && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-xs text-amber-800">
+              {r.reconciliation.discrepancy_days} day{r.reconciliation.discrepancy_days === 1 ? "" : "s"} differed by more than rounding between pump-reported and calculated TDD. The values are retained separately rather than silently combined.
+            </div>
+          )}
 
           {r.trend && (
             <div className="bg-card rounded-xl border border-border p-4 flex items-center gap-3">

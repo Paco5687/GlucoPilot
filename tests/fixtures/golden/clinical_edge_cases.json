@@ -267,9 +267,24 @@
       "avg_daily_bolus": 3.0,
       "boluses_per_day": 1.0,
       "avg_daily_carbs": 15,
-      "avg_daily_basal_est": 0.0,
-      "avg_tdd_est": 3.0,
-      "has_basal": false
+      "pump_reported_avg_tdd": null,
+      "pump_reported_avg_basal": null,
+      "pump_reported_days": 0,
+      "calculated_avg_tdd": null,
+      "calculated_avg_daily_basal": null,
+      "calculated_days": 0,
+      "scheduled_avg_daily_basal": null,
+      "scheduled_days": 0,
+      "avg_daily_basal_est": null,
+      "avg_tdd_est": null,
+      "has_basal": false,
+      "latest_complete_date": null,
+      "latest_activity_date": "2026-04-02",
+      "incomplete_days": 2,
+      "discrepancy_days": 0,
+      "limitations": [
+        "Days without complete delivered basal coverage do not have a calculated TDD."
+      ]
     }
   },
   "compression_low": {

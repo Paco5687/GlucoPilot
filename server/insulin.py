@@ -16,13 +16,16 @@ with complete pump data (Glooko-only stretches have no basal) — so we surface
 
 import bisect
 import logging
-import re
-from datetime import datetime, timedelta, timezone
+import sqlite3
+from datetime import date, datetime, timedelta, timezone
 from statistics import mean, median, pstdev
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from . import profile
-from .config import OWNER_EMAIL
+from .config import APP_TIMEZONE, OWNER_EMAIL
+from .db import config_value
+from .insulin_reconciliation import reconcile_treatments
 from .repositories import get_repositories
 
 log = logging.getLogger("glucopilot.insulin")
@@ -35,39 +38,46 @@ STACK_GUARD_PRE_MIN = 30  # exclude if another dose sits in [-this, +RESPONSE_MI
 MIN_UNITS = 0.5
 MIN_START_GLUCOSE = 100   # need room to fall to see a correction's effect
 
-_TOTAL_RE = re.compile(r"total:\s*([\d.]+)", re.I)
-_BASAL_RE = re.compile(r"basal:\s*([\d.]+)", re.I)
-_BOLUS_RE = re.compile(r"bolus:\s*([\d.]+)", re.I)
-
 WINDOW_DAYS = 90
+CURRENT_DATA_DAYS = 14
 
 
-def _f(rx: re.Pattern, s: str) -> float | None:
-    m = rx.search(s or "")
-    return float(m.group(1)) if m else None
+def _all_treatments() -> list[dict[str, Any]]:
+    repository = get_repositories().treatments
+    rows, skip = [], 0
+    while True:
+        page = repository.query({"owner_email": OWNER_EMAIL}, "timestamp", 5000, skip)
+        rows.extend(page)
+        if len(page) < 5000:
+            return rows
+        skip += 5000
+
+
+def _app_timezone() -> ZoneInfo:
+    try:
+        timezone_name = config_value("app_timezone", APP_TIMEZONE)
+    except sqlite3.OperationalError:
+        # Repository-unit tests deliberately run without initializing SQLite.
+        timezone_name = APP_TIMEZONE
+    return ZoneInfo(timezone_name)
+
+
+def _reconciliation() -> dict[str, Any]:
+    return reconcile_treatments(_all_treatments(), _app_timezone())
 
 
 def _daily_tdd() -> dict[str, dict[str, float]]:
-    """day -> {total, basal, bolus} from parsed Daily Total notes. A day can have
-    several such rows (e.g. cartridge changes) — sum them."""
-    rows = get_repositories().treatments.query(
-        {"owner_email": OWNER_EMAIL, "type": "insulin", "event_type": "Daily Total"},
-        "timestamp",
-        100000,
-    )
-    by_day: dict[str, dict[str, float]] = {}
-    for t in rows:
-        total = _f(_TOTAL_RE, t.get("notes"))
-        if total is None:
-            continue
-        day = (t.get("timestamp") or "")[:10]
-        if not day:
-            continue
-        e = by_day.setdefault(day, {"total": 0.0, "basal": 0.0, "bolus": 0.0})
-        e["total"] += total
-        e["basal"] += _f(_BASAL_RE, t.get("notes")) or 0.0
-        e["bolus"] += _f(_BOLUS_RE, t.get("notes")) or 0.0
-    return by_day
+    """Compatibility view of non-conflicting, complete pump-reported totals."""
+    output = {}
+    for day in _reconciliation()["days"]:
+        selected = day["pump_reported"]["selected"]
+        if selected is not None:
+            output[day["date"]] = {
+                "total": selected["total_units"],
+                "basal": selected["basal_units"],
+                "bolus": selected["bolus_units"],
+            }
+    return output
 
 
 def _category(tdd_per_kg: float | None) -> str:
@@ -84,9 +94,36 @@ def _category(tdd_per_kg: float | None) -> str:
 
 def estimate() -> dict[str, Any]:
     repositories = get_repositories()
-    by_day = _daily_tdd()
+    reconciliation = _reconciliation()
+    by_day = {}
+    source_by_day = {}
+    for day in reconciliation["days"]:
+        reported = day["pump_reported"]["selected"]
+        calculated = day["calculated"]
+        if reported is not None:
+            by_day[day["date"]] = {
+                "total": reported["total_units"],
+                "basal": reported["basal_units"],
+                "bolus": reported["bolus_units"],
+            }
+            source_by_day[day["date"]] = f"pump_reported:{reported['source']}"
+        elif calculated["total_units"] is not None:
+            by_day[day["date"]] = {
+                "total": calculated["total_units"],
+                "basal": calculated["delivered_basal_units"],
+                "bolus": calculated["bolus_units"],
+            }
+            source_by_day[day["date"]] = "calculated:tandem_delivered"
     if not by_day:
-        return {"available": False, "reason": "No daily insulin totals (basal+bolus) found — pump data needed."}
+        return {
+            "available": False,
+            "current": False,
+            "reason": "No complete daily insulin totals found — complete pump totals or delivered basal coverage are needed.",
+            "latest_insulin_activity": reconciliation["summary"]["latest_activity_date"],
+            "reconciliation": reconciliation["summary"],
+            "algorithm_version": reconciliation["algorithm_version"],
+            "input_data_version": reconciliation["input_data_version"],
+        }
 
     prof = profile.get_profile()
     weight = prof.get("weight_kg")
@@ -124,6 +161,37 @@ def estimate() -> dict[str, Any]:
             trend = {"recent_tdd": round(recent, 1), "prior_tdd": round(prior, 1),
                      "pct_change": round((recent - prior) / prior * 100)}
 
+    data_through = days_sorted[-1]
+    latest_activity = reconciliation["summary"]["latest_activity_date"]
+    age_days = (datetime.now(_app_timezone()).date() - date.fromisoformat(data_through)).days
+    source_counts: dict[str, int] = {}
+    for day in window:
+        source_counts[source_by_day[day]] = source_counts.get(source_by_day[day], 0) + 1
+    reconciled_by_date = {day["date"]: day for day in reconciliation["days"]}
+    window_reconciled = [reconciled_by_date[day] for day in window]
+    window_reported = [day for day in window_reconciled if day["pump_reported"]["selected"]]
+    window_calculated = [day for day in window_reconciled if day["calculated"]["total_units"] is not None]
+    window_reported_sources: dict[str, int] = {}
+    for day in window_reported:
+        source = day["pump_reported"]["selected"]["source"]
+        window_reported_sources[source] = window_reported_sources.get(source, 0) + 1
+    estimate_reconciliation = {
+        **reconciliation["summary"],
+        "pump_reported_avg_tdd": round(
+            mean(day["pump_reported"]["selected"]["total_units"] for day in window_reported), 1
+        ) if window_reported else None,
+        "pump_reported_days": len(window_reported),
+        "pump_reported_sources": dict(sorted(window_reported_sources.items())),
+        "calculated_avg_tdd": round(
+            mean(day["calculated"]["total_units"] for day in window_calculated), 1
+        ) if window_calculated else None,
+        "calculated_days": len(window_calculated),
+        "calculated_source": "tandem_delivered" if window_calculated else None,
+        "analysis_window_days": len(window),
+        "all_history_pump_reported_days": reconciliation["summary"]["pump_reported_days"],
+        "all_history_calculated_days": reconciliation["summary"]["calculated_days"],
+    }
+
     return {
         "available": True,
         "avg_tdd": avg_tdd,
@@ -136,7 +204,14 @@ def estimate() -> dict[str, Any]:
         "per_phase_tdd_per_kg": per_phase,
         "trend": trend,
         "n_days": len(window),
-        "data_through": days_sorted[-1],
+        "data_through": data_through,
+        "latest_insulin_activity": latest_activity,
+        "current": age_days <= CURRENT_DATA_DAYS,
+        "data_age_days": age_days,
+        "total_sources": source_counts,
+        "reconciliation": estimate_reconciliation,
+        "algorithm_version": reconciliation["algorithm_version"],
+        "input_data_version": reconciliation["input_data_version"],
         "needs_weight": weight is None,
     }
 

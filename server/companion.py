@@ -262,8 +262,14 @@ def _dossier() -> dict[str, Any]:
         "recent_documents": recent_docs[:12],
         "glucose": _glucose_detail() or ctx.get("glucose"),
         "insulin": {
-            "resistance": ins.get("category"), "tdd_per_kg": ins.get("tdd_per_kg"),
-            "data_through": ins.get("data_through"), "response_consistency": absn.get("consistency"),
+            "resistance_estimate": ins.get("category"), "tdd_per_kg": ins.get("tdd_per_kg"),
+            "complete_data_through": ins.get("data_through"), "current": ins.get("current"),
+            "data_age_days": ins.get("data_age_days"),
+            "pump_reported_avg_tdd": ins.get("reconciliation", {}).get("pump_reported_avg_tdd"),
+            "calculated_avg_tdd": ins.get("reconciliation", {}).get("calculated_avg_tdd"),
+            "incomplete_days": ins.get("reconciliation", {}).get("incomplete_days"),
+            "limitations": ins.get("reconciliation", {}).get("limitations"),
+            "response_consistency": absn.get("consistency"),
             "response_variability_cv_pct": absn.get("cv_pct"),
         } if ins.get("available") else None,
     }
