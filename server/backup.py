@@ -175,6 +175,38 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                     )
                     for table in ("typed_treatments", "basal_segments", "pump_daily_totals")
                 }
+            lab_audit = None
+            if all(
+                _table_exists(connection, table)
+                for table in (
+                    "lab_extraction_runs",
+                    "lab_extraction_observations",
+                    "lab_verification_events",
+                )
+            ):
+                lab_audit = {
+                    "runs": dict(
+                        connection.execute(
+                            "SELECT COUNT(*) AS count FROM lab_extraction_runs"
+                        ).fetchone()
+                    ),
+                    "observations": dict(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*) AS count,
+                                   COALESCE(SUM(CASE WHEN verification_status IN
+                                       ('approved', 'edited') THEN 1 ELSE 0 END), 0)
+                                       AS verified_count
+                            FROM lab_extraction_observations
+                            """
+                        ).fetchone()
+                    ),
+                    "verification_events": dict(
+                        connection.execute(
+                            "SELECT COUNT(*) AS count FROM lab_verification_events"
+                        ).fetchone()
+                    ),
+                }
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:
@@ -193,6 +225,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
         metadata["canonical_time"] = canonical_time
     if typed_treatments is not None:
         metadata["typed_treatments"] = typed_treatments
+    if lab_audit is not None:
+        metadata["lab_audit"] = lab_audit
     if include_references:
         metadata["record_references"] = references
     return metadata
@@ -391,6 +425,8 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
         keys.append("canonical_time")
     if "typed_treatments" in expected_database:
         keys.append("typed_treatments")
+    if "lab_audit" in expected_database:
+        keys.append("lab_audit")
     for key in keys:
         if metadata[key] != expected_database.get(key):
             raise BackupError(f"restored database metadata mismatch: {key}")
@@ -424,6 +460,15 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
                 "typed_treatment_count": metadata["typed_treatments"]["typed_treatments"]["count"],
                 "basal_segment_count": metadata["typed_treatments"]["basal_segments"]["count"],
                 "pump_daily_total_count": metadata["typed_treatments"]["pump_daily_totals"]["count"],
+            }
+        )
+    if "lab_audit" in expected_database:
+        verification.update(
+            {
+                "lab_extraction_run_count": metadata["lab_audit"]["runs"]["count"],
+                "lab_extraction_observation_count": metadata["lab_audit"]["observations"]["count"],
+                "lab_verified_observation_count": metadata["lab_audit"]["observations"]["verified_count"],
+                "lab_verification_event_count": metadata["lab_audit"]["verification_events"]["count"],
             }
         )
     return verification

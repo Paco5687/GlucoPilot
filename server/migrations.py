@@ -523,6 +523,154 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        7,
+        "auditable_medical_record_extraction",
+        (
+            Statement(
+                """
+                CREATE TABLE lab_extraction_runs (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    record_entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+                    source_file_id TEXT REFERENCES source_files(id) ON DELETE SET NULL,
+                    source_hash TEXT NOT NULL CHECK(
+                        length(source_hash) = 71 AND source_hash LIKE 'sha256:%'
+                    ),
+                    parser_version TEXT NOT NULL,
+                    schema_version TEXT NOT NULL,
+                    input_data_version TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('running', 'succeeded', 'partial', 'failed')),
+                    page_count INTEGER NOT NULL DEFAULT 0 CHECK(page_count >= 0),
+                    failed_batch_count INTEGER NOT NULL DEFAULT 0 CHECK(failed_batch_count >= 0),
+                    started_at TEXT NOT NULL CHECK(started_at LIKE '%Z'),
+                    completed_at TEXT CHECK(completed_at IS NULL OR completed_at LIKE '%Z'),
+                    error_summary TEXT,
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z')
+                )
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE lab_extraction_observations (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    record_entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+                    extraction_run_id TEXT NOT NULL REFERENCES lab_extraction_runs(id) ON DELETE CASCADE,
+                    legacy_entity_id TEXT,
+                    stable_source_key TEXT NOT NULL CHECK(
+                        length(stable_source_key) = 71 AND stable_source_key LIKE 'sha256:%'
+                    ),
+                    version INTEGER NOT NULL CHECK(version > 0),
+                    original_name TEXT NOT NULL,
+                    normalized_name TEXT NOT NULL,
+                    original_value TEXT NOT NULL,
+                    normalized_value REAL,
+                    value_kind TEXT NOT NULL CHECK(value_kind IN ('numeric', 'qualitative', 'titer')),
+                    original_unit TEXT NOT NULL DEFAULT '',
+                    normalized_unit TEXT NOT NULL DEFAULT '',
+                    original_reference_range TEXT NOT NULL DEFAULT '',
+                    reference_low REAL,
+                    reference_high REAL,
+                    original_flag TEXT NOT NULL DEFAULT '',
+                    normalized_flag TEXT NOT NULL DEFAULT '',
+                    specimen TEXT NOT NULL DEFAULT '',
+                    original_collected_date TEXT NOT NULL DEFAULT '',
+                    normalized_collected_date TEXT NOT NULL DEFAULT '',
+                    category TEXT NOT NULL DEFAULT '',
+                    source_page INTEGER CHECK(source_page IS NULL OR source_page > 0),
+                    extraction_location_json TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(extraction_location_json)),
+                    parser_confidence REAL CHECK(
+                        parser_confidence IS NULL OR
+                        (parser_confidence >= 0 AND parser_confidence <= 1)
+                    ),
+                    validation_status TEXT NOT NULL CHECK(
+                        validation_status IN ('valid', 'warning', 'invalid')
+                    ),
+                    validation_issues_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(validation_issues_json)),
+                    verification_status TEXT NOT NULL CHECK(
+                        verification_status IN ('unverified', 'approved', 'edited', 'rejected', 'superseded')
+                    ),
+                    supersedes_observation_id TEXT REFERENCES lab_extraction_observations(id) ON DELETE SET NULL,
+                    superseded_by_observation_id TEXT REFERENCES lab_extraction_observations(id) ON DELETE SET NULL,
+                    superseded_at TEXT CHECK(superseded_at IS NULL OR superseded_at LIKE '%Z'),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    updated_at TEXT NOT NULL CHECK(updated_at LIKE '%Z'),
+                    UNIQUE(record_entity_id, stable_source_key, version)
+                )
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE lab_verification_events (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    record_entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+                    observation_id TEXT NOT NULL REFERENCES lab_extraction_observations(id) ON DELETE RESTRICT,
+                    action TEXT NOT NULL CHECK(action IN ('approve', 'edit', 'reject', 'supersede')),
+                    actor TEXT NOT NULL,
+                    reason TEXT NOT NULL DEFAULT '',
+                    before_json TEXT NOT NULL CHECK(json_valid(before_json)),
+                    after_json TEXT NOT NULL CHECK(json_valid(after_json)),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z')
+                )
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_lab_extraction_runs_record "
+                "ON lab_extraction_runs(owner_id, record_entity_id, started_at)"
+            ),
+            Statement(
+                "CREATE INDEX idx_lab_observations_record_status "
+                "ON lab_extraction_observations(owner_id, record_entity_id, verification_status)"
+            ),
+            Statement(
+                "CREATE INDEX idx_lab_observations_legacy "
+                "ON lab_extraction_observations(owner_id, legacy_entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_lab_observations_source_key "
+                "ON lab_extraction_observations(owner_id, record_entity_id, stable_source_key, version)"
+            ),
+            Statement(
+                "CREATE INDEX idx_lab_verification_events_observation "
+                "ON lab_verification_events(owner_id, observation_id, created_at)"
+            ),
+            Statement(
+                """
+                CREATE TRIGGER lab_extraction_observations_immutable_delete
+                BEFORE DELETE ON lab_extraction_observations
+                WHEN EXISTS (
+                    SELECT 1 FROM entities WHERE id=OLD.record_entity_id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'lab_extraction_observations are immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER lab_verification_events_immutable_update
+                BEFORE UPDATE ON lab_verification_events
+                BEGIN
+                    SELECT RAISE(ABORT, 'lab_verification_events are immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER lab_verification_events_immutable_delete
+                BEFORE DELETE ON lab_verification_events
+                WHEN EXISTS (
+                    SELECT 1 FROM entities WHERE id=OLD.record_entity_id
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'lab_verification_events are immutable');
+                END
+                """
+            ),
+        ),
+    ),
 )
 
 

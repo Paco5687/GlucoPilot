@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import SafetyBanner from "../components/SafetyBanner";
 import RecordUploadQueue from "../components/records/RecordUploadQueue";
 import LabsView from "../components/records/LabsView";
+import MedicalRecordReview from "../components/records/MedicalRecordReview";
 import { FolderHeart, Loader2, FileText, Trash2, ExternalLink, RefreshCw, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
@@ -157,12 +158,15 @@ export default function Records() {
                 )}
               </div>
               <div className="flex items-center gap-1 flex-shrink-0">
-                {isAdmin && rec.status === "failed" && (
+                {rec.status === "processed" && (
+                  <MedicalRecordReview record={rec} isAdmin={isAdmin} onChanged={load} />
+                )}
+                {isAdmin && (
                   <button
                     onClick={() => handleReprocess(rec)}
                     disabled={reprocessingId === rec.id}
                     className="p-2 rounded-lg hover:bg-accent text-primary disabled:opacity-50"
-                    title="Retry extraction"
+                    title={rec.status === "failed" ? "Retry extraction" : "Reprocess document"}
                   >
                     <RefreshCw className={`w-4 h-4 ${reprocessingId === rec.id ? "animate-spin" : ""}`} />
                   </button>

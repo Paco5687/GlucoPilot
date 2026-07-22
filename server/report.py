@@ -23,6 +23,8 @@ from .config import APP_TIMEZONE, DEMO_MODE, OWNER_EMAIL
 from .db import config_value
 from .data_quality import assess_cgm, assess_daily, assess_nutrition, assess_pump_tdd, cgm_points
 from .insulin_reconciliation import reconcile_treatments
+from .lab_audit import qualification as lab_qualification
+from .lab_audit import summary_eligible as lab_summary_eligible
 from .llm import invoke_llm
 from .repositories import get_repositories
 
@@ -351,8 +353,16 @@ def _labs() -> dict[str, Any]:
         {"owner_email": OWNER_EMAIL}, "collected_date", 5000
     )
     by_test: dict[str, list[dict]] = {}
+    qualification_counts = {"approved": 0, "edited": 0, "unverified": 0, "rejected": 0, "invalid": 0}
     for r in rows:
         if r.get("value") is None or not r.get("test_name"):
+            continue
+        quality = lab_qualification(r)
+        verification = quality["verification_status"]
+        qualification_counts[verification] = qualification_counts.get(verification, 0) + 1
+        if quality["validation_status"] == "invalid":
+            qualification_counts["invalid"] += 1
+        if not lab_summary_eligible(r):
             continue
         by_test.setdefault(r["test_name"], []).append(r)
 
@@ -383,10 +393,17 @@ def _labs() -> dict[str, Any]:
             **time_fields(latest),
             "count": len(points),
             "trend": trend,
+            "verification": lab_qualification(latest),
+            "source": {
+                "record_id": latest.get("record_id"),
+                "page": latest.get("source_page"),
+                "location": latest.get("extraction_location"),
+            },
             "history": [
                 {
                     "date": p.get("collected_date", ""),
                     "value": p["value"],
+                    "verification": lab_qualification(p),
                     **time_fields(p),
                 }
                 for p in points[-6:]
@@ -395,7 +412,15 @@ def _labs() -> dict[str, Any]:
         categories.setdefault(latest.get("category") or "Other", []).append(entry)
         if latest.get("flag") and latest["flag"] not in ("normal", ""):
             flagged.append(entry)
-    return {"available": bool(by_test), "categories": categories, "flagged": flagged}
+    return {
+        "available": bool(by_test),
+        "categories": categories,
+        "flagged": flagged,
+        "verification": {
+            "counts": qualification_counts,
+            "note": "Machine-extracted results are labeled unverified until approved or corrected against the source document.",
+        },
+    }
 
 
 async def _narrative(payload: dict) -> dict[str, Any] | None:
@@ -433,9 +458,13 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
         else None,
         "wellness": wellness_for_ai,
         "flagged_labs": [
-            {"test": f["test_name"], "value": f["value"], "unit": f["unit"], "flag": f["flag"]}
+            {
+                "test": f["test_name"], "value": f["value"], "unit": f["unit"],
+                "flag": f["flag"], "verification": f["verification"],
+            }
             for f in payload["labs"].get("flagged", [])
         ],
+        "lab_verification": payload["labs"].get("verification"),
         "symptom_journal": payload.get("symptoms"),
         "health_history": payload.get("history"),
         "data_quality": quality,
@@ -450,7 +479,7 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
 Data for the last {payload['days']} days:
 {summary}
 
-Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. If a health_history is present, use it as background (diagnoses, exposures, injuries, hospital visits, and the patient's own narrative) to frame what you observe. If a symptom_journal is present, summarize the symptoms she has actually reported (how often and how severe) and note any that coincide with the data. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Keep it factual and readable.""",
+Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. Explicitly call machine-extracted labs "unverified" unless their verification status is approved or edited; never imply that parser confidence is clinical verification. If a health_history is present, use it as background (diagnoses, exposures, injuries, hospital visits, and the patient's own narrative) to frame what you observe. If a symptom_journal is present, summarize the symptoms she has actually reported (how often and how severe) and note any that coincide with the data. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Keep it factual and readable.""",
             response_json_schema={
                 "type": "object",
                 "properties": {

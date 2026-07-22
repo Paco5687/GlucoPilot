@@ -210,7 +210,7 @@ are omitted from the time column below for brevity.
 | Settings / `UserSettings` | owner singleton | envelope only | source fact or patient report; patient or system |
 | Connections / `DexcomConnection` | owner singleton | expiry effective; last sync recorded | source fact; device/provider or import |
 | Records / `MedicalRecord` | owner + content hash | record date effective partial; upload received UTC | source fact; clinical document |
-| Records / `LabResult` | record + stable child key | collection date observed partial | source fact; clinical document or clinician |
+| Records / `LabResult` | record + stable source key + extraction version | original and normalized collection dates remain distinct partial observations | source fact from a clinical document; `unverified` until approved/edited against source, never clinician-confirmed from parser confidence alone |
 | Connections / `FitbitConnection` | owner singleton | expiry effective; last sync recorded | source fact; device/provider or import |
 | Wearables / `FitbitDaily` | owner + provider date | `date` observed day | source fact; device/provider or import |
 | Wearables / `FitbitHeartRate` | source or legacy | `timestamp` observed UTC | source fact; device/provider or import |

@@ -30,6 +30,7 @@ the other waits, rechecks the ledger, and applies nothing.
 | 4 | `connector_provenance_runs` | Adds connector outcome/freshness columns and immutable normalized-to-source links without changing entity JSON or APIs. |
 | 5 | `canonical_clinical_time` | Adds a rebuildable time sidecar with canonical timeline indexes, precision, inference, duration, and DST state. |
 | 6 | `typed_treatment_domain` | Adds strict, rebuildable treatment, basal-segment, and pump-daily-total projections without changing legacy JSON or generic APIs. |
+| 7 | `auditable_medical_record_extraction` | Adds extraction runs, versioned source-located observations, and immutable verification events while retaining `LabResult` compatibility rows. |
 
 ## Adding a migration
 

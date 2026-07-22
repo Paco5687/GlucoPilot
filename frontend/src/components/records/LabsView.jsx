@@ -3,7 +3,7 @@ import { Input } from "@/components/ui/input";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, ReferenceArea, CartesianGrid,
 } from "recharts";
-import { FlaskConical, AlertTriangle, Search, List, LineChart as LineIcon, Grid3x3, ChevronDown, ChevronRight } from "lucide-react";
+import { FlaskConical, AlertTriangle, Search, List, LineChart as LineIcon, Grid3x3, ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 
 const ABNORMAL = new Set(["high", "low", "critical", "abnormal"]);
 
@@ -213,7 +213,7 @@ function useFamilies(labs, units) {
     //    and shown in the selected unit system.
     const byVariant = new Map();
     for (const lab of labs) {
-      if (lab.value == null || !lab.test_name) continue;
+      if (lab.value == null || !lab.test_name || lab.verification_status === "rejected") continue;
       const c = convertLab(lab, units);
       const bucketUnit = c ? c.bucketUnit : unitKey(lab.unit);
       const point = c ? { ...lab, value: c.value, unit: c.unit, reference_low: c.reference_low, reference_high: c.reference_high } : lab;
@@ -344,6 +344,12 @@ function VariantRow({ v, expanded, onToggle, showLabel }) {
         <span className="flex-1 min-w-0 flex items-center gap-2">
           <span className="text-sm truncate">{showLabel ? v.variantLabel : v.name}</span>
           <AgeBadge date={v.lastDate} />
+          {v.latest.verification_status !== "approved" && v.latest.verification_status !== "edited" && (
+            <span className="text-[9px] uppercase text-amber-700">unverified</span>
+          )}
+          {v.latest.validation_status === "invalid" && (
+            <span className="text-[9px] uppercase text-red-700">invalid extraction</span>
+          )}
         </span>
         <Sparkline points={v.points} color={v.abnormal ? "#dc2626" : "hsl(var(--primary))"} />
         <span className="w-24 text-right text-sm font-medium tabular-nums">
@@ -354,7 +360,29 @@ function VariantRow({ v, expanded, onToggle, showLabel }) {
         </span>
         <span className="w-16 flex justify-end">{flagBadge(v.abnormal)}</span>
       </button>
-      {expanded && <div className="px-4 pb-3 bg-accent/10"><LabTrend a={v} /></div>}
+      {expanded && (
+        <div className="px-4 pb-3 bg-accent/10">
+          <LabTrend a={v} />
+          <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+            <span>
+              {v.latest.verification_status === "approved" || v.latest.verification_status === "edited"
+                ? `Source verified · ${v.latest.verification_status}`
+                : "Machine extracted · unverified"}
+              {v.latest.validation_status === "invalid" ? " · validation failed" : ""}
+            </span>
+            {v.latest.record_id && (
+              <a
+                href={`/api/records/file/${v.latest.record_id}?inline=1${v.latest.source_page ? `#page=${v.latest.source_page}` : ""}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-primary hover:underline"
+              >
+                Open source{v.latest.source_page ? ` page ${v.latest.source_page}` : ""} <ExternalLink className="w-3 h-3" />
+              </a>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
