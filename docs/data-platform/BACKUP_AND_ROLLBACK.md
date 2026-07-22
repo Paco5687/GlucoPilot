@@ -23,6 +23,8 @@ access, and never commit or attach them to an issue.
 When present, typed treatment, lab-audit, contradiction-ledger, and typed
 glucose/fingerstick counts are part of the manifest and clean-restore equality
 check. Typed wearable daily/sample counts receive the same verification.
+Relationship edge, predicate, assertion-status, evidence-level, and algorithm
+registry counts also participate in manifest and clean-restore equality.
 
 Application startup performs this verified backup automatically before pending
 migrations touch an existing database. The default destination is
@@ -76,6 +78,9 @@ Prefer a read/code rollback over schema reversal:
 
 - If a typed-read feature fails, disable its read feature switch and keep dual
   writes running when safe.
+- If relationship projection reads fail, set
+  `RELATIONSHIP_READS_ENABLED=false`; legacy lab/record and message/thread
+  references remain authoritative until the later graph cutover.
 - If a feature fails after an additive migration commits, first disable its
   read/write switches while keeping the migration-compatible image. The
   migration runner intentionally rejects an older image against a newer schema

@@ -1,0 +1,49 @@
+{
+  "synthetic": true,
+  "owner_email": "owner@glucopilot.local",
+  "input_data_version": "synthetic-snapshot-2026-03-02-v1",
+  "input_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "nodes": [
+    {
+      "fixture_key": "record",
+      "entity_type": "MedicalRecord"
+    },
+    {
+      "fixture_key": "lab",
+      "entity_type": "LabResult"
+    },
+    {
+      "fixture_key": "thread",
+      "entity_type": "CompanionThread"
+    },
+    {
+      "fixture_key": "message",
+      "entity_type": "ChatMessage"
+    }
+  ],
+  "relationships": [
+    {
+      "fixture_key": "lab-record",
+      "subject": "lab",
+      "predicate": "extracted_from",
+      "object": "record",
+      "valid_time_kind": "interval",
+      "valid_from": "2026-03-02T13:00:00.000Z",
+      "valid_to": "2026-03-02T14:00:00.000Z",
+      "confidence_label": "high",
+      "confidence_score": 0.98,
+      "confidence_method": "synthetic-fixture"
+    },
+    {
+      "fixture_key": "message-thread",
+      "subject": "message",
+      "predicate": "member_of_thread",
+      "object": "thread",
+      "valid_time_kind": "point",
+      "valid_from": "2026-03-02T13:30:00.000Z",
+      "confidence_label": "medium",
+      "confidence_score": 0.75,
+      "confidence_method": "synthetic-fixture"
+    }
+  ]
+}

@@ -13,6 +13,7 @@ from typing import Any, Iterable
 from urllib.parse import quote
 
 from .config import DB_PATH
+from .relationship_registry import ALGORITHMS, ASSERTION_STATUSES, EVIDENCE_LEVELS, PREDICATES
 from .schema_registry import BASELINE_ENTITY_SCHEMAS, ENTITY_SCHEMAS
 
 
@@ -80,6 +81,66 @@ def _registry_statements() -> tuple[Statement, ...]:
         )
         for schema in BASELINE_ENTITY_SCHEMAS
     )
+
+
+def _relationship_registry_statements() -> tuple[Statement, ...]:
+    statements: list[Statement] = []
+    for item in ASSERTION_STATUSES:
+        statements.append(
+            Statement(
+                "INSERT INTO assertion_status_registry "
+                "(status, terminal, description) VALUES (?, ?, ?)",
+                (item.name.value, int(item.terminal), item.description),
+            )
+        )
+    for item in EVIDENCE_LEVELS:
+        statements.append(
+            Statement(
+                "INSERT INTO evidence_level_registry "
+                "(level, rank, requires_evidence, clinician_reviewed, description) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    item.name.value,
+                    item.rank,
+                    int(item.requires_evidence),
+                    int(item.clinician_reviewed),
+                    item.description,
+                ),
+            )
+        )
+    for item in PREDICATES:
+        statements.append(
+            Statement(
+                "INSERT INTO relationship_predicate_registry "
+                "(predicate, subject_type, object_type, inverse_predicate, derived_only, description) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    item.name,
+                    item.subject_type,
+                    item.object_type,
+                    item.inverse,
+                    int(item.derived_only),
+                    item.description,
+                ),
+            )
+        )
+    for item in ALGORITHMS:
+        statements.append(
+            Statement(
+                "INSERT INTO relationship_algorithm_registry "
+                "(algorithm_id, version, output_kind, deterministic, rebuildable, description) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    item.algorithm_id,
+                    item.version,
+                    item.output_kind,
+                    int(item.deterministic),
+                    int(item.rebuildable),
+                    item.description,
+                ),
+            )
+        )
+    return tuple(statements)
 
 
 MIGRATIONS = (
@@ -1008,6 +1069,166 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        11,
+        "governed_relationship_storage",
+        (
+            Statement(
+                """
+                CREATE TABLE assertion_status_registry (
+                    status TEXT PRIMARY KEY,
+                    terminal INTEGER NOT NULL CHECK(terminal IN (0, 1)),
+                    description TEXT NOT NULL CHECK(description != '')
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE evidence_level_registry (
+                    level TEXT PRIMARY KEY,
+                    rank INTEGER NOT NULL UNIQUE CHECK(rank >= 0),
+                    requires_evidence INTEGER NOT NULL CHECK(requires_evidence IN (0, 1)),
+                    clinician_reviewed INTEGER NOT NULL CHECK(clinician_reviewed IN (0, 1)),
+                    description TEXT NOT NULL CHECK(description != ''),
+                    CHECK(clinician_reviewed = 0 OR requires_evidence = 1)
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE relationship_predicate_registry (
+                    predicate TEXT PRIMARY KEY,
+                    subject_type TEXT NOT NULL REFERENCES entity_schema_registry(entity_type),
+                    object_type TEXT NOT NULL REFERENCES entity_schema_registry(entity_type),
+                    inverse_predicate TEXT NOT NULL,
+                    derived_only INTEGER NOT NULL CHECK(derived_only IN (0, 1)),
+                    description TEXT NOT NULL CHECK(description != ''),
+                    UNIQUE(predicate, subject_type, object_type),
+                    FOREIGN KEY(inverse_predicate) REFERENCES relationship_predicate_registry(predicate)
+                        DEFERRABLE INITIALLY DEFERRED
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE relationship_algorithm_registry (
+                    algorithm_id TEXT NOT NULL,
+                    version TEXT NOT NULL,
+                    output_kind TEXT NOT NULL CHECK(output_kind = 'relationship'),
+                    deterministic INTEGER NOT NULL CHECK(deterministic IN (0, 1)),
+                    rebuildable INTEGER NOT NULL CHECK(rebuildable IN (0, 1)),
+                    description TEXT NOT NULL CHECK(description != ''),
+                    PRIMARY KEY(algorithm_id, version)
+                ) STRICT
+                """
+            ),
+            *_relationship_registry_statements(),
+            Statement(
+                """
+                CREATE TABLE entity_relationships (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    owner_email TEXT NOT NULL CHECK(owner_email != ''),
+                    subject_type TEXT NOT NULL,
+                    subject_id TEXT NOT NULL CHECK(subject_id != ''),
+                    predicate TEXT NOT NULL,
+                    object_type TEXT NOT NULL,
+                    object_id TEXT NOT NULL CHECK(object_id != ''),
+                    assertion_kind TEXT NOT NULL CHECK(assertion_kind IN (
+                        'source_fact', 'patient_report', 'derived_statistic',
+                        'hypothesis', 'clinician_confirmation'
+                    )),
+                    assertion_status TEXT NOT NULL REFERENCES assertion_status_registry(status),
+                    evidence_level TEXT NOT NULL REFERENCES evidence_level_registry(level),
+                    evidence_ids_json TEXT NOT NULL CHECK(
+                        json_valid(evidence_ids_json) AND json_type(evidence_ids_json) = 'array'
+                    ),
+                    source_class TEXT NOT NULL CHECK(source_class IN (
+                        'device_or_provider', 'clinical_document', 'clinician', 'patient',
+                        'import', 'system', 'algorithm', 'external_knowledge'
+                    )),
+                    source_id TEXT NOT NULL CHECK(source_id != ''),
+                    generator_id TEXT NOT NULL,
+                    generator_version TEXT NOT NULL,
+                    input_data_version TEXT NOT NULL CHECK(input_data_version != ''),
+                    input_hash TEXT NOT NULL CHECK(
+                        length(input_hash) = 71 AND input_hash LIKE 'sha256:%'
+                    ),
+                    projection_key TEXT NOT NULL CHECK(projection_key != ''),
+                    valid_time_kind TEXT NOT NULL CHECK(valid_time_kind IN (
+                        'point', 'interval', 'open_ended', 'unknown'
+                    )),
+                    valid_from TEXT CHECK(valid_from IS NULL OR valid_from LIKE '%Z'),
+                    valid_to TEXT CHECK(valid_to IS NULL OR valid_to LIKE '%Z'),
+                    confidence_label TEXT NOT NULL CHECK(confidence_label IN (
+                        'not_assessed', 'low', 'medium', 'high'
+                    )),
+                    confidence_score REAL CHECK(
+                        confidence_score IS NULL OR confidence_score BETWEEN 0 AND 1
+                    ),
+                    confidence_method TEXT,
+                    confidence_calibration_version TEXT,
+                    generated_at TEXT NOT NULL CHECK(generated_at LIKE '%Z'),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    FOREIGN KEY(subject_type) REFERENCES entity_schema_registry(entity_type),
+                    FOREIGN KEY(object_type) REFERENCES entity_schema_registry(entity_type),
+                    FOREIGN KEY(predicate, subject_type, object_type)
+                        REFERENCES relationship_predicate_registry(predicate, subject_type, object_type),
+                    FOREIGN KEY(generator_id, generator_version)
+                        REFERENCES relationship_algorithm_registry(algorithm_id, version),
+                    UNIQUE(
+                        owner_id, generator_id, generator_version,
+                        input_data_version, projection_key
+                    ),
+                    CHECK(
+                        (valid_time_kind = 'unknown' AND valid_from IS NULL AND valid_to IS NULL) OR
+                        (valid_time_kind IN ('point', 'open_ended') AND valid_from IS NOT NULL AND valid_to IS NULL) OR
+                        (valid_time_kind = 'interval' AND valid_from IS NOT NULL AND valid_to IS NOT NULL)
+                    ),
+                    CHECK(valid_to IS NULL OR valid_to >= valid_from),
+                    CHECK(
+                        (evidence_level IN ('none', 'assertion_only')
+                            AND json_array_length(evidence_ids_json) = 0) OR
+                        (evidence_level IN ('source_record', 'corroborated', 'clinician_reviewed')
+                            AND json_array_length(evidence_ids_json) > 0)
+                    ),
+                    CHECK(
+                        assertion_kind != 'source_fact' OR
+                        (source_class NOT IN ('algorithm', 'patient') AND evidence_level != 'none')
+                    ),
+                    CHECK(assertion_kind != 'patient_report' OR source_class = 'patient'),
+                    CHECK(
+                        assertion_kind != 'clinician_confirmation' OR
+                        (source_class = 'clinician' AND evidence_level = 'clinician_reviewed'
+                            AND assertion_status NOT IN ('unverified', 'provisional'))
+                    ),
+                    CHECK(
+                        (confidence_label = 'not_assessed' AND confidence_score IS NULL
+                            AND confidence_method IS NULL AND confidence_calibration_version IS NULL) OR
+                        (confidence_label != 'not_assessed' AND confidence_method IS NOT NULL
+                            AND confidence_method != '')
+                    )
+                ) STRICT
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_entity_relationships_subject_time "
+                "ON entity_relationships(owner_id, subject_type, subject_id, valid_from, valid_to)"
+            ),
+            Statement(
+                "CREATE INDEX idx_entity_relationships_object_time "
+                "ON entity_relationships(owner_id, object_type, object_id, valid_from, valid_to)"
+            ),
+            Statement(
+                "CREATE INDEX idx_entity_relationships_predicate_confidence "
+                "ON entity_relationships(owner_id, predicate, assertion_status, confidence_score)"
+            ),
+            Statement(
+                "CREATE INDEX idx_entity_relationships_projection "
+                "ON entity_relationships(owner_id, generator_id, generator_version, input_data_version, projection_key)"
+            ),
+        ),
+    ),
 )
 
 
@@ -1100,6 +1321,81 @@ def _validate_schema_registry(connection: sqlite3.Connection) -> None:
         )
 
 
+def _validate_relationship_registries(connection: sqlite3.Connection) -> None:
+    if not connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='relationship_predicate_registry'"
+    ).fetchone():
+        return
+    actual_statuses = connection.execute(
+        "SELECT status, terminal, description FROM assertion_status_registry ORDER BY status"
+    ).fetchall()
+    expected_statuses = sorted(
+        (item.name.value, int(item.terminal), item.description) for item in ASSERTION_STATUSES
+    )
+    actual_levels = connection.execute(
+        """
+        SELECT level, rank, requires_evidence, clinician_reviewed, description
+        FROM evidence_level_registry ORDER BY level
+        """
+    ).fetchall()
+    expected_levels = sorted(
+        (
+            item.name.value,
+            item.rank,
+            int(item.requires_evidence),
+            int(item.clinician_reviewed),
+            item.description,
+        )
+        for item in EVIDENCE_LEVELS
+    )
+    actual_predicates = connection.execute(
+        """
+        SELECT predicate, subject_type, object_type, inverse_predicate, derived_only, description
+        FROM relationship_predicate_registry ORDER BY predicate
+        """
+    ).fetchall()
+    expected_predicates = sorted(
+        (
+            item.name,
+            item.subject_type,
+            item.object_type,
+            item.inverse,
+            int(item.derived_only),
+            item.description,
+        )
+        for item in PREDICATES
+    )
+    actual_algorithms = connection.execute(
+        """
+        SELECT algorithm_id, version, output_kind, deterministic, rebuildable, description
+        FROM relationship_algorithm_registry ORDER BY algorithm_id, version
+        """
+    ).fetchall()
+    expected_algorithms = sorted(
+        (
+            item.algorithm_id,
+            item.version,
+            item.output_kind,
+            int(item.deterministic),
+            int(item.rebuildable),
+            item.description,
+        )
+        for item in ALGORITHMS
+    )
+    if any(
+        [tuple(row) for row in actual] != expected
+        for actual, expected in (
+            (actual_statuses, expected_statuses),
+            (actual_levels, expected_levels),
+            (actual_predicates, expected_predicates),
+            (actual_algorithms, expected_algorithms),
+        )
+    ):
+        raise MigrationError(
+            "relationship registry drift; add an ordered migration for registry changes"
+        )
+
+
 def run_migrations(
     path: Path = DB_PATH, migrations: Iterable[Migration] = MIGRATIONS
 ) -> list[int]:
@@ -1139,6 +1435,7 @@ def run_migrations(
             )
             applied_now.append(current.version)
         _validate_schema_registry(connection)
+        _validate_relationship_registries(connection)
         connection.commit()
         return applied_now
     except MigrationError:

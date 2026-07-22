@@ -23,7 +23,7 @@ Core analytics depend on `RepositoryCatalog`, not `db.query_entities`:
 | `LabAuditRepository` | Migration-7 extraction runs/observations/events plus the `LabResult` compatibility projection |
 | `ContradictionRepository` | Migration-8 deterministic detections, both evidence sides, detection state, resolution state, and immutable history |
 | `WearableRepository` | Oura/Fitbit/Google Health compatibility repositories plus feature-gated strict daily/sample projections |
-| `RelationshipRepository` | Read-only projection of lab→record and message→thread references |
+| `RelationshipRepository` | Compatibility read adapter over legacy references and the feature-gated strict relationship projection |
 | `EvidenceRepository` | Read-only projection of Pattern/Insight inline support and ChatMessage sources |
 | `SourceArchiveRepository` | Typed immutable source payload/file metadata, sync runs, outcome counters, freshness, and normalized links |
 | `ClinicalTimeRepository` | Atomic sidecar synchronization, per-entity time metadata, and cross-source canonical timeline queries |
@@ -63,10 +63,11 @@ provider overlap and compatibility extensions. Supported date/time/source and
 metric queries may shadow or cut over independently; unsupported fields and
 source operators fall back to legacy JSON.
 
-The relationship and evidence repositories deliberately do not create a hidden
-schema. They project current fields only. G1 and G2 will add reviewed registries
-and evidence storage; those implementations can replace the projections without
-changing consumers.
+G1 adds `SqliteRelationshipRepository` and four reviewed registries. The
+catalog exposes it as `typed_relationships`, while `relationships` retains the
+legacy field projection unless `RELATIONSHIP_READS_ENABLED=true`. No production
+projector or backfill runs in G1; G3 owns that generation lifecycle. The
+evidence repository remains a legacy field projection until G2.
 
 ## Swapping implementations
 
@@ -140,6 +141,7 @@ not erase what the user submitted.
 3. Repository overrides are context-local and tests must restore them.
 4. Typed implementations must pass the same repository compatibility suite.
 5. Read cutover remains feature-flagged and belongs to H3.
-6. New relationship/evidence writes wait for G1/G2 schemas and migrations.
+6. Relationship writes use the G1 strict repository; automated projection and
+   typed reads wait for G3 validation. Evidence writes wait for G2.
 7. Any operation spanning multiple repositories must use a unit of work or
    document why partial persistence is intentional.

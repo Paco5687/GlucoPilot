@@ -258,6 +258,21 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                     )
                     for table in ("wearable_daily", "wearable_samples")
                 }
+            relationship_projection = None
+            relationship_tables = (
+                "entity_relationships",
+                "relationship_predicate_registry",
+                "assertion_status_registry",
+                "evidence_level_registry",
+                "relationship_algorithm_registry",
+            )
+            if all(_table_exists(connection, table) for table in relationship_tables):
+                relationship_projection = {
+                    table: dict(
+                        connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+                    )
+                    for table in relationship_tables
+                }
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:
@@ -284,6 +299,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
         metadata["typed_glucose"] = typed_glucose
     if typed_wearables is not None:
         metadata["typed_wearables"] = typed_wearables
+    if relationship_projection is not None:
+        metadata["relationship_projection"] = relationship_projection
     if include_references:
         metadata["record_references"] = references
     return metadata
@@ -490,6 +507,8 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
         keys.append("typed_glucose")
     if "typed_wearables" in expected_database:
         keys.append("typed_wearables")
+    if "relationship_projection" in expected_database:
+        keys.append("relationship_projection")
     for key in keys:
         if metadata[key] != expected_database.get(key):
             raise BackupError(f"restored database metadata mismatch: {key}")
@@ -556,6 +575,16 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
             {
                 "typed_wearable_daily_count": metadata["typed_wearables"]["wearable_daily"]["count"],
                 "typed_wearable_sample_count": metadata["typed_wearables"]["wearable_samples"]["count"],
+            }
+        )
+    if "relationship_projection" in expected_database:
+        verification.update(
+            {
+                "relationship_count": metadata["relationship_projection"]["entity_relationships"]["count"],
+                "relationship_predicate_count": metadata["relationship_projection"]["relationship_predicate_registry"]["count"],
+                "assertion_status_registry_count": metadata["relationship_projection"]["assertion_status_registry"]["count"],
+                "evidence_level_registry_count": metadata["relationship_projection"]["evidence_level_registry"]["count"],
+                "relationship_algorithm_registry_count": metadata["relationship_projection"]["relationship_algorithm_registry"]["count"],
             }
         )
     return verification
