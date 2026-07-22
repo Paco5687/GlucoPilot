@@ -27,6 +27,7 @@ from . import health_summary, insulin, research
 from .auth import require_admin
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value
+from .data_quality import assess_cgm, cgm_points
 from .llm import invoke_llm, invoke_llm_stream
 from .repositories import EntityRepository, get_repositories
 from .unit_of_work import unit_of_work
@@ -133,17 +134,14 @@ def _glucose_detail() -> dict[str, Any] | None:
         "-timestamp",
         40000,
     )
-    pts = []
-    for r in rows:
-        try:
-            t = datetime.fromisoformat(str(r.get("timestamp")).replace("Z", "+00:00"))
-        except (TypeError, ValueError):
-            continue
-        v = r.get("value")
-        if v is not None:
-            pts.append((t, float(v)))
+    pts = sorted(cgm_points(rows, tz, start=now - timedelta(days=90), end=now), reverse=True)
     if not pts:
         return None
+    quality = assess_cgm(
+        rows, tz, start=now - timedelta(days=90), end=now, as_of=now.astimezone(tz).date()
+    )
+    if not quality["ai_eligible"]:
+        return {"quality": quality, "excluded_from_ai": True}
 
     def window(days: int) -> dict[str, Any]:
         cut = now - timedelta(days=days)
@@ -174,6 +172,7 @@ def _glucose_detail() -> dict[str, Any] | None:
         "last_24h": window(1), "last_7d": window(7), "last_30d": window(30), "last_90d": window(90),
         "daily_last_14d": daily_rows,
         "weekly_last_90d": weekly_rows,
+        "quality": quality,
     }
 
 
@@ -237,6 +236,7 @@ def _dossier() -> dict[str, Any]:
     ctx = health_summary._build_context()
     ins = insulin.estimate()
     absn = insulin.absorption()
+    absorption_for_ai = absn.get("quality", {}).get("ai_eligible")
     recent_docs = [
         {"title": r.get("title"), "date": r.get("record_date")}
         for r in _entity("MedicalRecord").query(
@@ -258,10 +258,11 @@ def _dossier() -> dict[str, Any]:
         "lab_trends": (ctx.get("lab_trends") or [])[:12],
         "menstrual_cycle": ctx.get("cycle"),
         "wearables_recent_vs_prior": ctx.get("wearables"),
+        "data_quality": ctx.get("data_quality"),
         "imaging": ctx.get("imaging"),
         "recent_documents": recent_docs[:12],
         "glucose": _glucose_detail() or ctx.get("glucose"),
-        "insulin": {
+        "insulin": ({
             "resistance_estimate": ins.get("category"), "tdd_per_kg": ins.get("tdd_per_kg"),
             "complete_data_through": ins.get("data_through"), "current": ins.get("current"),
             "data_age_days": ins.get("data_age_days"),
@@ -269,9 +270,13 @@ def _dossier() -> dict[str, Any]:
             "calculated_avg_tdd": ins.get("reconciliation", {}).get("calculated_avg_tdd"),
             "incomplete_days": ins.get("reconciliation", {}).get("incomplete_days"),
             "limitations": ins.get("reconciliation", {}).get("limitations"),
-            "response_consistency": absn.get("consistency"),
-            "response_variability_cv_pct": absn.get("cv_pct"),
-        } if ins.get("available") else None,
+            "response_consistency": absn.get("consistency") if absorption_for_ai else None,
+            "response_variability_cv_pct": absn.get("cv_pct") if absorption_for_ai else None,
+            "absorption_quality": absn.get("quality"),
+            "quality": ins.get("quality"),
+        } if ins.get("quality", {}).get("ai_eligible") else {
+            "quality": ins.get("quality"), "excluded_from_ai": True,
+        }) if ins.get("available") else None,
     }
 
 

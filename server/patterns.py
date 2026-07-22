@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from . import db
 from .config import APP_TIMEZONE, OWNER_EMAIL
+from .data_quality import assess_cgm, assess_nutrition, cgm_points
 from .db import config_value
 from .llm import invoke_llm
 
@@ -64,12 +65,44 @@ def _time_of_day(hour: int) -> str:
 
 async def analyze() -> dict[str, Any]:
     tz = ZoneInfo(config_value("app_timezone", APP_TIMEZONE))
-    since = datetime.now(timezone.utc) - timedelta(days=14)
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=14)
 
     readings = _fetch_window("GlucoseReading", since)
-    if len(readings) < 50:
-        return {"patterns": [], "message": "Not enough data for pattern analysis (need at least 50 readings)"}
+    quality = assess_cgm(
+        readings, tz, start=since, end=now, as_of=now.astimezone(tz).date()
+    )
+    if not quality["ai_eligible"]:
+        # Do not leave old derived conclusions active when the current window no
+        # longer meets the analysis contract.
+        for old in db.query_entities("Pattern", {"is_active": True, "owner_email": OWNER_EMAIL}):
+            db.update_entity("Pattern", old["id"], {"is_active": False})
+        return {
+            "success": True,
+            "patternsFound": 0,
+            "patterns": [],
+            "message": "CGM coverage or freshness is below the pattern-analysis threshold.",
+            "quality": quality,
+            "data_quality": {"cgm": quality},
+        }
+    normalized = {
+        instant.isoformat(): value
+        for instant, value in cgm_points(readings, tz, start=since, end=now)
+    }
+    readings_by_time = {
+        record["_time"].isoformat(): {
+            **record,
+            "value": normalized[record["_time"].isoformat()],
+        }
+        for record in readings
+        if record["_time"].isoformat() in normalized
+    }
+    readings = sorted(readings_by_time.values(), key=lambda record: record["_time"])
     treatments = _fetch_window("Treatment", since)
+    nutrition_quality = assess_nutrition(
+        treatments, tz, start_date=since.astimezone(tz).date(),
+        end_date=now.astimezone(tz).date(), as_of=now.astimezone(tz).date(),
+    )
 
     def local(record):
         return record["_time"].astimezone(tz)
@@ -153,7 +186,7 @@ async def analyze() -> dict[str, Any]:
                         "timestamp": carb.get("timestamp"),
                     }
                 )
-    if len(spikes) >= 3:
+    if nutrition_quality["ai_eligible"] and len(spikes) >= 3:
         patterns.append(
             {
                 "pattern_type": "post_meal_spike",
@@ -329,6 +362,10 @@ IMPORTANT: This is educational only. Always frame suggestions as "discuss with y
             "confidence": p["confidence"],
             "time_of_day": p["time_of_day"],
             "supporting_evidence": p["supporting_evidence"],
+            "data_quality": {
+                "cgm": quality,
+                **({"nutrition": nutrition_quality} if p["pattern_type"] == "post_meal_spike" else {}),
+            },
             "occurrences": p["occurrences"],
             "first_detected": now,
             "last_detected": now,
@@ -345,4 +382,6 @@ IMPORTANT: This is educational only. Always frame suggestions as "discuss with y
         "success": True,
         "patternsFound": len(to_create),
         "patterns": [{"title": p["title"], "type": p["pattern_type"], "confidence": p["confidence"]} for p in to_create],
+        "quality": quality,
+        "data_quality": {"cgm": quality, "nutrition": nutrition_quality},
     }

@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 from . import conditions, history, meds, profile, report, symptoms
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value, set_config_value
+from .data_quality import assess_daily
 from .llm import invoke_llm
 from .repositories import get_repositories
 from .unit_of_work import unit_of_work
@@ -92,14 +93,31 @@ def _wearable_trends() -> dict[str, Any]:
         r = avg(f, recent)
         if r is not None:
             out[f] = {"recent": r, "prior": avg(f, prior)}
-    return out
+    tz = ZoneInfo(config_value("app_timezone", APP_TIMEZONE))
+    as_of = datetime.now(tz).date()
+    return {
+        "metrics": out,
+        "quality": assess_daily(
+            "wearables", rows, tz, start_date=as_of - timedelta(days=59), end_date=as_of,
+            as_of=as_of, required_fields=("hrv", "resting_heart_rate", "sleep_minutes"),
+        ),
+    }
 
 
 def _insights_snapshot() -> list:
-    return [{"title": i.get("title"), "category": i.get("category"), "severity": i.get("severity")}
-            for i in get_repositories().entity("Insight").query(
-                {"owner_email": OWNER_EMAIL}, "-date_generated", 25
-            )]
+    output = []
+    for insight in get_repositories().entity("Insight").query(
+        {"owner_email": OWNER_EMAIL}, "-date_generated", 25
+    ):
+        quality = insight.get("data_quality")
+        if not quality or not all(envelope.get("ai_eligible") for envelope in quality.values()):
+            continue
+        output.append({
+            "title": insight.get("title"),
+            "category": insight.get("category"),
+            "severity": insight.get("severity"),
+        })
+    return output
 
 
 def _imaging_snapshot() -> list:
@@ -116,6 +134,7 @@ def _build_context() -> dict[str, Any]:
     since_iso = since.isoformat(timespec="milliseconds").replace("+00:00", "Z")
     glucose = report._glucose(tz, since_iso)
     cycle = report._cycle(tz, since_iso, glucose)
+    wearables = _wearable_trends()
     flagged, trends = _labs_snapshot()
     prof = profile.get_profile()
     return {
@@ -124,16 +143,23 @@ def _build_context() -> dict[str, Any]:
         "medications": meds.get_medications() or None,
         "allergies": meds.get_allergies() or None,
         "profile": {k: prof.get(k) for k in ("age", "sex", "bmi", "weight_kg")} if prof.get("age") or prof.get("bmi") else None,
-        "glucose": {k: glucose.get(k) for k in ("available", "tir", "avg", "gmi", "cv", "days")} if glucose.get("available") else None,
+        "glucose": {k: glucose.get(k) for k in ("available", "tir", "avg", "gmi", "cv", "days")}
+        if glucose.get("available") and glucose.get("quality", {}).get("ai_eligible") else None,
         "cycle": {"cycles": cycle.get("cycles_detected"), "avg_length": cycle.get("avg_cycle_length"),
-                  "per_phase": cycle.get("per_phase")} if cycle.get("available") else None,
-        "wearables": _wearable_trends(),
+                  "per_phase": cycle.get("per_phase")}
+        if cycle.get("available") and cycle.get("quality", {}).get("ai_eligible") else None,
+        "wearables": wearables["metrics"] if wearables["quality"]["ai_eligible"] else {},
         "labs_out_of_range": flagged,
         "lab_trends": trends,
         "symptom_journal": symptoms.context_block(WINDOW_DAYS),
         "health_history": history.context_block(),
         "computed_correlations": _insights_snapshot(),
         "imaging": _imaging_snapshot(),
+        "data_quality": {
+            "glucose": glucose.get("quality"),
+            "cycle": cycle.get("quality"),
+            "wearables": wearables["quality"],
+        },
     }
 
 
@@ -172,7 +198,12 @@ async def generate() -> dict[str, Any]:
         "labs_out_of_range": len(context.get("labs_out_of_range") or []),
     }
     now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-    payload = {"generated_at": now, "data": json.dumps({**(result or {}), "metrics": metrics}), "owner_email": OWNER_EMAIL}
+    generated = {
+        **(result or {}),
+        "metrics": metrics,
+        "data_quality": context.get("data_quality"),
+    }
+    payload = {"generated_at": now, "data": json.dumps(generated), "owner_email": OWNER_EMAIL}
     # Summary replacement and its scheduler cursor span two SQLite tables and
     # commit as one logical operation.
     with unit_of_work() as work:
@@ -185,7 +216,7 @@ async def generate() -> dict[str, Any]:
             connection=work.connection,
         )
         work.commit()
-    return {"generated_at": now, **(result or {})}
+    return {"generated_at": now, **generated}
 
 
 def _latest() -> dict[str, Any] | None:

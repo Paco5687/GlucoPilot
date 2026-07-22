@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { base44 } from "@/api/base44Client";
 import SafetyBanner from "../components/SafetyBanner";
+import DataQualityNote from "@/components/DataQualityNote";
 import { Syringe, Loader2, TrendingUp, TrendingDown, AlertTriangle } from "lucide-react";
 
 const CAT = {
@@ -71,6 +72,7 @@ export default function Insulin() {
           <p>{r?.needs_weight ? "Add your weight in Settings → Body profile to compute TDD/kg." : (r?.reason || "Not enough pump data yet — needs Daily Total (basal + bolus) records.")}</p>
           {r?.latest_insulin_activity && <p className="text-xs">Latest insulin activity: {r.latest_insulin_activity}. It is not labeled as complete TDD.</p>}
           {r?.reconciliation?.limitations?.map((limitation) => <p key={limitation} className="text-xs">{limitation}</p>)}
+          <DataQualityNote label="Pump TDD" quality={r?.quality} />
         </div>
       ) : (
         <>
@@ -80,6 +82,7 @@ export default function Insulin() {
               <span>Based on the most recent <b>complete pump data through {r.data_through}</b> ({daysAgo(r.data_through)} days ago). Newer insulin activity may lack a complete delivered-basal record, so this describes an earlier period—not current dosing.</span>
             </div>
           )}
+          <DataQualityNote label="Pump TDD" quality={r.quality} />
 
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className={`rounded-xl border border-border p-5 lg:col-span-1 ${cat.bg}`}>
@@ -155,6 +158,7 @@ export default function Insulin() {
           {absn?.available && (
             <div className="space-y-3">
               <h2 className="font-semibold text-base">Insulin absorption &amp; response</h2>
+              <DataQualityNote label="Insulin response" quality={absn.quality} />
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                 <div className={`rounded-xl border border-border p-5 ${(CONSISTENCY[absn.consistency] || {}).bg}`}>
                   <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Response consistency</div>
@@ -178,7 +182,10 @@ export default function Insulin() {
             </div>
           )}
           {absn && !absn.available && r?.available && (
-            <p className="text-xs text-muted-foreground">Absorption analysis: {absn.reason}</p>
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">Absorption analysis: {absn.reason}</p>
+              <DataQualityNote label="Insulin response" quality={absn.quality} />
+            </div>
           )}
         </>
       )}

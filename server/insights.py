@@ -13,6 +13,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from .config import APP_TIMEZONE, OWNER_EMAIL
+from .data_quality import assess_cgm, assess_daily, assess_pump_tdd, cgm_points
+from .insulin_reconciliation import reconcile_treatments
 from .db import config_value
 from .llm import invoke_llm
 from .repositories import get_repositories
@@ -21,6 +23,12 @@ from .unit_of_work import unit_of_work
 WINDOW_DAYS = 90
 MIN_PAIRS = 14
 R_THRESHOLD = 0.3
+
+
+def _clear_derived_insights() -> None:
+    with unit_of_work() as work:
+        work.repositories.entity("Insight").delete_where({"owner_email": OWNER_EMAIL})
+        work.commit()
 
 
 def _parse_ts(value: str) -> datetime | None:
@@ -45,7 +53,9 @@ def _pearson(pairs: list[tuple[float, float]]) -> float | None:
     return cov / (sx * sy)
 
 
-def _daily_glucose_metrics(tz: ZoneInfo, since: datetime) -> dict[str, dict[str, float]]:
+def _daily_glucose_metrics(
+    tz: ZoneInfo, since: datetime, now: datetime
+) -> tuple[dict[str, dict[str, float]], dict[str, Any]]:
     glucose_repository = get_repositories().glucose
     readings = []
     skip = 0
@@ -62,11 +72,8 @@ def _daily_glucose_metrics(tz: ZoneInfo, since: datetime) -> dict[str, dict[str,
         skip += 5000
 
     by_day: dict[str, list[float]] = {}
-    for r in readings:
-        ts = _parse_ts(r.get("timestamp"))
-        if ts is None or r.get("value") is None:
-            continue
-        by_day.setdefault(ts.astimezone(tz).date().isoformat(), []).append(float(r["value"]))
+    for ts, value in cgm_points(readings, tz, start=since, end=now):
+        by_day.setdefault(ts.astimezone(tz).date().isoformat(), []).append(value)
 
     metrics = {}
     for day, values in by_day.items():
@@ -82,7 +89,10 @@ def _daily_glucose_metrics(tz: ZoneInfo, since: datetime) -> dict[str, dict[str,
             "lows": sum(1 for v in values if v < 70),
             "highs": sum(1 for v in values if v > 180),
         }
-    return metrics
+    quality = assess_cgm(
+        readings, tz, start=since, end=now, as_of=now.astimezone(tz).date()
+    )
+    return metrics, quality
 
 
 def _correlation_candidates(glucose: dict, oura_by_day: dict) -> list[dict[str, Any]]:
@@ -146,11 +156,24 @@ def _group_mean(glucose: dict, days: set[str], field: str) -> float | None:
 async def analyze() -> dict[str, Any]:
     repositories = get_repositories()
     tz = ZoneInfo(config_value("app_timezone", APP_TIMEZONE))
-    since = datetime.now(timezone.utc) - timedelta(days=WINDOW_DAYS)
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=WINDOW_DAYS)
 
-    glucose = _daily_glucose_metrics(tz, since)
+    glucose, glucose_quality = _daily_glucose_metrics(tz, since, now)
+    if not glucose_quality["ai_eligible"]:
+        _clear_derived_insights()
+        return {
+            "insights": [],
+            "message": "CGM coverage or freshness is below the insight-analysis threshold.",
+            "quality": {"cgm": glucose_quality},
+        }
     if len(glucose) < MIN_PAIRS:
-        return {"insights": [], "message": f"Not enough full days of glucose data ({len(glucose)})."}
+        _clear_derived_insights()
+        return {
+            "insights": [],
+            "message": f"Not enough full days of glucose data ({len(glucose)}).",
+            "quality": {"cgm": glucose_quality},
+        }
 
     oura_rows = repositories.oura_daily.query(
         {"owner_email": OWNER_EMAIL}, "-date", 400
@@ -195,6 +218,20 @@ async def analyze() -> dict[str, Any]:
         if len(bpms) >= 60:  # ≥1h of minute-buckets → a representative daily mean
             oura_by_day.setdefault(day, {}).setdefault("avg_heart_rate", round(sum(bpms) / len(bpms), 1))
 
+    local_today = now.astimezone(tz).date()
+    wearable_quality = assess_daily(
+        "wearables",
+        [{"date": day, **values} for day, values in oura_by_day.items()],
+        tz,
+        start_date=local_today - timedelta(days=WINDOW_DAYS - 1),
+        end_date=local_today,
+        as_of=local_today,
+        required_fields=(
+            "sleep_score", "readiness_score", "activity_steps", "resting_heart_rate",
+            "breathing_rate", "hrv", "sleep_efficiency_fitbit", "avg_heart_rate",
+        ),
+    )
+
     period_rows = repositories.entity("PeriodLog").query(
         {"owner_email": OWNER_EMAIL}, "-date", 400
     )
@@ -203,13 +240,20 @@ async def analyze() -> dict[str, Any]:
         if p.get("date") and p.get("phase"):
             phase_days.setdefault(p["phase"], set()).add(p["date"])
 
-    candidates = _correlation_candidates(glucose, oura_by_day)
+    cycle_quality = assess_daily(
+        "cycle", period_rows, tz,
+        start_date=local_today - timedelta(days=WINDOW_DAYS - 1),
+        end_date=local_today, as_of=local_today, required_fields=("phase",),
+        limitations=("Cycle coverage reflects days with a recorded or inferred phase.",),
+    )
+
+    candidates = _correlation_candidates(glucose, oura_by_day) if wearable_quality["ai_eligible"] else []
 
     # Cycle phase comparisons (phases come from manual logs, Lively imports,
     # or the Oura-temperature inference — all land in PeriodLog)
     phase_tir = {ph: _group_mean(glucose, days, "tir") for ph, days in phase_days.items()}
     phase_tir = {ph: v for ph, v in phase_tir.items() if v is not None}
-    if len(phase_tir) >= 2:
+    if cycle_quality["ai_eligible"] and len(phase_tir) >= 2:
         best = max(phase_tir, key=phase_tir.get)
         worst = min(phase_tir, key=phase_tir.get)
         if phase_tir[best] - phase_tir[worst] >= 5:
@@ -229,7 +273,7 @@ async def analyze() -> dict[str, Any]:
     # Per-phase average glucose
     phase_avg = {ph: _group_mean(glucose, days, "avg") for ph, days in phase_days.items()}
     phase_avg = {ph: v for ph, v in phase_avg.items() if v is not None}
-    if len(phase_avg) >= 2:
+    if cycle_quality["ai_eligible"] and len(phase_avg) >= 2:
         hi = max(phase_avg, key=phase_avg.get)
         lo = min(phase_avg, key=phase_avg.get)
         if phase_avg[hi] - phase_avg[lo] >= 10:
@@ -246,20 +290,25 @@ async def analyze() -> dict[str, Any]:
                 }
             )
 
-    # Per-phase daily insulin (luteal insulin resistance shows up here)
+    # Per-phase complete daily insulin. Pump-reported totals are preferred;
+    # calculations are used only when delivered basal coverage is complete.
+    treatment_rows = repositories.treatments.query(
+        {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since.isoformat().replace("+00:00", "Z")}},
+        "timestamp", 100000,
+    )
+    reconciliation = reconcile_treatments(treatment_rows, tz)
+    pump_quality = assess_pump_tdd(
+        reconciliation, start_date=local_today - timedelta(days=WINDOW_DAYS - 1),
+        end_date=local_today, as_of=local_today,
+    )
     insulin_by_day: dict[str, float] = {}
-    for t in repositories.treatments.query(
-        {"owner_email": OWNER_EMAIL, "type": "insulin", "timestamp": {"$gte": since.isoformat().replace("+00:00", "Z")}},
-        "timestamp",
-        100000,
-    ):
-        if t.get("event_type") == "Daily Total" or not t.get("amount"):
-            continue
-        ts = _parse_ts(t.get("timestamp"))
-        if ts is None:
-            continue
-        day = ts.astimezone(tz).date().isoformat()
-        insulin_by_day[day] = insulin_by_day.get(day, 0.0) + float(t["amount"])
+    for reconciled_day in reconciliation["days"]:
+        reported = reconciled_day["pump_reported"]["selected"]
+        calculated = reconciled_day["calculated"]["total_units"]
+        if reported is not None:
+            insulin_by_day[reconciled_day["date"]] = float(reported["total_units"])
+        elif calculated is not None:
+            insulin_by_day[reconciled_day["date"]] = float(calculated)
 
     def _phase_insulin_mean(days: set[str]) -> float | None:
         vals = [insulin_by_day[d] for d in days if insulin_by_day.get(d)]
@@ -267,7 +316,7 @@ async def analyze() -> dict[str, Any]:
 
     phase_insulin = {ph: _phase_insulin_mean(days) for ph, days in phase_days.items()}
     phase_insulin = {ph: v for ph, v in phase_insulin.items() if v is not None}
-    if len(phase_insulin) >= 2:
+    if cycle_quality["ai_eligible"] and pump_quality["ai_eligible"] and len(phase_insulin) >= 2:
         hi = max(phase_insulin, key=phase_insulin.get)
         lo = min(phase_insulin, key=phase_insulin.get)
         if phase_insulin[lo] > 0 and (phase_insulin[hi] - phase_insulin[lo]) / phase_insulin[lo] >= 0.10:
@@ -318,7 +367,17 @@ async def analyze() -> dict[str, Any]:
             )
 
     if not candidates:
-        return {"insights": [], "message": "No statistically notable cross-domain relationships found yet."}
+        _clear_derived_insights()
+        return {
+            "insights": [],
+            "message": "No statistically notable cross-domain relationships found yet.",
+            "quality": {
+                "cgm": glucose_quality,
+                "wearables": wearable_quality,
+                "cycle": cycle_quality,
+                "pump_tdd": pump_quality,
+            },
+        }
 
     # LLM narrative (best-effort)
     titles: dict[int, dict] = {}
@@ -368,6 +427,17 @@ Detected relationships (r = Pearson correlation over n days; TIR = % time 70-180
         return f"TIR trend: {c['recent_tir']}% last 30d vs {c['prior_tir']}% prior 30d"
 
     now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+    def candidate_quality(candidate: dict[str, Any]) -> dict[str, Any]:
+        quality = {"cgm": glucose_quality}
+        if candidate["kind"] == "correlation":
+            quality["wearables"] = wearable_quality
+        elif candidate["kind"] in {"cycle_comparison", "cycle_glucose"}:
+            quality["cycle"] = cycle_quality
+        elif candidate["kind"] == "cycle_insulin":
+            quality.update({"cycle": cycle_quality, "pump_tdd": pump_quality})
+        return quality
+
     to_create = [
         {
             "title": titles.get(i, {}).get("title") or fallback_title(c),
@@ -376,6 +446,7 @@ Detected relationships (r = Pearson correlation over n days; TIR = % time 70-180
             "severity": c["severity"],
             "date_generated": now,
             "supporting_data": json.dumps(c),
+            "data_quality": candidate_quality(c),
             "is_read": False,
             "owner_email": OWNER_EMAIL,
         }
@@ -392,4 +463,10 @@ Detected relationships (r = Pearson correlation over n days; TIR = % time 70-180
         "success": True,
         "insightsFound": len(to_create),
         "insights": [{"title": t["title"], "severity": t["severity"]} for t in to_create],
+        "quality": {
+            "cgm": glucose_quality,
+            "wearables": wearable_quality,
+            "cycle": cycle_quality,
+            "pump_tdd": pump_quality,
+        },
     }

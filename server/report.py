@@ -10,7 +10,7 @@ Read-only: available to both admin and provider sessions.
 """
 
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -21,6 +21,7 @@ from .auth import require_login
 from .canonical_time import temporal_metadata
 from .config import APP_TIMEZONE, DEMO_MODE, OWNER_EMAIL
 from .db import config_value
+from .data_quality import assess_cgm, assess_daily, assess_nutrition, assess_pump_tdd, cgm_points
 from .insulin_reconciliation import reconcile_treatments
 from .llm import invoke_llm
 from .repositories import get_repositories
@@ -78,21 +79,27 @@ def _paged(etype: str, since_iso: str) -> list[dict]:
 
 def _glucose(tz: ZoneInfo, since_iso: str) -> dict[str, Any]:
     readings = _paged("GlucoseReading", since_iso)
-    values = [float(r["value"]) for r in readings if r.get("value") is not None]
+    now = datetime.now(timezone.utc)
+    start = _parse_ts(since_iso) or now
+    quality = assess_cgm(readings, tz, start=start, end=now, as_of=now.astimezone(tz).date())
+    # Preserve the report's historical snapshot behavior for explicitly dated
+    # fixtures/imports, while the quality envelope still rejects future data
+    # from AI use relative to the actual report-generation time.
+    timestamps = [_parse_ts(row.get("timestamp")) for row in readings]
+    latest = max((timestamp for timestamp in timestamps if timestamp is not None), default=now)
+    points = cgm_points(readings, tz, start=start, end=max(now, latest))
+    values = [value for _, value in points]
     if not values:
-        return {"available": False}
+        return {"available": False, "quality": quality}
     n = len(values)
     avg = sum(values) / n
     std = math.sqrt(sum((v - avg) ** 2 for v in values) / n)
     by_hour: dict[int, list[float]] = {}
     by_day: dict[str, list[float]] = {}
-    for r in readings:
-        ts = _parse_ts(r.get("timestamp"))
-        if ts is None or r.get("value") is None:
-            continue
+    for ts, value in points:
         local = ts.astimezone(tz)
-        by_hour.setdefault(local.hour, []).append(float(r["value"]))
-        by_day.setdefault(local.date().isoformat(), []).append(float(r["value"]))
+        by_hour.setdefault(local.hour, []).append(value)
+        by_day.setdefault(local.date().isoformat(), []).append(value)
 
     agp = []
     for h in range(24):
@@ -137,6 +144,7 @@ def _glucose(tz: ZoneInfo, since_iso: str) -> dict[str, Any]:
         "tar250": round(sum(1 for v in values if v > 250) / n * 100, 1),
         "agp": agp,
         "daily": daily,
+        "quality": quality,
     }
 
 
@@ -144,12 +152,27 @@ def _insulin(tz: ZoneInfo, since_iso: str, glucose_days: int) -> dict[str, Any]:
     treatments = _paged("Treatment", since_iso)
     days = max(glucose_days, 1)
     total_carbs = 0.0
+    carb_records = 0
     for t in treatments:
         ttype = t.get("type")
-        if ttype == "carb" and t.get("amount"):
-            total_carbs += float(t["amount"])
+        if ttype == "carb":
+            carb_records += 1
+            try:
+                amount = float(t.get("amount"))
+            except (TypeError, ValueError):
+                amount = 0
+            if math.isfinite(amount) and amount > 0:
+                total_carbs += amount
 
     reconciliation = reconcile_treatments(treatments, tz)
+    now_date = datetime.now(tz).date()
+    start_date = (_parse_ts(since_iso) or datetime.now(timezone.utc)).astimezone(tz).date()
+    pump_quality = assess_pump_tdd(
+        reconciliation, start_date=start_date, end_date=now_date, as_of=now_date
+    )
+    nutrition_quality = assess_nutrition(
+        treatments, tz, start_date=start_date, end_date=now_date, as_of=now_date
+    )
     reconciled_days = reconciliation["days"]
     total_bolus = sum(float(day["calculated"]["bolus_units"]) for day in reconciled_days)
     bolus_count = sum(int(day["calculated"]["bolus_events"]) for day in reconciled_days)
@@ -184,7 +207,7 @@ def _insulin(tz: ZoneInfo, since_iso: str, glucose_days: int) -> dict[str, Any]:
     if preferred_tdd is None:
         preferred_tdd = summary["calculated_avg_tdd"]
     return {
-        "available": bool(bolus_count or reported_days or calculated_days or scheduled_days),
+        "available": bool(bolus_count or reported_days or calculated_days or scheduled_days or carb_records),
         "avg_daily_bolus": round(total_bolus / days, 1),
         "boluses_per_day": round(bolus_count / days, 1),
         "avg_daily_carbs": round(total_carbs / days),
@@ -209,6 +232,8 @@ def _insulin(tz: ZoneInfo, since_iso: str, glucose_days: int) -> dict[str, Any]:
         "limitations": summary["limitations"],
         "algorithm_version": reconciliation["algorithm_version"],
         "input_data_version": reconciliation["input_data_version"],
+        "quality": pump_quality,
+        "nutrition_quality": nutrition_quality,
     }
 
 
@@ -221,8 +246,14 @@ def _cycle(tz: ZoneInfo, since_iso: str, glucose: dict) -> dict[str, Any]:
         )
         if l.get("date") and l["date"] >= since_date and l.get("phase")
     ]
+    now_date = datetime.now(tz).date()
+    quality = assess_daily(
+        "cycle", logs, tz, start_date=date.fromisoformat(since_date), end_date=now_date,
+        as_of=now_date, required_fields=("phase",),
+        limitations=("Cycle coverage reflects days with a recorded or inferred phase.",),
+    )
     if not logs:
-        return {"available": False}
+        return {"available": False, "quality": quality}
     phase_days: dict[str, set[str]] = {}
     for l in logs:
         phase_days.setdefault(l["phase"], set()).add(l["date"])
@@ -260,6 +291,7 @@ def _cycle(tz: ZoneInfo, since_iso: str, glucose: dict) -> dict[str, Any]:
         "cycles_detected": len(starts),
         "avg_cycle_length": round(sum(lengths) / len(lengths), 1) if lengths else None,
         "source": "inferred from Oura temperature" if any(l.get("source") == "oura_inferred" for l in logs) else "logged",
+        "quality": quality,
     }
 
 
@@ -276,7 +308,23 @@ def _wellness(days: int) -> dict[str, Any]:
     fitbit = repositories.fitbit_daily.query(
         {"owner_email": OWNER_EMAIL}, "-date", days
     )
-    out: dict[str, Any] = {"oura": None, "fitbit": None}
+    tz = ZoneInfo(config_value("app_timezone", APP_TIMEZONE))
+    as_of = datetime.now(tz).date()
+    start_date = as_of - timedelta(days=max(1, days) - 1)
+    out: dict[str, Any] = {
+        "oura": None,
+        "fitbit": None,
+        "quality": {
+            "oura": assess_daily(
+                "wearables", oura, tz, start_date=start_date, end_date=as_of, as_of=as_of,
+                required_fields=("sleep_score", "readiness_score", "lowest_heart_rate"),
+            ),
+            "fitbit": assess_daily(
+                "wearables", fitbit, tz, start_date=start_date, end_date=as_of, as_of=as_of,
+                required_fields=("steps", "resting_heart_rate", "sleep_minutes"),
+            ),
+        },
+    }
     if oura:
         temps = [float(r["readiness_temperature_deviation"]) for r in oura if r.get("readiness_temperature_deviation") is not None]
         out["oura"] = {
@@ -352,24 +400,45 @@ def _labs() -> dict[str, Any]:
 
 async def _narrative(payload: dict) -> dict[str, Any] | None:
     g = payload["glucose"]
+    insulin_payload = payload["insulin"]
+    insulin_for_ai = None
+    if insulin_payload.get("available") and insulin_payload.get("quality", {}).get("ai_eligible"):
+        insulin_for_ai = dict(insulin_payload)
+        if not insulin_payload.get("nutrition_quality", {}).get("ai_eligible"):
+            insulin_for_ai.pop("avg_daily_carbs", None)
+    wellness_for_ai = {
+        provider: payload["wellness"].get(provider)
+        for provider in ("oura", "fitbit")
+        if payload["wellness"].get(provider)
+        and payload["wellness"].get("quality", {}).get(provider, {}).get("ai_eligible")
+    }
+    quality = {
+        "glucose": g.get("quality"),
+        "pump_tdd": insulin_payload.get("quality"),
+        "nutrition": insulin_payload.get("nutrition_quality"),
+        "cycle": payload["cycle"].get("quality"),
+        "wearables": payload["wellness"].get("quality"),
+    }
     summary = {
         "period_days": payload["days"],
-        "glucose": {k: g.get(k) for k in ("avg", "gmi", "cv", "tir", "tbr70", "tar180")} if g.get("available") else None,
-        "insulin": payload["insulin"] if payload["insulin"].get("available") else None,
+        "glucose": {k: g.get(k) for k in ("avg", "gmi", "cv", "tir", "tbr70", "tar180")}
+        if g.get("available") and g.get("quality", {}).get("ai_eligible") else None,
+        "insulin": insulin_for_ai,
         "cycle": {
             "cycles": payload["cycle"].get("cycles_detected"),
             "avg_length": payload["cycle"].get("avg_cycle_length"),
             "per_phase": payload["cycle"].get("per_phase"),
         }
-        if payload["cycle"].get("available")
+        if payload["cycle"].get("available") and payload["cycle"].get("quality", {}).get("ai_eligible")
         else None,
-        "wellness": payload["wellness"],
+        "wellness": wellness_for_ai,
         "flagged_labs": [
             {"test": f["test_name"], "value": f["value"], "unit": f["unit"], "flag": f["flag"]}
             for f in payload["labs"].get("flagged", [])
         ],
         "symptom_journal": payload.get("symptoms"),
         "health_history": payload.get("history"),
+        "data_quality": quality,
     }
     # Fast default model: the quality (27B) model is currently GPU-starved and
     # takes minutes for 1500 tokens, which hangs the report. The fast model
@@ -407,6 +476,19 @@ class ReportBody(BaseModel):
     days: int = 90
 
 
+def _demo_narrative_allowed(payload: dict[str, Any]) -> bool:
+    return bool(
+        payload["glucose"].get("quality", {}).get("ai_eligible")
+        and payload["insulin"].get("quality", {}).get("ai_eligible")
+        and payload["insulin"].get("nutrition_quality", {}).get("ai_eligible")
+        and payload["cycle"].get("quality", {}).get("ai_eligible")
+        and any(
+            payload["wellness"].get("quality", {}).get(provider, {}).get("ai_eligible")
+            for provider in ("oura", "fitbit")
+        )
+    )
+
+
 @router.post("/api/report/visit")
 async def visit_report(body: ReportBody):
     days = max(7, min(body.days, 365))
@@ -440,8 +522,9 @@ async def visit_report(body: ReportBody):
         "insurance": insurance.report_block(),
     }
     payload["narrative"] = await _narrative(payload)
-    if payload["narrative"] is None and DEMO_MODE:
+    if payload["narrative"] is None and DEMO_MODE and _demo_narrative_allowed(payload):
         # Self-contained demo: show a representative narrative even without an
-        # LLM configured, so the report looks complete in screenshots.
+        # LLM configured, but only when its source domains pass the same quality
+        # contract as a generated narrative.
         payload["narrative"] = DEMO_NARRATIVE
     return payload
