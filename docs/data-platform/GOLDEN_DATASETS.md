@@ -4,8 +4,8 @@ Status: additive regression layer
 
 Implementations: `tests/fixtures/`, `tests/test_golden_data.py`,
 `tests/test_migration_fixtures.py`, `tests/test_contradictions.py`,
-`tests/test_typed_glucose.py`, `tests/test_typed_wearables.py`, and
-`tests/test_relationship_projection.py`
+`tests/test_typed_glucose.py`, `tests/test_typed_wearables.py`,
+`tests/test_relationship_projection.py`, and `tests/test_relationship_api.py`
 
 F5 establishes deterministic, public-safe fixtures for clinical interpretation
 and storage risks. The fixtures contain invented values, synthetic identifiers,
@@ -29,6 +29,7 @@ rows, credentials, or copied health information.
 | Typed glucose/fingersticks | Exact ±240-second dedup boundary, strict mapping, fixed pairing, restartable backfill, shadow parity, rollback, and backup counts remain deterministic. |
 | Typed wearables | Oura/Fitbit/Google provider overlap, explicit null/extension preservation, strict metric/time mapping, bounded backfill, indexed high-volume reads, parity, rollback, and backup counts remain deterministic. |
 | Relationship projection jobs | Repeated full builds have stable checksums; failed and scoped builds cannot publish mixed generations; authored assertions survive; freshness and backup counts remain observable. |
+| Relationship query API | Anonymous/disabled access, admin/provider GET behavior, owner isolation, deterministic bounds, reverse traversal, evidence paths, and raw-locator redaction remain enforced. |
 
 `clinical_edge_cases.json` stores both the synthetic inputs and their expected
 outcomes. Tests must compare production parser, deduplication, analytics,
@@ -91,6 +92,9 @@ database.
   counts.
 - Evidence windows: checksum determinism, bounded membership, exact drill-down,
   source-change invalidation, Pattern citation cardinality, and restore counts.
+- Relationship API: authentication/read gating, provider-safe GET access,
+  owner non-enumeration, deterministic budgets/order, and secret-locator
+  redaction.
 
 ## CI gate
 

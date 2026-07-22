@@ -36,6 +36,7 @@ uploaded records, and config. One owner per deployment.
 | `relationship_registry.py` | migration-governed predicates, assertion statuses, evidence levels, and relationship algorithms |
 | `relationships.py` | strict owner-scoped temporal relationship projection, immutable identity, indexed queries, and compatibility cutover |
 | `relationship_projection.py` | versioned full/scoped graph jobs, atomic generation publication, checksums, watermarks, and freshness |
+| `relationship_api.py` | authenticated read-only neighbor, reverse-neighbor, bounded traversal, and redacted evidence-path APIs |
 | `evidence_sets.py` | bounded checksum-addressed observation windows, claim evidence sets, drill-down verification, and source-change invalidation |
 | `lab_audit.py` | audited medical-record extraction, validation, verification, correction history, and compatibility projection |
 | `contradictions.py` | deterministic cross-domain contradiction rules, typed ledger, attributed resolution workflow, and API |
@@ -80,6 +81,11 @@ and graph checksums stay in SQLite. A complete full or entity-scoped output is
 published in one transaction; a failed run leaves the prior active graph and
 freshness state untouched. Independently authored assertions are not projector
 members and therefore survive rebuilds.
+
+G4 adds no schema. Its authenticated GET-only API reads the active projection
+under `RELATIONSHIP_READS_ENABLED`, fixes owner scope server-side, hashes
+free-form provenance locators, and enforces fixed depth/item/path/expansion
+budgets with deterministic ordering.
 
 ## Frontend (`frontend/`)
 
