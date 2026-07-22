@@ -38,6 +38,7 @@ uploaded records, and config. One owner per deployment.
 | `relationship_projection.py` | versioned full/scoped graph jobs, atomic generation publication, checksums, watermarks, and freshness |
 | `relationship_api.py` | authenticated read-only neighbor, reverse-neighbor, bounded traversal, and redacted evidence-path APIs |
 | `evidence_sets.py` | bounded checksum-addressed observation windows, claim evidence sets, drill-down verification, and source-change invalidation |
+| `evidence_bundle.py` | authenticated cross-domain evidence queries, deterministic ranking/versioning, protected contradictions, source links, and content-addressed caching |
 | `lab_audit.py` | audited medical-record extraction, validation, verification, correction history, and compatibility projection |
 | `contradictions.py` | deterministic cross-domain contradiction rules, typed ledger, attributed resolution workflow, and API |
 | `auth.py` | first-run setup, login, **admin vs. read-only provider role**, `require_admin` |
@@ -86,6 +87,13 @@ G4 adds no schema. Its authenticated GET-only API reads the active projection
 under `RELATIONSHIP_READS_ENABLED`, fixes owner scope server-side, hashes
 free-form provenance locators, and enforces fixed depth/item/path/expansion
 budgets with deterministic ordering.
+
+G5 also adds no schema. Its authenticated Evidence Bundle API assembles direct
+observations, derived metrics, active relationships, documents, contradictions,
+source links, missing-data caveats, and confidence under one strict query
+budget. The canonical query plus exact public-content hash identifies each
+bundle and its bounded process-local cache; blocking contradictions are kept
+outside ranking so they cannot be displaced by a small item budget.
 
 ## Frontend (`frontend/`)
 
