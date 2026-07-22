@@ -20,18 +20,19 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Body, Depends, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from . import db
+from . import db, lab_audit
 from .auth import require_admin, require_login
 from .config import DATA_DIR, OWNER_EMAIL
-from .connector_provenance import capture_file, run_connector, source_failure
+from .connector_provenance import capture_file, current_run, run_connector, source_failure
 from .llm import invoke_llm
 
 log = logging.getLogger("glucopilot.records")
 
 router = APIRouter(dependencies=[Depends(require_login)])
+AUDIT_REPOSITORY: lab_audit.LabAuditRepository = lab_audit.SqliteLabAuditRepository()
 
 RECORDS_DIR = DATA_DIR / "records"
 ALLOWED_SUFFIXES = {".pdf", ".png", ".jpg", ".jpeg", ".webp"}
@@ -51,16 +52,27 @@ EXTRACTION_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "test_name": {"type": "string", "description": "Canonical test name, e.g. HbA1c, TSH, LDL Cholesterol"},
-                    "value": {"type": "number"},
+                    "original_test_name": {"type": "string", "description": "Test name exactly as printed"},
+                    "test_name": {"type": "string", "description": "Normalized test name, e.g. HbA1c, TSH, LDL Cholesterol"},
+                    "original_value": {"type": "string", "description": "Value exactly as printed, including comparison signs, qualitative text, or titer notation"},
+                    "value": {"type": ["number", "string"], "description": "Normalized numeric value when numeric; otherwise the reported qualitative or titer text"},
+                    "value_kind": {"type": "string", "description": "numeric, qualitative, or titer"},
+                    "original_unit": {"type": "string", "description": "Unit exactly as printed"},
                     "unit": {"type": "string"},
+                    "original_reference_range": {"type": "string", "description": "Reference range exactly as printed"},
                     "reference_low": {"type": ["number", "null"]},
                     "reference_high": {"type": ["number", "null"]},
+                    "original_flag": {"type": "string", "description": "Flag exactly as printed"},
                     "flag": {"type": "string", "description": "normal, high, low, critical, or empty"},
+                    "specimen": {"type": "string", "description": "Specimen exactly as identified, e.g. serum, plasma, urine"},
+                    "original_collected_date": {"type": "string", "description": "Collection date exactly as printed"},
                     "collected_date": {"type": "string", "description": "YYYY-MM-DD; empty if unknown"},
                     "category": {"type": "string", "description": "Panel name, e.g. CBC, Metabolic Panel, Lipids, Thyroid"},
+                    "source_page": {"type": ["integer", "null"], "description": "1-based document page containing the result"},
+                    "extraction_location": {"type": "string", "description": "Visible section, table, row, or nearby label locating the result on the page"},
+                    "parser_confidence": {"type": ["number", "null"], "description": "Extraction confidence from 0 to 1"},
                 },
-                "required": ["test_name", "value"],
+                "required": ["original_test_name", "test_name", "original_value", "value", "value_kind"],
             },
         },
         "measurements": {
@@ -74,6 +86,9 @@ EXTRACTION_SCHEMA = {
                     "unit": {"type": "string", "description": "e.g. cm, mm"},
                     "flag": {"type": "string", "description": "enlarged/abnormal/normal if the report indicates; empty otherwise"},
                     "category": {"type": "string", "description": "Modality + region, e.g. 'Imaging - CT Abdomen/Pelvis', 'Imaging - MRI Brain', 'Imaging - Thyroid Ultrasound'"},
+                    "source_page": {"type": ["integer", "null"]},
+                    "extraction_location": {"type": "string"},
+                    "parser_confidence": {"type": ["number", "null"]},
                 },
                 "required": ["name", "value"],
             },
@@ -86,13 +101,14 @@ EXTRACTION_PROMPT = """You are extracting structured data from a personal medica
 
 Carefully read the document image(s) and extract:
 1. doc_type (lab_report, imaging_report, visit_summary, other), the primary record_date, a short plain-language summary, and source_name — a short searchable label for the lab vendor / imaging center / panel (e.g. "ACL Labs", "DUTCH Hormones", "Labcorp CMP", "CT Abdomen/Pelvis"), WITHOUT a date. For an imaging or radiology report, the summary should capture the key findings and the impression.
-2. lab_results: EVERY quantitative blood/urine lab result — test name (canonicalized, e.g. "Hemoglobin A1c" -> "HbA1c"), numeric value, unit, reference range bounds if printed, flag (high/low/normal/critical) if indicated, collection date, and panel/category.
+2. lab_results: EVERY blood/urine lab result, including quantitative, qualitative, and titers. Preserve the original printed name, value, unit, range, flag, specimen, and collection date, then also provide normalized fields. Record a 1-based source_page, a short extraction_location (section/table/row or nearby label), and parser_confidence from 0 to 1.
 3. measurements: for imaging/radiology reports (CT, MRI, ultrasound, X-ray, DEXA) OR any report with quantitative anatomical measurements, capture each one — organ sizes, cyst/nodule/lesion/mass dimensions — as name (WITH anatomical location), numeric value, unit (cm/mm), a flag if the report calls it enlarged/abnormal, and a category like "Imaging - CT Abdomen/Pelvis". Leave measurements empty for ordinary blood/urine panels.
 
 Rules:
-- Numbers only in "value" (strip comparison signs; for "<0.1" use 0.1 and flag as reported).
-- Skip qualitative-only results (e.g. "negative", "not detected") unless they carry a number.
-- Do not invent values or reference ranges that are not visible.
+- Never discard comparison signs, qualitative results, titers, or the original printed text. Put exact text in original_* fields.
+- For numeric results, normalize "value" to a number while preserving signs such as "<" in original_value and use flag "reported" when appropriate.
+- For qualitative and titer results, set value_kind accordingly and keep the reported text in value and original_value.
+- Do not invent values, units, specimens, locations, confidence, or reference ranges that are not visible.
 """
 
 
@@ -122,8 +138,32 @@ def _encode_images(paths: list[Path]) -> list[str]:
     return encoded
 
 
-async def _extract(images: list[str]) -> dict:
-    return await invoke_llm(EXTRACTION_PROMPT, response_json_schema=EXTRACTION_SCHEMA, max_tokens=6000, images=images)
+async def _extract(images: list[str], page_numbers: list[int]) -> dict:
+    numbered_prompt = (
+        EXTRACTION_PROMPT
+        + "\nThe supplied images are document pages "
+        + ", ".join(str(page) for page in page_numbers)
+        + ". Use those absolute document page numbers in source_page; do not restart numbering for this batch."
+    )
+    return await invoke_llm(numbered_prompt, response_json_schema=EXTRACTION_SCHEMA, max_tokens=6000, images=images)
+
+
+def _absolute_source_pages(part: dict, page_numbers: list[int]) -> None:
+    """Normalize model-relative batch pages to absolute document pages."""
+    for item in [*(part.get("lab_results") or []), *(part.get("measurements") or [])]:
+        if not isinstance(item, dict):
+            continue
+        raw = item.get("source_page")
+        try:
+            page = int(raw) if raw not in (None, "") else None
+        except (TypeError, ValueError):
+            page = None
+        if page in page_numbers:
+            continue
+        if page is not None and 1 <= page <= len(page_numbers):
+            item["source_page"] = page_numbers[page - 1]
+        elif page is None and len(page_numbers) == 1:
+            item["source_page"] = page_numbers[0]
 
 
 async def _extract_document(page_paths: list[Path]) -> dict:
@@ -135,15 +175,24 @@ async def _extract_document(page_paths: list[Path]) -> dict:
     Resilient: a batch is retried once, and a persistently-failing batch (e.g.
     the local model returns non-JSON for one page) is skipped so the rest of a
     long document still extracts. Raises only if EVERY batch fails."""
-    merged: dict = {"doc_type": "", "record_date": "", "summary": "", "lab_results": [], "measurements": []}
+    merged: dict = {
+        "doc_type": "",
+        "source_name": "",
+        "record_date": "",
+        "summary": "",
+        "lab_results": [],
+        "measurements": [],
+    }
     batches = [page_paths[i : i + PAGE_BATCH] for i in range(0, len(page_paths), PAGE_BATCH)]
     failed = 0
     last_err: Exception | None = None
     for idx, batch in enumerate(batches):
+        page_numbers = list(range(idx * PAGE_BATCH + 1, idx * PAGE_BATCH + len(batch) + 1))
         part = None
         for attempt in range(2):  # one retry — local-model JSON hiccups are often transient
             try:
-                part = await _extract(_encode_images(batch))
+                part = await _extract(_encode_images(batch), page_numbers)
+                _absolute_source_pages(part, page_numbers)
                 break
             except Exception as err:  # noqa: BLE001 - keep going through the document
                 last_err = err
@@ -153,6 +202,8 @@ async def _extract_document(page_paths: list[Path]) -> dict:
             continue
         if not merged["doc_type"] and part.get("doc_type"):
             merged["doc_type"] = part["doc_type"]
+        if not merged["source_name"] and part.get("source_name"):
+            merged["source_name"] = part["source_name"]
         if not merged["record_date"] and part.get("record_date"):
             merged["record_date"] = part["record_date"]
         if not merged["summary"] and part.get("summary"):
@@ -246,28 +297,49 @@ async def _upload(file: UploadFile):
 
 
 async def _extract_and_store(record: dict, stored: Path, suffix: str) -> dict:
-    """Render → batched vision extraction → replace this record's LabResults →
-    mark processed. Raises on failure; callers mark the record failed. Reused by
-    upload and reprocess (reprocess re-runs on the already-stored file)."""
+    """Render, extract, audit, and refresh the compatibility LabResult view."""
     if suffix == ".pdf":
         page_paths = await asyncio.to_thread(_pdf_to_images, stored)
         if not page_paths:
             raise RuntimeError("PDF rendered no pages")
     else:
         page_paths = [stored]
-    extracted = await _extract_document(page_paths)
+    audit_run_id = None
+    try:
+        if lab_audit.enabled():
+            source_hash = "sha256:" + hashlib.sha256(stored.read_bytes()).hexdigest()
+            provenance_run = current_run()
+            source_file_id = provenance_run.source_file_ids[-1] if provenance_run and provenance_run.source_file_ids else None
+            audit_run_id = AUDIT_REPOSITORY.start_run(
+                record["id"], source_hash, len(page_paths), source_file_id
+            )
+        extracted = await _extract_document(page_paths)
+        b_failed = extracted.get("_batches_failed", 0)
+        if audit_run_id:
+            observations = lab_audit.normalize_and_validate(extracted, record["id"])
+            results, preserved_count = AUDIT_REPOSITORY.replace_unverified_with_run(
+                audit_run_id, record["id"], observations, failed_batches=b_failed
+            )
+        else:
+            results = _normalize_lab_results(extracted, record["id"])
+            preserved_count = 0
+            for old in db.query_entities("LabResult", {"record_id": record["id"], "owner_email": OWNER_EMAIL}):
+                db.delete_entity("LabResult", old["id"])
+            if results:
+                db.bulk_create_entities("LabResult", results)
+            observations = results
+    except Exception as error:
+        if audit_run_id:
+            AUDIT_REPOSITORY.fail_run(audit_run_id, error)
+        raise
 
-    results = _normalize_lab_results(extracted, record["id"])
-
-    # Replace any prior labs for this record so reprocessing is idempotent.
-    for old in db.query_entities("LabResult", {"record_id": record["id"], "owner_email": OWNER_EMAIL}):
-        db.delete_entity("LabResult", old["id"])
-    if results:
-        db.bulk_create_entities("LabResult", results)
-
-    b_failed = extracted.get("_batches_failed", 0)
     b_total = extracted.get("_batches_total", 1)
     record_date = extracted.get("record_date") or ""
+    current_lab_count = len(
+        db.query_entities(
+            "LabResult", {"record_id": record["id"], "owner_email": OWNER_EMAIL}
+        )
+    )
     return db.update_entity(
         "MedicalRecord",
         record["id"],
@@ -278,7 +350,11 @@ async def _extract_and_store(record: dict, stored: Path, suffix: str) -> dict:
             "summary": extracted.get("summary") or "",
             "title": _make_title(extracted.get("source_name"), record_date, record.get("filename")),
             "page_count": len(page_paths),
-            "lab_count": len(results),
+            "lab_count": current_lab_count,
+            "extraction_count": len(observations),
+            "verified_results_preserved": preserved_count,
+            "extraction_parser_version": lab_audit.PARSER_VERSION if audit_run_id else "legacy",
+            "extraction_schema_version": lab_audit.SCHEMA_VERSION if audit_run_id else "legacy",
             # Note when some page-batches couldn't be read so the user can re-run.
             "error": f"Partial: {b_failed}/{b_total} page-batches failed to read" if b_failed else "",
             "partial": bool(b_failed),
@@ -354,6 +430,48 @@ def _normalize_lab_results(extracted: dict, record_id: str) -> list[dict]:
             }
         )
     return results
+
+
+@router.get("/api/records/{rid}/extractions")
+def extractions(rid: str):
+    rows = db.query_entities("MedicalRecord", {"id": rid, "owner_email": OWNER_EMAIL}, limit=1)
+    if not rows:
+        raise HTTPException(status_code=404, detail="Record not found")
+    return AUDIT_REPOSITORY.record_extractions(rid)
+
+
+@router.post("/api/records/{rid}/labs/{lab_id}/verify", dependencies=[Depends(require_admin)])
+def verify_lab(rid: str, lab_id: str, body: dict = Body(default_factory=dict)):
+    try:
+        return {
+            "ok": True,
+            **lab_audit.review(
+                rid,
+                lab_id,
+                str(body.get("action") or ""),
+                body.get("patch") if isinstance(body.get("patch"), dict) else {},
+                str(body.get("reason") or ""),
+            ),
+        }
+    except lab_audit.LabAuditError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@router.post("/api/records/{rid}/extractions/{observation_id}/verify", dependencies=[Depends(require_admin)])
+def verify_extraction(rid: str, observation_id: str, body: dict = Body(default_factory=dict)):
+    try:
+        return {
+            "ok": True,
+            **AUDIT_REPOSITORY.review_observation(
+                rid,
+                observation_id,
+                str(body.get("action") or ""),
+                body.get("patch") if isinstance(body.get("patch"), dict) else {},
+                str(body.get("reason") or ""),
+            ),
+        }
+    except lab_audit.LabAuditError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 def _mdy(date_iso: str) -> str:
@@ -439,14 +557,18 @@ async def backfill_titles():
 
 
 @router.get("/api/records/file/{rid}")
-def get_file(rid: str):
+def get_file(rid: str, inline: bool = False):
     rows = db.query_entities("MedicalRecord", {"id": rid, "owner_email": OWNER_EMAIL}, limit=1)
     if not rows or not rows[0].get("stored_as"):
         raise HTTPException(status_code=404, detail="Record not found")
     path = RECORDS_DIR / rows[0]["stored_as"]
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Stored file missing")
-    return FileResponse(path, filename=rows[0].get("filename") or path.name)
+    return FileResponse(
+        path,
+        filename=rows[0].get("filename") or path.name,
+        content_disposition_type="inline" if inline else "attachment",
+    )
 
 
 @router.delete("/api/records/{rid}", dependencies=[Depends(require_admin)])

@@ -436,6 +436,15 @@ export default function Report() {
       {labs.available && (
         <div className="report-section space-y-3">
           <h2 className="font-semibold text-base">Labs</h2>
+          <div className="report-card rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            {labs.verification?.note}
+            {labs.verification?.counts && (
+              <span className="ml-1">
+                Approved/edited: {(labs.verification.counts.approved || 0) + (labs.verification.counts.edited || 0)} · Unverified: {labs.verification.counts.unverified || 0}
+                {(labs.verification.counts.invalid || 0) > 0 ? ` · Excluded invalid: ${labs.verification.counts.invalid}` : ""}
+              </span>
+            )}
+          </div>
           {labs.flagged.length > 0 && (
             <div className="report-card bg-red-50 border border-red-200 rounded-lg p-3">
               <p className="text-xs font-semibold text-red-700 flex items-center gap-1 mb-1">
@@ -443,7 +452,7 @@ export default function Report() {
               </p>
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
                 {labs.flagged.map((f) => (
-                  <span key={f.test_name}>{f.test_name}: <b>{f.value} {f.unit}</b> <span className="text-red-600 uppercase text-[10px]">{f.flag}</span></span>
+                  <span key={f.test_name}>{f.test_name}: <b>{f.value} {f.unit}</b> <span className="text-red-600 uppercase text-[10px]">{f.flag}</span>{f.verification?.qualified && <span className="ml-1 text-amber-700 text-[10px]">({f.verification.verification_status})</span>}</span>
                 ))}
               </div>
             </div>
@@ -458,7 +467,10 @@ export default function Report() {
                     const outOfRange = t.flag && t.flag !== "normal" && t.flag !== "";
                     return (
                       <tr key={t.test_name} className="border-t border-border">
-                        <td className="px-3 py-2 font-medium">{t.test_name}</td>
+                        <td className="px-3 py-2 font-medium">
+                          {t.test_name}
+                          {t.verification?.qualified && <span className="ml-1.5 text-[9px] uppercase text-amber-700">{t.verification.verification_status}</span>}
+                        </td>
                         <td className={`px-3 py-2 text-right tabular-nums ${outOfRange ? "text-red-600 font-semibold" : ""}`}>
                           {t.value} <span className="text-muted-foreground font-normal">{t.unit}</span>
                         </td>

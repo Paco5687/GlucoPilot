@@ -21,6 +21,8 @@ from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value, set_config_value
 from .data_quality import assess_daily
 from .llm import invoke_llm
+from .lab_audit import qualification as lab_qualification
+from .lab_audit import summary_eligible as lab_summary_eligible
 from .repositories import get_repositories
 from .unit_of_work import unit_of_work
 
@@ -58,7 +60,7 @@ def _labs_snapshot() -> tuple[list, list]:
     )
     by_test: dict[str, list] = {}
     for lab in rows:
-        if lab.get("value") is None or not lab.get("test_name"):
+        if lab.get("value") is None or not lab.get("test_name") or not lab_summary_eligible(lab):
             continue
         by_test.setdefault(lab["test_name"], []).append(lab)
     flagged, trends = [], []
@@ -69,12 +71,14 @@ def _labs_snapshot() -> tuple[list, list]:
         if fl and fl not in ("normal", ""):
             flagged.append({"name": name, "value": latest["value"], "unit": latest.get("unit", ""),
                             "flag": fl, "category": latest.get("category", ""),
-                            "date": latest.get("collected_date", "")})
+                            "date": latest.get("collected_date", ""),
+                            "verification": lab_qualification(latest)})
         if len(pts) >= 3:
             first, last = pts[0]["value"], pts[-1]["value"]
             if first and abs(last - first) / abs(first) >= 0.15:
                 trends.append({"name": name, "from": first, "to": last, "unit": latest.get("unit", ""),
-                               "n": len(pts), "direction": "up" if last > first else "down"})
+                               "n": len(pts), "direction": "up" if last > first else "down",
+                               "verification": lab_qualification(latest)})
     return flagged[:45], trends[:25]
 
 
@@ -151,6 +155,7 @@ def _build_context() -> dict[str, Any]:
         "wearables": wearables["metrics"] if wearables["quality"]["ai_eligible"] else {},
         "labs_out_of_range": flagged,
         "lab_trends": trends,
+        "lab_verification_note": "Machine-extracted labs are unverified unless explicitly marked approved or edited.",
         "symptom_journal": symptoms.context_block(WINDOW_DAYS),
         "health_history": history.context_block(),
         "computed_correlations": _insights_snapshot(),
@@ -178,6 +183,8 @@ async def generate() -> dict[str, Any]:
         "- Be specific and concrete, not vague. Name the analytes/metrics involved.\n"
         "- Mind recency: each lab carries a `date`. Weight recent results more; call out clearly "
         "when a notable value is old (say, 6+ months) rather than treating it as current.\n"
+        "- Mind verification: explicitly call a lab unverified unless its verification status is approved or edited. "
+        "Parser confidence is not clinical verification.\n"
         "- Aim for 6-9 genuinely distinct observations, richest/most-actionable first. Also give a fuller "
         "'working' (on track) list and a 'watch' list.\n\n"
         f"DATA SNAPSHOT (last {WINDOW_DAYS} days where applicable):\n{json.dumps(context, indent=2, default=str)}"

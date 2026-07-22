@@ -19,6 +19,7 @@ Core analytics depend on `RepositoryCatalog`, not `db.query_entities`:
 | `BasalSegmentRepository` | Strict feature-gated `basal_segments` sidecar |
 | `PumpDailyTotalRepository` | Strict feature-gated `pump_daily_totals` sidecar |
 | `LabRepository` | `LabResult` JSON entities |
+| `LabAuditRepository` | Migration-7 extraction runs/observations/events plus the `LabResult` compatibility projection |
 | `WearableRepository` | Oura/Fitbit daily and heart-rate JSON entities |
 | `RelationshipRepository` | Read-only projection of lab→record and message→thread references |
 | `EvidenceRepository` | Read-only projection of Pattern/Insight inline support and ChatMessage sources |
@@ -35,6 +36,12 @@ Mutations always retain the legacy behavior. Supported domain reads may use the
 strict typed projection only under `TYPED_TREATMENT_READS_ENABLED`; unsupported
 legacy JSON filters fall back to the compatibility store. See
 [Typed treatments](TYPED_TREATMENTS.md).
+
+I7 keeps existing consumers on `LabRepository` while `records.py` writes and
+reviews through `SqliteLabAuditRepository`. The repository refreshes unverified
+JSON projections transactionally, preserves approved/edited projections, and
+retains all versioned extraction/history rows. This isolates the additive
+sidecar without expanding the generic entity API.
 
 The relationship and evidence repositories deliberately do not create a hidden
 schema. They project current fields only. G1 and G2 will add reviewed registries

@@ -31,6 +31,7 @@ uploaded records, and config. One owner per deployment.
 | `connector_provenance.py` | feature-flagged connector/upload lifecycle, fetch outcomes, freshness, and normalized evidence links |
 | `canonical_time.py` | canonical event/effective/recorded/received time normalization, DST handling, and sidecar repository |
 | `typed_treatments.py` | feature-gated strict treatment, basal-segment, and pump-total projections, backfill, and parity checks |
+| `lab_audit.py` | audited medical-record extraction, validation, verification, correction history, and compatibility projection |
 | `auth.py` | first-run setup, login, **admin vs. read-only provider role**, `require_admin` |
 | `entities.py` | generic entity REST API (writes gated to admin) |
 | `settings_api.py` | in-app settings & secrets (DB-stored, override env) |
@@ -39,7 +40,7 @@ uploaded records, and config. One owner per deployment.
 | `readings.py` | shared cross-source glucose dedup |
 | **Sources** | `dexcom.py`, `dexcom_share.py`, `nightscout.py`, `tandem.py`, `glooko.py`, `oura.py`, `fitbit.py` |
 | **Analysis** | `patterns.py`, `insights.py`, `cycle_inference.py`, `report.py` |
-| **Records** | `records.py` (upload → vision-model extraction → `LabResult`) |
+| **Records** | `records.py` (upload → vision extraction → audited observations → `LabResult` compatibility projection) |
 | **Ingest** | `ingest.py` (token-auth push endpoint for phone automations) |
 | **Imports** | `import_legacy.py`, `import_base44_export.py`, `dedup_readings.py`, `reset_password.py` |
 

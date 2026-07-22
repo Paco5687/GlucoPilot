@@ -31,6 +31,8 @@ typed repositories are introduced.
   partial dates, duration intervals, DST handling, and rollout/backfill.
 - [Typed treatments](TYPED_TREATMENTS.md) — strict treatment, basal-segment,
   and pump-total projections, compatibility mapping, parity, and rollout gates.
+- [Auditable lab extraction](AUDITABLE_LAB_EXTRACTION.md) — source locations,
+  validation, verification, correction/supersession history, and safe reprocessing.
 
 ## Reproduce the structural audit
 

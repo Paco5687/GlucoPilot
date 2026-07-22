@@ -12,7 +12,7 @@
 | Oura | connection, daily, heart rate | Daily provider date; exact UTC HR timestamp. | Daily patch; HR append if timestamp absent. |
 | Fitbit Web API | connection and daily | Provider date. | Daily patch. |
 | Google Health | connection, Fitbit daily/HR | Provider date; intraday HR to UTC minute. | Daily patch; HR append if minute absent. |
-| Medical-record upload | file, `MedicalRecord`, `LabResult` | File SHA-256; child labs retain parent ID/date but no page/extractor version. | Reprocess replaces record's labs; delete removes file + labs. |
+| Medical-record upload | file, `MedicalRecord`, audited extraction run/observations, `LabResult` compatibility projection | File SHA-256 plus parser/schema/input versions; every new result preserves original/normalized fields and a page/location when reported. | Reprocess replaces only unverified projections. Approved/edited corrections remain current and new parser output at that source location is superseded. Delete removes the file, compatibility labs, and cascaded audit data. |
 | Lively/phone ingest | `PeriodLog` | Local date key and source. | Merge by date; manual rows respected. |
 | CSV/Base44 imports | Glucose, treatment, Oura, period | Timestamp normalization and proximity/date dedup. | Legacy CSV import replaces owner/source=`csv` glucose/treatment. |
 | Manual APIs | Fingersticks, profile/weight, diagnoses, meds, allergies, insurance, symptoms, history | Random IDs and user-supplied dates. | User edit/append/delete per catalog. |
@@ -34,9 +34,9 @@ be reconstructed.
 | Insulin response | Insulin, nearby glucose, optional carbs | Carries CGM and clean-correction sample envelopes; meal-related/stacked events are excluded and low-quality values are withheld from Companion conclusions. |
 | Fingerstick stats | Fingerstick + nearest CGM ±15 minutes | Unpaired readings count but do not enter delta statistics; pairing never refreshes. |
 | Cycle inference | Oura temperature + existing period logs | Rebuilds only inferred rows; existing date wins; insufficient input returns none. |
-| Health Overview | Glucose, treatments, wearables, labs, profile/clinical lists, cycle, symptoms/history | CGM, wearable, and cycle values enter the LLM only when their envelopes are eligible; the generated singleton retains those envelopes. |
-| Companion | Overview context, insulin outputs, records, memory/chat, optional trusted web | CGM, pump-TDD, and insulin-response values are gated by their envelopes; other evidence-path work and memory verification remain future work. |
-| Visit Report | Windowed glucose/treatment plus profile, clinical lists, labs, symptoms/history, insurance | CGM, pump TDD, nutrition, cycle, and wearable sections carry visible quality envelopes and low-quality values are omitted from the LLM narrative. |
+| Health Overview | Glucose, treatments, wearables, labs, profile/clinical lists, cycle, symptoms/history | CGM, wearable, and cycle values enter the LLM only when their envelopes are eligible. Invalid/rejected labs are excluded and unverified labs carry explicit qualification. |
+| Companion | Overview context, insulin outputs, records, memory/chat, optional trusted web | CGM, pump-TDD, and insulin-response values are gated by their envelopes. Lab/document context identifies machine-extracted results as unverified unless approved/edited. |
+| Visit Report | Windowed glucose/treatment plus profile, clinical lists, labs, symptoms/history, insurance | Domain quality remains visible. Invalid/rejected labs are excluded; included machine-extracted labs and the generated prompt carry verification qualification. |
 
 ## Field-family consumer matrix
 
@@ -49,7 +49,7 @@ be reconstructed.
 | Period date/phase/source/notes | Dashboard, Period Tracker, insights cycle comparisons, Overview, Companion, Visit Report. |
 | Fingerstick value/time/CGM/delta | Dashboard marker/logger, discrepancy statistics, insulin/clinical context. |
 | Medical-record status/date/title/file metadata | Records queue/index, delete/reprocess paths, Companion recent-document context. |
-| Lab name/value/unit/range/flag/date/category/record ID | Records index/charts/matrix/search, Overview, Companion, Visit Report, record cascade/reprocess. |
+| Lab original/normalized name/value/unit/range/flag/specimen/date, page/location, confidence, validation/verification, category/record ID | Records index/charts/matrix/search and source review, Overview, Companion, Visit Report, record cascade/reprocess. |
 | Profile/weight/demographic fields | Settings, BMI/age computation, insulin per-kg estimate, Overview, Companion, Visit Report. |
 | Diagnoses, medications, allergies, insurance | Settings/dedicated editors, Overview context, Companion, Visit Report. |
 | Symptoms and history fields | Journal/history pages, rollups, Overview, Companion, Visit Report. |
@@ -94,7 +94,7 @@ automatically inject `owner_email`.
 |---|---|---|
 | Nightscout backfill | All owner Nightscout glucose/treatment | Whole-volume restore or remote re-sync; delete/fetch/insert is not one transaction. |
 | Legacy CSV import | All owner/source=`csv` glucose/treatment | Restore or rerun source import. |
-| Record reprocess/delete | Child labs; delete also removes uploaded file | Reprocess retained file or restore volume; no DB/filesystem transaction. |
+| Record reprocess/delete | Unverified child projections refresh; verified corrections are retained; delete also removes uploaded file and audit rows | Reprocess retained file or restore a verified volume backup. Database changes are transactional per audit/projection refresh; filesystem deletion remains outside SQLite. |
 | Insight generation | All owner insights | Regenerate; previous output/input not retained. |
 | Health summary | All owner summaries | Regenerate; previous output/input not retained. |
 | Cycle inference | All owner Oura-inferred periods | Regenerate from Oura. |

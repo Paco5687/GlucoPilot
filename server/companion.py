@@ -238,7 +238,11 @@ def _dossier() -> dict[str, Any]:
     absn = insulin.absorption()
     absorption_for_ai = absn.get("quality", {}).get("ai_eligible")
     recent_docs = [
-        {"title": r.get("title"), "date": r.get("record_date")}
+        {
+            "title": r.get("title"),
+            "date": r.get("record_date"),
+            "verification": "machine_extracted_unverified",
+        }
         for r in _entity("MedicalRecord").query(
             {"owner_email": OWNER_EMAIL}, "-created_date", 500
         )
@@ -256,6 +260,7 @@ def _dossier() -> dict[str, Any]:
         "symptom_journal": ctx.get("symptom_journal"),
         "labs_out_of_range": (ctx.get("labs_out_of_range") or [])[:20],
         "lab_trends": (ctx.get("lab_trends") or [])[:12],
+        "lab_verification_note": ctx.get("lab_verification_note"),
         "menstrual_cycle": ctx.get("cycle"),
         "wearables_recent_vs_prior": ctx.get("wearables"),
         "data_quality": ctx.get("data_quality"),

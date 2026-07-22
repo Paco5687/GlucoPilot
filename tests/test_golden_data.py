@@ -172,6 +172,24 @@ def test_lab_normalization_deduplicates_repeated_extraction(golden):
     assert all(row["record_id"] == fixture["record_id"] for row in normalized)
 
 
+def test_batched_record_extraction_uses_absolute_document_pages():
+    part = {
+        "lab_results": [
+            {"test_name": "Synthetic first", "source_page": 1},
+            {"test_name": "Synthetic absolute", "source_page": 6},
+        ],
+        "measurements": [{"name": "Synthetic fourth", "source_page": 4}],
+    }
+
+    records._absolute_source_pages(part, [5, 6, 7, 8])
+
+    assert [row["source_page"] for row in part["lab_results"]] == [5, 6]
+    assert part["measurements"][0]["source_page"] == 8
+    single = {"lab_results": [{"test_name": "Synthetic single"}]}
+    records._absolute_source_pages(single, [9])
+    assert single["lab_results"][0]["source_page"] == 9
+
+
 def test_report_snapshot_preserves_missing_pump_cycle_lab_range_and_dst_semantics(
     golden,
     golden_database,

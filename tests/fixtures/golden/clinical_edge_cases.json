@@ -447,6 +447,133 @@
       "measurement_flag": "high"
     }
   },
+  "auditable_lab_extraction": {
+    "record_id": "synthetic-audited-record-001",
+    "source_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "extracted": {
+      "record_date": "2026-05-11",
+      "lab_results": [
+        {
+          "original_test_name": "Synthetic Glucose, Serum",
+          "test_name": "Synthetic Glucose",
+          "original_value": "101 H",
+          "value": 101,
+          "value_kind": "numeric",
+          "original_unit": "mg/dL",
+          "unit": "mg/dL",
+          "original_reference_range": "70 - 99",
+          "reference_low": 70,
+          "reference_high": 99,
+          "original_flag": "H",
+          "flag": "high",
+          "specimen": "serum",
+          "original_collected_date": "05/11/2026",
+          "collected_date": "2026-05-11",
+          "category": "Synthetic Metabolic",
+          "source_page": 2,
+          "extraction_location": "Results table, row 3",
+          "parser_confidence": 0.97
+        },
+        {
+          "original_test_name": "Synthetic Glucose, Serum",
+          "test_name": "Synthetic Glucose",
+          "original_value": "101 H",
+          "value": 101,
+          "value_kind": "numeric",
+          "unit": "mg/dL",
+          "reference_low": 70,
+          "reference_high": 99,
+          "flag": "high",
+          "specimen": "serum",
+          "original_collected_date": "05/11/2026",
+          "collected_date": "2026-05-11",
+          "category": "Synthetic Metabolic",
+          "source_page": 2,
+          "extraction_location": "Results table, row 3"
+        },
+        {
+          "original_test_name": "Synthetic Invalid Range",
+          "test_name": "Synthetic Invalid Range",
+          "original_value": "4.2",
+          "value": 4.2,
+          "value_kind": "numeric",
+          "unit": "units",
+          "original_reference_range": "10 - 2",
+          "reference_low": 10,
+          "reference_high": 2,
+          "collected_date": "2026-05-11",
+          "source_page": 2,
+          "extraction_location": "Results table, row 4"
+        },
+        {
+          "original_test_name": "Synthetic Antibody",
+          "test_name": "Synthetic Antibody",
+          "original_value": "Negative",
+          "value": "Negative",
+          "value_kind": "qualitative",
+          "specimen": "serum",
+          "collected_date": "2026-05-11",
+          "source_page": 3,
+          "extraction_location": "Immunology table"
+        },
+        {
+          "original_test_name": "Synthetic ANA Titer",
+          "test_name": "Synthetic ANA Titer",
+          "original_value": "1:80",
+          "value": "1:80",
+          "value_kind": "titer",
+          "specimen": "serum",
+          "collected_date": "2026-05-11",
+          "source_page": 3,
+          "extraction_location": "Immunology table"
+        },
+        {
+          "original_test_name": "Synthetic Marker, Urine",
+          "test_name": "Synthetic Marker",
+          "original_value": "8",
+          "value": 8,
+          "value_kind": "numeric",
+          "unit": "mg/L",
+          "specimen": "serum",
+          "collected_date": "2026-05-11",
+          "source_page": 4,
+          "extraction_location": "Specimen table"
+        },
+        {
+          "original_test_name": "Synthetic Unit Conflict",
+          "test_name": "Synthetic Unit Conflict",
+          "original_value": "5",
+          "value": 5,
+          "value_kind": "numeric",
+          "unit": "mg/dL",
+          "specimen": "plasma",
+          "collected_date": "2026-05-11",
+          "source_page": 5,
+          "extraction_location": "Conflict table, row 1"
+        },
+        {
+          "original_test_name": "Synthetic Unit Conflict",
+          "test_name": "Synthetic Unit Conflict",
+          "original_value": "6",
+          "value": 6,
+          "value_kind": "numeric",
+          "unit": "mmol/L",
+          "specimen": "plasma",
+          "collected_date": "2026-05-11",
+          "source_page": 5,
+          "extraction_location": "Conflict table, row 2"
+        }
+      ]
+    },
+    "expected_issue_codes": [
+      "duplicate_result",
+      "impossible_reference_range",
+      "qualitative_value",
+      "specimen_mismatch",
+      "titer_value",
+      "unit_conflict"
+    ]
+  },
   "conflicting_lab_ranges": {
     "labs": [
       {
