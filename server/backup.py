@@ -149,6 +149,21 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                             "SELECT COUNT(*) AS count FROM normalized_source_links"
                         ).fetchone()
                     )
+            canonical_time = None
+            if _table_exists(connection, "canonical_times"):
+                canonical_time = dict(
+                    connection.execute(
+                        """
+                        SELECT COUNT(*) AS count,
+                               COALESCE(SUM(CASE WHEN timeline_at IS NOT NULL THEN 1 ELSE 0 END), 0)
+                                   AS resolved_count,
+                               COALESCE(SUM(CASE WHEN normalization_status IN
+                                        ('ambiguous', 'nonexistent', 'invalid') THEN 1 ELSE 0 END), 0)
+                                   AS unresolved_count
+                        FROM canonical_times
+                        """
+                    ).fetchone()
+                )
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:
@@ -163,6 +178,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
     }
     if source_archive is not None:
         metadata["source_archive"] = source_archive
+    if canonical_time is not None:
+        metadata["canonical_time"] = canonical_time
     if include_references:
         metadata["record_references"] = references
     return metadata
@@ -357,6 +374,8 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
     keys = ["entity_total", "entity_counts", "migrations"]
     if "source_archive" in expected_database:
         keys.append("source_archive")
+    if "canonical_time" in expected_database:
+        keys.append("canonical_time")
     for key in keys:
         if metadata[key] != expected_database.get(key):
             raise BackupError(f"restored database metadata mismatch: {key}")
@@ -382,6 +401,8 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
                 "source_file_reference_count": metadata["source_archive"]["source_files"]["count"],
             }
         )
+    if "canonical_time" in expected_database:
+        verification["canonical_time_count"] = metadata["canonical_time"]["count"]
     return verification
 
 

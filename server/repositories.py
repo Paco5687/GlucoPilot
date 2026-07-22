@@ -182,6 +182,25 @@ class SourceArchiveRepository(Protocol):
 
 
 @runtime_checkable
+class ClinicalTimeRepository(Protocol):
+    """Canonical event, effective, recorded, and ingestion-time sidecar."""
+
+    def sync_entity(self, entity_type: str, entity: Entity) -> list[dict[str, Any]]: ...
+
+    def sync_entities(self, entity_type: str, entities: list[Entity]) -> list[dict[str, Any]]: ...
+
+    def for_entity(self, entity_type: str, entity_id: str) -> list[dict[str, Any]]: ...
+
+    def timeline(
+        self,
+        start: str,
+        end: str,
+        *,
+        entity_types: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]: ...
+
+
+@runtime_checkable
 class RepositoryCatalog(Protocol):
     glucose: GlucoseRepository
     treatments: TreatmentRepository
@@ -193,6 +212,7 @@ class RepositoryCatalog(Protocol):
     relationships: RelationshipRepository
     evidence: EvidenceRepository
     source_archive: SourceArchiveRepository
+    clinical_time: ClinicalTimeRepository
 
     def entity(self, entity_type: str) -> EntityRepository: ...
 
@@ -391,8 +411,10 @@ class LegacyRepositoryCatalog:
         self.relationships = LegacyRelationshipRepository(self)
         self.evidence = LegacyEvidenceRepository(self)
         from .source_archive import SqliteSourceArchiveRepository
+        from .canonical_time import SqliteClinicalTimeRepository
 
         self.source_archive = SqliteSourceArchiveRepository(connection)
+        self.clinical_time = SqliteClinicalTimeRepository(connection)
 
     def entity(self, entity_type: str) -> LegacyJsonEntityRepository:
         if entity_type not in self._entities:

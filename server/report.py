@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from .auth import require_login
+from .canonical_time import temporal_metadata
 from .config import APP_TIMEZONE, DEMO_MODE, OWNER_EMAIL
 from .db import config_value
 from .llm import invoke_llm
@@ -261,6 +262,12 @@ def _labs() -> dict[str, Any]:
             continue
         by_test.setdefault(r["test_name"], []).append(r)
 
+    timezone_name = config_value("app_timezone", APP_TIMEZONE)
+
+    def time_fields(point: dict[str, Any]) -> dict[str, Any]:
+        times = temporal_metadata("LabResult", point, default_timezone=timezone_name)
+        return {"event_time": times.get("observed"), "ingestion_time": times.get("received")}
+
     categories: dict[str, list[dict]] = {}
     flagged = []
     for test, points in by_test.items():
@@ -279,9 +286,17 @@ def _labs() -> dict[str, Any]:
             "reference_high": latest.get("reference_high"),
             "flag": latest.get("flag", ""),
             "collected_date": latest.get("collected_date", ""),
+            **time_fields(latest),
             "count": len(points),
             "trend": trend,
-            "history": [{"date": p.get("collected_date", ""), "value": p["value"]} for p in points[-6:]],
+            "history": [
+                {
+                    "date": p.get("collected_date", ""),
+                    "value": p["value"],
+                    **time_fields(p),
+                }
+                for p in points[-6:]
+            ],
         }
         categories.setdefault(latest.get("category") or "Other", []).append(entry)
         if latest.get("flag") and latest["flag"] not in ("normal", ""):

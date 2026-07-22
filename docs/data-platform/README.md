@@ -27,6 +27,8 @@ typed repositories are introduced.
   file references, sync-run lineage, deduplication, retention, and rollout.
 - [Connector provenance](CONNECTOR_PROVENANCE.md) — connector/upload coverage,
   complete outcomes, normalized evidence links, freshness, and rollout gates.
+- [Canonical clinical time](CANONICAL_TIME.md) — event/recorded/ingestion roles,
+  partial dates, duration intervals, DST handling, and rollout/backfill.
 
 ## Reproduce the structural audit
 

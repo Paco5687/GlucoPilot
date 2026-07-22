@@ -105,6 +105,13 @@ function AGPChart({ agp }) {
 
 const TREND_ICON = { up: TrendingUp, down: TrendingDown, flat: Minus };
 
+function importDate(time) {
+  const value = time?.canonical_at;
+  if (!value) return "";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toLocaleDateString();
+}
+
 export default function Report() {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -433,7 +440,10 @@ export default function Report() {
                         <td className="px-3 py-2 text-center w-8">
                           {TrendIcon && <TrendIcon className={`w-3.5 h-3.5 inline ${t.trend === "up" ? "text-amber-500" : t.trend === "down" ? "text-sky-500" : "text-muted-foreground"}`} />}
                         </td>
-                        <td className="px-3 py-2 text-right text-[11px] text-muted-foreground">{t.collected_date}</td>
+                        <td className="px-3 py-2 text-right text-[11px] text-muted-foreground">
+                          <div>Collected {t.event_time?.source_text || t.collected_date || "unknown"}</div>
+                          {importDate(t.ingestion_time) && <div>Imported {importDate(t.ingestion_time)}</div>}
+                        </td>
                       </tr>
                     );
                   })}

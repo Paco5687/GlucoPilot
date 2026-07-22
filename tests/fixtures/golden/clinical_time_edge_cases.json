@@ -1,0 +1,25 @@
+{
+  "synthetic": true,
+  "timezone": "America/New_York",
+  "aligned_instants": [
+    "2026-07-21T14:30:00Z",
+    "2026-07-21T10:30:00-04:00"
+  ],
+  "date_only": "2026-07-21",
+  "inferred_date": "2026-07-22",
+  "fall_back": {
+    "local": "2026-11-01T01:30:00",
+    "earlier_offset": "-04:00",
+    "later_offset": "-05:00",
+    "earlier_utc": "2026-11-01T05:30:00.000Z",
+    "later_utc": "2026-11-01T06:30:00.000Z"
+  },
+  "spring_forward": {
+    "local": "2026-03-08T02:30:00"
+  },
+  "duration": {
+    "start": "2026-07-21T14:30:00Z",
+    "minutes": 30,
+    "end": "2026-07-21T15:00:00.000Z"
+  }
+}

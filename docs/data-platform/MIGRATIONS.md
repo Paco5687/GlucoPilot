@@ -28,6 +28,7 @@ the other waits, rechecks the ledger, and applies nothing.
 | 2 | `entity_schema_registry` | Persists the 34-type F0 schema catalog while preserving the 19-type generic API allowlist. |
 | 3 | `immutable_source_archive` | Adds typed immutable source payload/file metadata and sync-run tables without changing legacy JSON reads or writes. |
 | 4 | `connector_provenance_runs` | Adds connector outcome/freshness columns and immutable normalized-to-source links without changing entity JSON or APIs. |
+| 5 | `canonical_clinical_time` | Adds a rebuildable time sidecar with canonical timeline indexes, precision, inference, duration, and DST state. |
 
 ## Adding a migration
 
