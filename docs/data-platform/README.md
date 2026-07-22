@@ -49,6 +49,9 @@ typed repositories are introduced.
 - [Evidence sets and observation windows](EVIDENCE_SETS.md) — bounded time-series
   membership, deterministic checksums, exact drill-down, invalidation, and
   feature-gated Pattern citations.
+- [Deterministic Evidence Bundle API](EVIDENCE_BUNDLES.md) — owner-scoped
+  cross-domain queries, strict budgets, protected blocking contradictions,
+  source links, content-addressed caching, and semantic invalidation.
 
 ## Reproduce the structural audit
 

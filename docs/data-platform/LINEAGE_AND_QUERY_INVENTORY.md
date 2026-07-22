@@ -64,8 +64,8 @@ be reconstructed.
 | User settings / `app_settings` configuration | Connector setup, scheduler, auth/LLM/feature configuration, history narrative. |
 | Bug-report context/GitHub link | In-app reporter persistence and GitHub issue bridge only. |
 | Contradiction rule/domain/severity/explanation, both JSON sides, detection/resolution state, actor/history | Contextual Dashboard/Records/Insulin/Cycle panels, Visit Report, Health Summary, Companion, verified backup manifests. |
-| Relationship subject/predicate/object, assertion/evidence status, source/generator/input version, validity, confidence | G3 rebuild projection, future authorized graph queries and Evidence Bundles, verified backup manifests. Legacy consumers remain on field projection by default. |
-| Observation-window query/range/member IDs/checksums and claim Evidence Sets | Pattern time-series support, on-demand source drill-down, future Evidence Bundles, stale-evidence detection, verified backup manifests. |
+| Relationship subject/predicate/object, assertion/evidence status, source/generator/input version, validity, confidence | G3 rebuild projection, authorized graph queries, Evidence Bundles, and verified backup manifests. Legacy consumers remain on field projection by default. |
+| Observation-window query/range/member IDs/checksums and claim Evidence Sets | Pattern time-series support, on-demand source drill-down, Evidence Bundles, stale-evidence detection, and verified backup manifests. |
 
 ## Frontend generic-entity queries
 
