@@ -23,6 +23,7 @@ from . import db
 from .config import OWNER_EMAIL, env
 from .connector_provenance import can_advance_freshness, capture_records, latest_observed, source_failure
 from .db import config_value, set_config_value
+from .repositories import get_repositories
 
 log = logging.getLogger("glucopilot.fitbit")
 
@@ -179,7 +180,9 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
 
     if action == "status":
         conn = _get_connection()
-        latest = db.query_entities("FitbitDaily", {"owner_email": OWNER_EMAIL}, "-date", 1)
+        latest = get_repositories().fitbit_daily.query(
+            {"owner_email": OWNER_EMAIL}, "-date", 1
+        )
         return {
             "configured": bool(config_value("fitbit_client_id") and config_value("fitbit_client_secret")),
             "connected": bool(conn and conn.get("connected")),
@@ -229,16 +232,17 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
                 log.exception("fitbit sync failed")
                 return {"error": f"Fitbit sync failed: {err}", "_status": 502}
 
-            existing = db.query_entities("FitbitDaily", {"owner_email": OWNER_EMAIL})
+            repository = get_repositories().fitbit_daily
+            existing = repository.query({"owner_email": OWNER_EMAIL})
             existing_by_date = {e.get("date"): e for e in existing}
             created = updated = 0
             for day_key, data in by_day.items():
                 record = {**data, "date": day_key, "owner_email": OWNER_EMAIL}
                 if day_key in existing_by_date:
-                    db.update_entity("FitbitDaily", existing_by_date[day_key]["id"], record)
+                    repository.update(existing_by_date[day_key]["id"], record)
                     updated += 1
                 else:
-                    db.create_entity("FitbitDaily", record)
+                    repository.create(record)
                     created += 1
         if can_advance_freshness():
             set_config_value("fitbit_last_sync", _iso_now())

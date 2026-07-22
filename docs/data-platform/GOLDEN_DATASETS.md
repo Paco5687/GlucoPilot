@@ -4,7 +4,7 @@ Status: additive regression layer
 
 Implementations: `tests/fixtures/`, `tests/test_golden_data.py`,
 `tests/test_migration_fixtures.py`, `tests/test_contradictions.py`,
-`tests/test_typed_glucose.py`
+`tests/test_typed_glucose.py`, and `tests/test_typed_wearables.py`
 
 F5 establishes deterministic, public-safe fixtures for clinical interpretation
 and storage risks. The fixtures contain invented values, synthetic identifiers,
@@ -26,6 +26,7 @@ rows, credentials, or copied health information.
 | DST fall-back | Both UTC observations in the repeated local 1 a.m. hour remain present, while ambiguous local timestamps require an explicit offset. |
 | Clinical contradictions | Seven synthetic conflicts deterministically preserve both sides across glucose, pump TDD, lab unit/range, hormone timing, and revised-source rules. |
 | Typed glucose/fingersticks | Exact ±240-second dedup boundary, strict mapping, fixed pairing, restartable backfill, shadow parity, rollback, and backup counts remain deterministic. |
+| Typed wearables | Oura/Fitbit/Google provider overlap, explicit null/extension preservation, strict metric/time mapping, bounded backfill, indexed high-volume reads, parity, rollback, and backup counts remain deterministic. |
 
 `clinical_edge_cases.json` stores both the synthetic inputs and their expected
 outcomes. Tests must compare production parser, deduplication, analytics,
@@ -42,6 +43,11 @@ pins canonical/source time preservation, strict value/delta constraints,
 cross-source overlap, the inclusive tolerance boundary, invalid timestamp
 handling, idempotent backfill, query checksum/order/aggregate parity, and atomic
 rollback.
+
+`typed_wearables.json` uses invented daily measures, heart-rate samples, and
+provider identifiers. It pins same-date provider overlap, explicit-null and
+compatibility-extension preservation, invalid metric handling, source/canonical
+time identity, and value-free parity.
 
 ## Migration snapshots
 

@@ -22,7 +22,7 @@ access, and never commit or attach them to an issue.
 
 When present, typed treatment, lab-audit, contradiction-ledger, and typed
 glucose/fingerstick counts are part of the manifest and clean-restore equality
-check.
+check. Typed wearable daily/sample counts receive the same verification.
 
 Application startup performs this verified backup automatically before pending
 migrations touch an existing database. The default destination is

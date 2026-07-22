@@ -15,8 +15,9 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from . import db
-from .readings import persist_readings_deduped
 from .config import OWNER_EMAIL
+from .readings import persist_readings_deduped
+from .repositories import get_repositories
 
 RNG = random.Random(20260718)
 NOW = datetime(2026, 7, 18, 20, 0, tzinfo=timezone.utc)
@@ -157,12 +158,13 @@ def _seed_oura_and_fitbit() -> None:
         hr.append({"timestamp": _iso(t), "bpm": max(45, bpm), "source": "oura", "owner_email": OWNER_EMAIL})
         t += timedelta(minutes=5)
 
+    repositories = get_repositories()
     for i in range(0, len(oura), 1000):
-        db.bulk_create_entities("OuraDaily", oura[i:i + 1000])
+        repositories.oura_daily.create_many(oura[i:i + 1000])
     for i in range(0, len(fitbit), 1000):
-        db.bulk_create_entities("FitbitDaily", fitbit[i:i + 1000])
+        repositories.fitbit_daily.create_many(fitbit[i:i + 1000])
     for i in range(0, len(hr), 1000):
-        db.bulk_create_entities("OuraHeartRate", hr[i:i + 1000])
+        repositories.oura_heart_rate.create_many(hr[i:i + 1000])
 
 
 def _seed_cycle() -> None:

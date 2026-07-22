@@ -32,6 +32,7 @@ uploaded records, and config. One owner per deployment.
 | `canonical_time.py` | canonical event/effective/recorded/received time normalization, DST handling, and sidecar repository |
 | `typed_treatments.py` | feature-gated strict treatment, basal-segment, and pump-total projections, backfill, and parity checks |
 | `typed_glucose.py` | strict glucose/fingerstick projections, repository dedup, backfill, shadow parity, and read rollback |
+| `typed_wearables.py` | strict wearable daily/sample projections, provider overlap, bounded backfill, shadow parity, and rollback |
 | `lab_audit.py` | audited medical-record extraction, validation, verification, correction history, and compatibility projection |
 | `contradictions.py` | deterministic cross-domain contradiction rules, typed ledger, attributed resolution workflow, and API |
 | `auth.py` | first-run setup, login, **admin vs. read-only provider role**, `require_admin` |

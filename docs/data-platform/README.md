@@ -37,6 +37,8 @@ typed repositories are introduced.
   rules, both-sides display, attributed resolution history, and safe rollback.
 - [Typed glucose and fingersticks](TYPED_GLUCOSE.md) — strict projections,
   repository-owned dedup, restartable backfill, shadow parity, and read rollback.
+- [Typed wearables](TYPED_WEARABLES.md) — strict daily/sample projections,
+  explicit provider overlap, bounded backfill, indexed reads, and rollback.
 
 ## Reproduce the structural audit
 

@@ -28,6 +28,7 @@ from typing import Any
 
 from . import db
 from .config import OWNER_EMAIL
+from .repositories import get_repositories
 
 log = logging.getLogger("glucopilot.cycle")
 
@@ -39,7 +40,7 @@ MIN_CYCLE_GAP = 15  # ignore shift candidates closer than this to the last one
 
 
 def _load_temps() -> list[tuple[date, float]]:
-    rows = db.query_entities("OuraDaily", {"owner_email": OWNER_EMAIL}, "date", 2000)
+    rows = get_repositories().oura_daily.query({"owner_email": OWNER_EMAIL}, "date", 2000)
     series = []
     for r in rows:
         t = r.get("readiness_temperature_deviation")

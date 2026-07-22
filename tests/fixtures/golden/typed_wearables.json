@@ -1,0 +1,74 @@
+{
+  "synthetic": true,
+  "owner_email": "owner@glucopilot.local",
+  "daily": [
+    {
+      "entity_type": "OuraDaily",
+      "id": "synthetic-oura-daily",
+      "date": "2026-03-02",
+      "sleep_score": 82,
+      "readiness_score": 78,
+      "readiness_hrv_balance": null,
+      "activity_steps": 7412,
+      "spo2_average": 96.4,
+      "custom_synthetic_metric": "retained",
+      "owner_email": "owner@glucopilot.local"
+    },
+    {
+      "entity_type": "FitbitDaily",
+      "id": "synthetic-fitbit-daily",
+      "date": "2026-03-02",
+      "source": "fitbit",
+      "steps": 7200,
+      "resting_heart_rate": 58,
+      "sleep_minutes": 421,
+      "spo2_avg": 96.1,
+      "owner_email": "owner@glucopilot.local"
+    },
+    {
+      "entity_type": "FitbitDaily",
+      "id": "synthetic-google-daily",
+      "date": "2026-03-02",
+      "source": "google_health",
+      "steps": 7250,
+      "resting_heart_rate": 59,
+      "sleep_minutes": 419,
+      "hrv": 43.2,
+      "owner_email": "owner@glucopilot.local"
+    }
+  ],
+  "samples": [
+    {
+      "entity_type": "OuraHeartRate",
+      "id": "synthetic-oura-hr",
+      "timestamp": "2026-03-02T10:00:30Z",
+      "bpm": 62,
+      "source": "oura",
+      "owner_email": "owner@glucopilot.local"
+    },
+    {
+      "entity_type": "FitbitHeartRate",
+      "id": "synthetic-google-hr",
+      "timestamp": "2026-03-02T10:00:00Z",
+      "bpm": 64,
+      "source": "google_health",
+      "provider_id": "synthetic-provider-hr-1",
+      "owner_email": "owner@glucopilot.local"
+    }
+  ],
+  "invalid_daily": {
+    "entity_type": "OuraDaily",
+    "id": "synthetic-invalid-daily",
+    "date": "2026-03-02",
+    "sleep_score": 120,
+    "owner_email": "owner@glucopilot.local"
+  },
+  "invalid_sample": {
+    "entity_type": "FitbitHeartRate",
+    "id": "synthetic-invalid-sample",
+    "timestamp": "2026-03-02T11:00:00Z",
+    "bpm": 0,
+    "source": "google_health",
+    "owner_email": "owner@glucopilot.local"
+  }
+}

@@ -440,10 +440,10 @@ class LegacyRepositoryCatalog:
         legacy_fingersticks = self.entity("FingerstickReading")
         legacy_treatments = self.entity("Treatment")
         self.labs = self.entity("LabResult")
-        self.oura_daily = self.entity("OuraDaily")
-        self.oura_heart_rate = self.entity("OuraHeartRate")
-        self.fitbit_daily = self.entity("FitbitDaily")
-        self.fitbit_heart_rate = self.entity("FitbitHeartRate")
+        legacy_wearables = {
+            entity_type: self.entity(entity_type)
+            for entity_type in ("OuraDaily", "OuraHeartRate", "FitbitDaily", "FitbitHeartRate")
+        }
         self.relationships = LegacyRelationshipRepository(self)
         self.evidence = LegacyEvidenceRepository(self)
         from .source_archive import SqliteSourceArchiveRepository
@@ -459,6 +459,10 @@ class LegacyRepositoryCatalog:
             GlucoseCompatibilityRepository,
             SqliteTypedFingerstickRepository,
             SqliteTypedGlucoseRepository,
+        )
+        from .typed_wearables import (
+            SqliteTypedWearableRepository,
+            WearableCompatibilityRepository,
         )
         from .contradictions import SqliteContradictionRepository
 
@@ -479,6 +483,21 @@ class LegacyRepositoryCatalog:
             legacy_fingersticks,
             self.typed_fingersticks,
         )
+        self.typed_wearables = {
+            entity_type: SqliteTypedWearableRepository(entity_type, connection)
+            for entity_type in legacy_wearables
+        }
+        wearable_repositories = {
+            entity_type: WearableCompatibilityRepository(
+                legacy_wearables[entity_type],
+                self.typed_wearables[entity_type],
+            )
+            for entity_type in legacy_wearables
+        }
+        self.oura_daily = wearable_repositories["OuraDaily"]
+        self.oura_heart_rate = wearable_repositories["OuraHeartRate"]
+        self.fitbit_daily = wearable_repositories["FitbitDaily"]
+        self.fitbit_heart_rate = wearable_repositories["FitbitHeartRate"]
         self.treatments = TreatmentCompatibilityRepository(
             legacy_treatments,
             self.typed_treatments,

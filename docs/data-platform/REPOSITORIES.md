@@ -22,7 +22,7 @@ Core analytics depend on `RepositoryCatalog`, not `db.query_entities`:
 | `LabRepository` | `LabResult` JSON entities |
 | `LabAuditRepository` | Migration-7 extraction runs/observations/events plus the `LabResult` compatibility projection |
 | `ContradictionRepository` | Migration-8 deterministic detections, both evidence sides, detection state, resolution state, and immutable history |
-| `WearableRepository` | Oura/Fitbit daily and heart-rate JSON entities |
+| `WearableRepository` | Oura/Fitbit/Google Health compatibility repositories plus feature-gated strict daily/sample projections |
 | `RelationshipRepository` | Read-only projection of lab→record and message→thread references |
 | `EvidenceRepository` | Read-only projection of Pattern/Insight inline support and ChatMessage sources |
 | `SourceArchiveRepository` | Typed immutable source payload/file metadata, sync runs, outcome counters, freshness, and normalized links |
@@ -55,6 +55,13 @@ All accepted legacy mutations can project into the typed tables in the same
 transaction. Connector/import dedup is a repository operation rather than a
 second storage path. Supported queries can shadow both stores or return typed
 results under independent flags; unsupported JSON fields always fall back.
+
+I10 wraps all four wearable adapters with compatibility repositories. Oura,
+Fitbit, Google Health, supported imports, demo seed, cycle inference, and
+analytics use those boundaries. Typed daily/sample projections preserve
+provider overlap and compatibility extensions. Supported date/time/source and
+metric queries may shadow or cut over independently; unsupported fields and
+source operators fall back to legacy JSON.
 
 The relationship and evidence repositories deliberately do not create a hidden
 schema. They project current fields only. G1 and G2 will add reviewed registries

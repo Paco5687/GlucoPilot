@@ -51,6 +51,7 @@ be reconstructed.
 | Period date/phase/source/notes | Dashboard, Period Tracker, insights cycle comparisons, Overview, Companion, Visit Report. |
 | Fingerstick value/time/CGM/delta | Dashboard marker/logger, discrepancy statistics, insulin/clinical context. |
 | Typed glucose/fingerstick identity, canonical/source time, value, source, trend, fixed pair, fingerprint/version | Shadow parity, future typed reads, contradiction evaluation, verified backup manifests. |
+| Typed wearable identity, provider/date or canonical/source time, daily metrics or BPM, fingerprint/version | Shadow parity, indexed high-volume reads, cycle/Insights consumers, and verified backups. |
 | Medical-record status/date/title/file metadata | Records queue/index, delete/reprocess paths, Companion recent-document context. |
 | Lab original/normalized name/value/unit/range/flag/specimen/date, page/location, confidence, validation/verification, category/record ID | Records index/charts/matrix/search and source review, Overview, Companion, Visit Report, record cascade/reprocess. |
 | Profile/weight/demographic fields | Settings, BMI/age computation, insulin per-kg estimate, Overview, Companion, Visit Report. |
