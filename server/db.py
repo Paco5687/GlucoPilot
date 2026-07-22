@@ -252,6 +252,9 @@ def bulk_create_entities(
             "INSERT INTO entities (id, type, data, created_date, updated_date) VALUES (?, ?, ?, ?, ?)",
             rows,
         )
+        from .canonical_time import record_entity_times
+
+        record_entity_times(etype, created, connection=handle)
         if owns_connection:
             handle.commit()
     from .connector_provenance import record_entity_writes
@@ -280,12 +283,16 @@ def update_entity(
             "UPDATE entities SET data=?, updated_date=? WHERE id=?",
             (json.dumps(data), now, rid),
         )
+        from .canonical_time import record_entity_times
+
+        updated = {**data, "id": rid, "created_date": row["created_date"], "updated_date": now}
+        record_entity_times(etype, [updated], connection=handle)
         if owns_connection:
             handle.commit()
     from .connector_provenance import record_entity_writes
 
     record_entity_writes("updated", etype, [rid])
-    return {**data, "id": rid, "created_date": row["created_date"], "updated_date": now}
+    return updated
 
 
 def delete_entity(

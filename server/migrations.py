@@ -330,6 +330,74 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        5,
+        "canonical_clinical_time",
+        (
+            Statement(
+                """
+                CREATE TABLE canonical_times (
+                    owner_id TEXT NOT NULL,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE,
+                    timeline_role TEXT CHECK(timeline_role IN ('observed', 'effective_start')),
+                    timeline_at TEXT,
+                    observed_at TEXT,
+                    recorded_at TEXT,
+                    received_at TEXT,
+                    effective_start TEXT,
+                    effective_end TEXT,
+                    event_field TEXT,
+                    source_text TEXT,
+                    recorded_source_text TEXT,
+                    received_source_text TEXT,
+                    normalized_value TEXT,
+                    local_date TEXT,
+                    timezone TEXT,
+                    utc_offset TEXT,
+                    precision TEXT NOT NULL CHECK(precision IN (
+                        'second', 'minute', 'hour', 'day', 'month', 'year', 'unknown'
+                    )),
+                    basis TEXT NOT NULL CHECK(basis IN (
+                        'exact', 'patient_reported', 'source_reported', 'inferred', 'unknown'
+                    )),
+                    dst_resolution TEXT NOT NULL CHECK(dst_resolution IN (
+                        'not_applicable', 'unambiguous',
+                        'ambiguous_earlier_offset', 'ambiguous_later_offset',
+                        'nonexistent_local_time', 'unresolved'
+                    )),
+                    normalization_status TEXT NOT NULL CHECK(normalization_status IN (
+                        'resolved', 'partial', 'ambiguous', 'nonexistent', 'invalid',
+                        'not_applicable'
+                    )),
+                    inferred INTEGER NOT NULL CHECK(inferred IN (0, 1)),
+                    duration_seconds REAL CHECK(duration_seconds IS NULL OR duration_seconds >= 0),
+                    additional_times_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(additional_times_json)),
+                    normalizer_version TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    CHECK(timeline_at IS NULL OR timeline_at LIKE '%Z'),
+                    CHECK(observed_at IS NULL OR observed_at LIKE '%Z'),
+                    CHECK(recorded_at IS NULL OR recorded_at LIKE '%Z'),
+                    CHECK(received_at IS NULL OR received_at LIKE '%Z'),
+                    CHECK(effective_start IS NULL OR effective_start LIKE '%Z'),
+                    CHECK(effective_end IS NULL OR effective_end LIKE '%Z'),
+                    CHECK(local_date IS NULL OR length(local_date) = 10),
+                    CHECK((basis = 'inferred') = inferred)
+                )
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_canonical_times_timeline "
+                "ON canonical_times(owner_id, timeline_at, entity_type, timeline_role)"
+            ),
+            Statement(
+                "CREATE INDEX idx_canonical_times_local_date "
+                "ON canonical_times(owner_id, local_date, entity_type, timeline_role)"
+            ),
+            Statement("CREATE INDEX idx_canonical_times_type ON canonical_times(owner_id, entity_type)"),
+        ),
+    ),
 )
 
 
