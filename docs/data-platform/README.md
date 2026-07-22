@@ -35,6 +35,8 @@ typed repositories are introduced.
   validation, verification, correction/supersession history, and safe reprocessing.
 - [Clinical contradiction ledger](CONTRADICTIONS.md) — deterministic conflict
   rules, both-sides display, attributed resolution history, and safe rollback.
+- [Typed glucose and fingersticks](TYPED_GLUCOSE.md) — strict projections,
+  repository-owned dedup, restartable backfill, shadow parity, and read rollback.
 
 ## Reproduce the structural audit
 

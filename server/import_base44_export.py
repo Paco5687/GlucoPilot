@@ -24,6 +24,7 @@ from pathlib import Path
 
 from . import db
 from .config import OWNER_EMAIL
+from .readings import persist_readings_deduped
 
 READING_TOLERANCE = 240  # seconds
 TREATMENT_TOLERANCE = 90
@@ -66,32 +67,19 @@ class ToleranceIndex:
 
 
 def import_readings(path: Path) -> tuple[int, int]:
-    existing = db.query_entities("GlucoseReading", {"owner_email": OWNER_EMAIL}, "timestamp", 1000000)
-    index = ToleranceIndex([_epoch(r["timestamp"]) for r in existing if r.get("timestamp")])
-
     with open(path, newline="") as f:
         rows = [r for r in csv.DictReader(f) if r.get("timestamp") and r.get("value") and r.get("is_sample") != "true"]
-    rows.sort(key=lambda r: r["timestamp"])
-
-    to_create, skipped = [], 0
-    for r in rows:
-        t = _epoch(r["timestamp"])
-        if index.near(t, READING_TOLERANCE):
-            skipped += 1
-            continue
-        index.add(t)
-        to_create.append(
-            {
-                "value": round(float(r["value"])),
-                "timestamp": _iso(r["timestamp"]),
-                "trend": r.get("trend") or "Unknown",
-                "source": r.get("source") or "csv",
-                "owner_email": OWNER_EMAIL,
-            }
-        )
-    for i in range(0, len(to_create), 1000):
-        db.bulk_create_entities("GlucoseReading", to_create[i : i + 1000])
-    return len(to_create), skipped
+    mapped = [
+        {
+            "value": round(float(row["value"])),
+            "timestamp": _iso(row["timestamp"]),
+            "trend": row.get("trend") or "Unknown",
+            "source": row.get("source") or "csv",
+            "owner_email": OWNER_EMAIL,
+        }
+        for row in rows
+    ]
+    return persist_readings_deduped(mapped, READING_TOLERANCE)
 
 
 def import_treatments(path: Path) -> tuple[int, int]:

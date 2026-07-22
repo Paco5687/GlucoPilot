@@ -1,0 +1,82 @@
+{
+  "synthetic": true,
+  "owner_email": "owner@glucopilot.local",
+  "glucose": [
+    {
+      "id": "synthetic-glucose-share",
+      "value": 100,
+      "timestamp": "2026-03-01T10:00:00Z",
+      "trend": "Flat",
+      "source": "dexcom_share",
+      "owner_email": "owner@glucopilot.local"
+    },
+    {
+      "id": "synthetic-glucose-next",
+      "value": 112,
+      "timestamp": "2026-03-01T10:05:00Z",
+      "trend": "FortyFiveUp",
+      "source": "dexcom",
+      "ns_id": "synthetic-provider-reading-2",
+      "owner_email": "owner@glucopilot.local"
+    }
+  ],
+  "fingerstick": {
+    "id": "synthetic-fingerstick",
+    "value": 95,
+    "timestamp": "2026-03-01T10:01:00Z",
+    "cgm_reading_id": "synthetic-glucose-share",
+    "cgm_value": 100,
+    "cgm_timestamp": "2026-03-01T10:00:00Z",
+    "cgm_source": "dexcom_share",
+    "delta": 5,
+    "note": "Synthetic paired meter check",
+    "source": "manual",
+    "owner_email": "owner@glucopilot.local"
+  },
+  "dedup_incoming": [
+    {
+      "value": 101,
+      "timestamp": "2026-03-01T10:00:30Z",
+      "trend": "Flat",
+      "source": "nightscout",
+      "owner_email": "owner@glucopilot.local"
+    },
+    {
+      "value": 102,
+      "timestamp": "2026-03-01T10:04:00Z",
+      "trend": "Flat",
+      "source": "glooko",
+      "owner_email": "owner@glucopilot.local"
+    },
+    {
+      "value": 103,
+      "timestamp": "2026-03-01T10:04:01Z",
+      "trend": "Flat",
+      "source": "glooko",
+      "owner_email": "owner@glucopilot.local"
+    },
+    {
+      "value": 104,
+      "timestamp": "not-a-time",
+      "trend": "Unknown",
+      "source": "import",
+      "owner_email": "owner@glucopilot.local"
+    }
+  ],
+  "invalid_glucose": {
+    "id": "synthetic-invalid-glucose",
+    "value": 5,
+    "timestamp": "2026-03-01T12:00:00Z",
+    "source": "synthetic",
+    "owner_email": "owner@glucopilot.local"
+  },
+  "invalid_fingerstick": {
+    "id": "synthetic-invalid-fingerstick",
+    "value": 100,
+    "timestamp": "2026-03-01T12:00:00Z",
+    "cgm_value": 130,
+    "delta": 10,
+    "source": "manual",
+    "owner_email": "owner@glucopilot.local"
+  }
+}

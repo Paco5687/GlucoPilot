@@ -15,6 +15,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from . import db
+from .readings import persist_readings_deduped
 from .config import OWNER_EMAIL
 
 RNG = random.Random(20260718)
@@ -115,11 +116,10 @@ def _seed_glucose_and_treatments() -> tuple[int, int]:
             t += timedelta(minutes=5)
         day += timedelta(days=1)
 
-    for i in range(0, len(readings), 1000):
-        db.bulk_create_entities("GlucoseReading", readings[i:i + 1000])
+    readings_created, _ = persist_readings_deduped(readings)
     for i in range(0, len(treatments), 1000):
         db.bulk_create_entities("Treatment", treatments[i:i + 1000])
-    return len(readings), len(treatments)
+    return readings_created, len(treatments)
 
 
 def _seed_oura_and_fitbit() -> None:

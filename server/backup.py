@@ -236,6 +236,17 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                         ).fetchone()
                     ),
                 }
+            typed_glucose = None
+            if all(
+                _table_exists(connection, table)
+                for table in ("glucose_readings", "fingerstick_readings")
+            ):
+                typed_glucose = {
+                    table: dict(
+                        connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+                    )
+                    for table in ("glucose_readings", "fingerstick_readings")
+                }
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:
@@ -258,6 +269,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
         metadata["lab_audit"] = lab_audit
     if contradiction_ledger is not None:
         metadata["contradiction_ledger"] = contradiction_ledger
+    if typed_glucose is not None:
+        metadata["typed_glucose"] = typed_glucose
     if include_references:
         metadata["record_references"] = references
     return metadata
@@ -460,6 +473,8 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
         keys.append("lab_audit")
     if "contradiction_ledger" in expected_database:
         keys.append("contradiction_ledger")
+    if "typed_glucose" in expected_database:
+        keys.append("typed_glucose")
     for key in keys:
         if metadata[key] != expected_database.get(key):
             raise BackupError(f"restored database metadata mismatch: {key}")
@@ -512,6 +527,13 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
                 "unresolved_contradiction_count": metadata["contradiction_ledger"]["contradictions"]["unresolved_count"],
                 "unresolved_blocking_contradiction_count": metadata["contradiction_ledger"]["contradictions"]["unresolved_blocking_count"],
                 "contradiction_event_count": metadata["contradiction_ledger"]["events"]["count"],
+            }
+        )
+    if "typed_glucose" in expected_database:
+        verification.update(
+            {
+                "typed_glucose_reading_count": metadata["typed_glucose"]["glucose_readings"]["count"],
+                "typed_fingerstick_reading_count": metadata["typed_glucose"]["fingerstick_readings"]["count"],
             }
         )
     return verification

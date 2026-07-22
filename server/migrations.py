@@ -796,6 +796,103 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        9,
+        "typed_glucose_and_fingersticks",
+        (
+            Statement(
+                """
+                CREATE TABLE glucose_readings (
+                    entity_id TEXT PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE,
+                    canonical_id TEXT NOT NULL UNIQUE,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    owner_email TEXT NOT NULL,
+                    source TEXT NOT NULL CHECK(source != ''),
+                    source_record_id TEXT,
+                    source_record_canonical_id TEXT,
+                    observed_at TEXT NOT NULL CHECK(observed_at LIKE '%Z'),
+                    source_timestamp TEXT NOT NULL,
+                    local_date TEXT NOT NULL CHECK(length(local_date) = 10),
+                    value_mg_dl REAL NOT NULL CHECK(value_mg_dl >= 20 AND value_mg_dl <= 600),
+                    trend TEXT,
+                    assertion_kind TEXT NOT NULL CHECK(assertion_kind = 'source_fact'),
+                    source_class TEXT NOT NULL CHECK(source_class IN ('device_provider', 'import')),
+                    legacy_fingerprint TEXT NOT NULL CHECK(
+                        length(legacy_fingerprint) = 71 AND legacy_fingerprint LIKE 'sha256:%'
+                    ),
+                    mapping_version TEXT NOT NULL,
+                    received_at TEXT NOT NULL CHECK(received_at LIKE '%Z'),
+                    recorded_at TEXT NOT NULL CHECK(recorded_at LIKE '%Z'),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    updated_at TEXT NOT NULL CHECK(updated_at LIKE '%Z')
+                )
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE fingerstick_readings (
+                    entity_id TEXT PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE,
+                    canonical_id TEXT NOT NULL UNIQUE,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    owner_email TEXT NOT NULL,
+                    observed_at TEXT NOT NULL CHECK(observed_at LIKE '%Z'),
+                    source_timestamp TEXT NOT NULL,
+                    local_date TEXT NOT NULL CHECK(length(local_date) = 10),
+                    value_mg_dl REAL NOT NULL CHECK(value_mg_dl >= 10 AND value_mg_dl <= 800),
+                    source TEXT NOT NULL CHECK(source != ''),
+                    note TEXT NOT NULL DEFAULT '',
+                    paired_glucose_entity_id TEXT REFERENCES entities(id) ON DELETE SET NULL,
+                    paired_glucose_value_mg_dl REAL CHECK(
+                        paired_glucose_value_mg_dl IS NULL OR
+                        (paired_glucose_value_mg_dl >= 10 AND paired_glucose_value_mg_dl <= 800)
+                    ),
+                    paired_glucose_source_timestamp TEXT,
+                    paired_glucose_observed_at TEXT CHECK(
+                        paired_glucose_observed_at IS NULL OR paired_glucose_observed_at LIKE '%Z'
+                    ),
+                    paired_glucose_source TEXT,
+                    paired_delta_mg_dl REAL,
+                    assertion_kind TEXT NOT NULL CHECK(assertion_kind = 'patient_report'),
+                    source_class TEXT NOT NULL CHECK(source_class = 'patient'),
+                    legacy_fingerprint TEXT NOT NULL CHECK(
+                        length(legacy_fingerprint) = 71 AND legacy_fingerprint LIKE 'sha256:%'
+                    ),
+                    mapping_version TEXT NOT NULL,
+                    received_at TEXT NOT NULL CHECK(received_at LIKE '%Z'),
+                    recorded_at TEXT NOT NULL CHECK(recorded_at LIKE '%Z'),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    updated_at TEXT NOT NULL CHECK(updated_at LIKE '%Z'),
+                    CHECK(paired_delta_mg_dl IS NULL OR paired_glucose_value_mg_dl IS NOT NULL),
+                    CHECK(
+                        paired_delta_mg_dl IS NULL OR
+                        abs((paired_glucose_value_mg_dl - value_mg_dl) - paired_delta_mg_dl) <= 0.11
+                    )
+                )
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_glucose_readings_owner_time "
+                "ON glucose_readings(owner_id, observed_at, entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_glucose_readings_owner_source_time "
+                "ON glucose_readings(owner_id, source, observed_at, entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_glucose_readings_source_record "
+                "ON glucose_readings(owner_id, source, source_record_id) "
+                "WHERE source_record_id IS NOT NULL"
+            ),
+            Statement(
+                "CREATE INDEX idx_fingerstick_readings_owner_time "
+                "ON fingerstick_readings(owner_id, observed_at, entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_fingerstick_readings_pair "
+                "ON fingerstick_readings(owner_id, paired_glucose_entity_id, observed_at)"
+            ),
+        ),
+    ),
 )
 
 
