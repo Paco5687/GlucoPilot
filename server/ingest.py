@@ -27,6 +27,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 
 from . import db
 from .config import OWNER_EMAIL
+from .connector_provenance import capture_records, latest_observed, run_connector
 from .db import config_value, set_config_value
 
 log = logging.getLogger("glucopilot.ingest")
@@ -165,9 +166,20 @@ def _upsert(rows: list[dict[str, Any]]) -> dict[str, int]:
 @router.post("/api/ingest/cycle")
 async def ingest_cycle(request: Request, authorization: str | None = Header(default=None)):
     _require_token(authorization)
+    return await run_connector(
+        "cycle_ingest",
+        "ingest",
+        lambda: _ingest_cycle(request),
+        trigger_type="ingest",
+        run_kind="ingest",
+    )
+
+
+async def _ingest_cycle(request: Request):
 
     content_type = (request.headers.get("content-type") or "").lower()
     rows: list[dict[str, Any]] = []
+    source_format = "unknown"
 
     if "multipart/form-data" in content_type:
         form = await request.form()
@@ -175,6 +187,7 @@ async def ingest_cycle(request: Request, authorization: str | None = Header(defa
         if upload is None:
             raise HTTPException(status_code=400, detail="multipart body needs a 'file' field")
         rows = _rows_from_lively_csv((await upload.read()).decode("utf-8", errors="replace"))
+        source_format = "lively_csv"
     else:
         body = await request.body()
         text = body.decode("utf-8", errors="replace")
@@ -184,11 +197,20 @@ async def ingest_cycle(request: Request, authorization: str | None = Header(defa
             except ValueError:
                 raise HTTPException(status_code=400, detail="Invalid JSON body")
             rows = _rows_from_health_export(payload)
+            source_format = "health_export_json"
             if not rows:
                 log.info("ingest/cycle: no cycle rows recognized in JSON payload; keys=%s sample=%s",
                          list(payload.keys())[:8], text[:400])
         else:
             rows = _rows_from_lively_csv(text)
+            source_format = "lively_csv"
+
+    capture_records(
+        rows,
+        external_id="cycle-ingest",
+        observed_at=latest_observed(rows, "date"),
+        metadata={"format": source_format},
+    )
 
     if not rows:
         return {"ok": True, "created": 0, "updated": 0, "skipped": 0, "note": "no cycle rows recognized"}

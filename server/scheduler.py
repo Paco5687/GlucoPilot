@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 
 from . import cycle_inference, db, dexcom, dexcom_share, fitbit, glooko, google_health, health_summary, nightscout, oura, tandem
 from .config import OWNER_EMAIL, env_bool
+from .connector_provenance import run_connector
 
 log = logging.getLogger("glucopilot.scheduler")
 
@@ -101,7 +102,12 @@ async def _tick() -> None:
     if now - _last_run["dexcom_share"] >= DEXCOM_SHARE_INTERVAL and db.config_value("dexcom_share_verified") == "true":
         _last_run["dexcom_share"] = now
         try:
-            result = await dexcom_share.handle({"action": "sync", "minutes": 60, "max_count": 12})
+            result = await run_connector(
+                "dexcom_share",
+                "sync",
+                lambda: dexcom_share.handle({"action": "sync", "minutes": 60, "max_count": 12}),
+                trigger_type="scheduled",
+            )
             if result.get("readings_synced"):
                 log.info("dexcom share sync: %s", result)
         except Exception as err:
@@ -110,7 +116,9 @@ async def _tick() -> None:
     if now - _last_run["dexcom"] >= DEXCOM_INTERVAL and _dexcom_connected():
         _last_run["dexcom"] = now
         try:
-            result = await dexcom._sync()
+            result = await run_connector(
+                "dexcom", "sync", dexcom._sync, trigger_type="scheduled"
+            )
             log.info("dexcom sync: %s", result)
         except Exception as err:
             log.warning("dexcom sync failed: %s", err)
@@ -121,7 +129,12 @@ async def _tick() -> None:
         if with_profile:
             _last_run["nightscout_profile"] = now
         try:
-            result = await nightscout.handle({"action": "sync", "days": 1, "profile": with_profile})
+            result = await run_connector(
+                "nightscout",
+                "sync",
+                lambda: nightscout.handle({"action": "sync", "days": 1, "profile": with_profile}),
+                trigger_type="scheduled",
+            )
             log.info("nightscout sync: %s", result)
         except Exception as err:
             log.warning("nightscout sync failed: %s", err)
@@ -129,7 +142,12 @@ async def _tick() -> None:
     if now - _last_run["tandem"] >= TANDEM_INTERVAL and db.config_value("tandem_verified") == "true":
         _last_run["tandem"] = now
         try:
-            result = await tandem.handle({"action": "sync"})
+            result = await run_connector(
+                "tandem",
+                "sync",
+                lambda: tandem.handle({"action": "sync"}),
+                trigger_type="scheduled",
+            )
             log.info("tandem sync: %s", result)
         except Exception as err:
             log.warning("tandem sync failed: %s", err)
@@ -137,7 +155,12 @@ async def _tick() -> None:
     if now - _last_run["glooko"] >= GLOOKO_INTERVAL and db.config_value("glooko_verified") == "true":
         _last_run["glooko"] = now
         try:
-            result = await glooko.handle({"action": "sync"})
+            result = await run_connector(
+                "glooko",
+                "sync",
+                lambda: glooko.handle({"action": "sync"}),
+                trigger_type="scheduled",
+            )
             log.info("glooko sync: %s", result)
         except Exception as err:
             log.warning("glooko sync failed: %s", err)
@@ -147,7 +170,12 @@ async def _tick() -> None:
         if rows:
             _last_run["fitbit"] = now
             try:
-                result = await fitbit.handle({"action": "sync", "days": 3})
+                result = await run_connector(
+                    "fitbit",
+                    "sync",
+                    lambda: fitbit.handle({"action": "sync", "days": 3}),
+                    trigger_type="scheduled",
+                )
                 log.info("fitbit sync: %s", result)
             except Exception as err:
                 log.warning("fitbit sync failed: %s", err)
@@ -155,7 +183,12 @@ async def _tick() -> None:
     if now - _last_run["google_health_hr"] >= GOOGLE_HEALTH_HR_INTERVAL and _google_health_connected():
         _last_run["google_health_hr"] = now
         try:
-            result = await google_health.handle({"action": "sync_hr", "minutes": 30})
+            result = await run_connector(
+                "google_health",
+                "sync_hr",
+                lambda: google_health.handle({"action": "sync_hr", "minutes": 30}),
+                trigger_type="scheduled",
+            )
             if result.get("created"):
                 log.info("google health HR sync: %s", result)
         except Exception as err:
@@ -164,7 +197,12 @@ async def _tick() -> None:
     if now - _last_run["google_health"] >= GOOGLE_HEALTH_INTERVAL and _google_health_connected():
         _last_run["google_health"] = now
         try:
-            result = await google_health.handle({"action": "sync", "days": 3})
+            result = await run_connector(
+                "google_health",
+                "sync",
+                lambda: google_health.handle({"action": "sync", "days": 3}),
+                trigger_type="scheduled",
+            )
             log.info("google health sync: %s", result)
         except Exception as err:
             log.warning("google health sync failed: %s", err)
@@ -172,7 +210,12 @@ async def _tick() -> None:
     if now - _last_run["oura"] >= OURA_INTERVAL and _oura_connected():
         _last_run["oura"] = now
         try:
-            result = await oura.handle_sync({"days": 2})
+            result = await run_connector(
+                "oura",
+                "sync",
+                lambda: oura.handle_sync({"days": 2}),
+                trigger_type="scheduled",
+            )
             log.info("oura sync: %s", result)
         except Exception as err:
             log.warning("oura sync failed: %s", err)

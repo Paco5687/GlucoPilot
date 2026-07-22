@@ -9,6 +9,7 @@ import httpx
 
 from . import db
 from .config import OWNER_EMAIL
+from .connector_provenance import can_advance_freshness, capture_records, latest_observed, source_failure
 
 VALID_TRENDS = {"DoubleUp", "SingleUp", "FortyFiveUp", "Flat", "FortyFiveDown", "SingleDown", "DoubleDown"}
 
@@ -137,10 +138,16 @@ def _get_config() -> dict[str, str] | None:
 async def _sync_profile(client: httpx.AsyncClient, ns_url: str, headers: dict) -> None:
     res = await client.get(f"{ns_url}/api/v1/profile.json", headers=headers)
     if res.status_code >= 400:
+        source_failure(f"Nightscout profile failed with status {res.status_code}")
         return
     profiles = res.json()
     if not isinstance(profiles, list):
         profiles = [profiles]
+    capture_records(
+        profiles,
+        external_id="/api/v1/profile.json",
+        metadata={"endpoint": "profile"},
+    )
     for p in profiles:
         profile_name = p.get("defaultProfile") or "Default"
         store = (p.get("store") or {}).get(profile_name) or {}
@@ -211,14 +218,38 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
             if entries_res.status_code >= 400:
                 return {"error": f"Entries fetch failed: {entries_res.status_code}", "_status": 502}
             entries = entries_res.json()
+            capture_records(
+                entries,
+                external_id="/api/v1/entries.json?type=sgv",
+                observed_at=latest_observed(entries, "date", "dateString"),
+                metadata={"endpoint": "entries"},
+            )
 
             mbg_res = await client.get(f"{ns_url}/api/v1/entries.json?find[type]=mbg&count=100", headers=headers)
             mbg_entries = mbg_res.json() if mbg_res.status_code < 400 else []
+            if mbg_res.status_code >= 400:
+                source_failure(f"Nightscout meter entries failed with status {mbg_res.status_code}")
+            else:
+                capture_records(
+                    mbg_entries,
+                    external_id="/api/v1/entries.json?type=mbg",
+                    observed_at=latest_observed(mbg_entries, "date", "dateString"),
+                    metadata={"endpoint": "meter_entries"},
+                )
 
             treatments_res = await client.get(
                 f"{ns_url}/api/v1/treatments.json?find[created_at][$gte]={from_iso}&count=1000", headers=headers
             )
             treatments = treatments_res.json() if treatments_res.status_code < 400 else []
+            if treatments_res.status_code >= 400:
+                source_failure(f"Nightscout treatments failed with status {treatments_res.status_code}")
+            else:
+                capture_records(
+                    treatments,
+                    external_id="/api/v1/treatments.json",
+                    observed_at=latest_observed(treatments, "created_at", "timestamp"),
+                    metadata={"endpoint": "treatments"},
+                )
 
             readings = []
             for e in entries:
@@ -262,16 +293,24 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
             new_treatments = [t for t in mapped_treatments if not t.get("ns_id") or t["ns_id"] not in existing_ns_ids]
 
             readings_created = 0
+            readings_skipped = 0
             if readings:
                 from .readings import persist_readings_deduped
-                readings_created, _ = persist_readings_deduped(readings)
+                readings_created, readings_skipped = persist_readings_deduped(readings)
             if new_treatments:
                 db.bulk_create_entities("Treatment", new_treatments)
 
             if body.get("profile", True):
                 await _sync_profile(client, ns_url, headers)
-            _touch_last_sync(config["settings_id"])
-            return {"ok": True, "readings_synced": readings_created, "treatments_synced": len(new_treatments)}
+            if can_advance_freshness():
+                _touch_last_sync(config["settings_id"])
+            return {
+                "ok": True,
+                "readings_synced": readings_created,
+                "readings_skipped": readings_skipped,
+                "treatments_synced": len(new_treatments),
+                "treatments_skipped": len(mapped_treatments) - len(new_treatments),
+            }
 
         if action == "backfill":
             days = int(body.get("days") or 14)
@@ -283,14 +322,38 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
             if entries_res.status_code >= 400:
                 return {"error": f"Entries fetch failed: {entries_res.status_code}", "_status": 502}
             entries = entries_res.json()
+            capture_records(
+                entries,
+                external_id="/api/v1/entries.json?type=sgv",
+                observed_at=latest_observed(entries, "date", "dateString"),
+                metadata={"endpoint": "entries"},
+            )
 
             mbg_res = await client.get(f"{ns_url}/api/v1/entries.json?find[type]=mbg&count=1000", headers=headers)
             mbg_entries = mbg_res.json() if mbg_res.status_code < 400 else []
+            if mbg_res.status_code >= 400:
+                source_failure(f"Nightscout meter entries failed with status {mbg_res.status_code}")
+            else:
+                capture_records(
+                    mbg_entries,
+                    external_id="/api/v1/entries.json?type=mbg",
+                    observed_at=latest_observed(mbg_entries, "date", "dateString"),
+                    metadata={"endpoint": "meter_entries"},
+                )
 
             treatments_res = await client.get(
                 f"{ns_url}/api/v1/treatments.json?find[created_at][$gte]={from_iso}&count=2000", headers=headers
             )
             treatments = treatments_res.json() if treatments_res.status_code < 400 else []
+            if treatments_res.status_code >= 400:
+                source_failure(f"Nightscout treatments failed with status {treatments_res.status_code}")
+            else:
+                capture_records(
+                    treatments,
+                    external_id="/api/v1/treatments.json",
+                    observed_at=latest_observed(treatments, "created_at", "timestamp"),
+                    metadata={"endpoint": "treatments"},
+                )
 
             readings = []
             for e in entries:
@@ -327,15 +390,23 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
             db.delete_entities_where("Treatment", {"source": "nightscout", "owner_email": OWNER_EMAIL})
 
             readings_created = 0
+            readings_skipped = 0
             if readings:
                 from .readings import persist_readings_deduped
-                readings_created, _ = persist_readings_deduped(readings)
+                readings_created, readings_skipped = persist_readings_deduped(readings)
             if mapped_treatments:
                 db.bulk_create_entities("Treatment", mapped_treatments)
 
             await _sync_profile(client, ns_url, headers)
-            _touch_last_sync(config["settings_id"])
-            return {"ok": True, "readings_synced": readings_created, "treatments_synced": len(mapped_treatments)}
+            if can_advance_freshness():
+                _touch_last_sync(config["settings_id"])
+            return {
+                "ok": True,
+                "readings_synced": readings_created,
+                "readings_skipped": readings_skipped,
+                "treatments_synced": len(mapped_treatments),
+                "treatments_skipped": 0,
+            }
 
     return {"error": "Unknown action", "_status": 400}
 

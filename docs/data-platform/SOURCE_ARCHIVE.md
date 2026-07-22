@@ -5,14 +5,16 @@ Status: additive typed foundation, integration writes disabled by default
 Implementations: `server/source_archive.py`, migration 3 in
 `server/migrations.py`
 
-I1 introduces three typed tables without changing legacy JSON reads, API
-schemas, or source-sync behavior:
+I1 introduced three typed tables without changing legacy JSON reads or API
+schemas. I2 adds immutable normalized evidence links and feature-flagged source
+instrumentation:
 
 | Table | Responsibility | Mutability |
 |---|---|---|
 | `source_records` | Scrubbed canonical JSON payload, source/external identity, observed/received times, parser version, hash, compression sizes, and originating sync run | Updates rejected by a database trigger; retention may delete complete rows |
 | `source_files` | Relative reference and SHA-256 for an existing document, with source/time/parser/run metadata; never stores document bytes | Updates rejected by a database trigger; retention deletes only the reference |
 | `sync_runs` | Source/parser lifecycle and archived/deduplicated record/file counters | Moves once from `running` to `succeeded`, `partial`, or `failed` |
+| `normalized_source_links` | Owner-scoped link from an existing generic entity to one immutable source manifest or file reference | Updates rejected; source retention or entity deletion cascades the derived link |
 
 Foreign keys restrict deletion of a sync run while an archived record or file
 still refers to it. Archive writes can share the existing SQLite unit of work
@@ -64,6 +66,7 @@ Defaults are conservative and configurable:
 SOURCE_ARCHIVE_ENABLED=false
 SOURCE_ARCHIVE_RETENTION_DAYS=90
 SOURCE_ARCHIVE_MAX_PAYLOAD_BYTES=2097152
+CONNECTOR_PROVENANCE_ENABLED=false
 ```
 
 `stats()` reports policy values, record count, uncompressed/stored byte totals,
@@ -74,14 +77,18 @@ from the records directory.
 
 ## Rollout
 
-`SOURCE_ARCHIVE_ENABLED` remains false and no integration calls the archive in
-I1. Each source will require a separately reviewed adapter that:
+Both flags remain false by default. I2 instruments supported sources only when
+`SOURCE_ARCHIVE_ENABLED=true` and `CONNECTOR_PROVENANCE_ENABLED=true`. Each
+instrumented source:
 
 - starts and finishes a sync run;
-- archives the provider response before parsing while keeping secrets outside
+- archives provider responses before persistence while keeping secrets outside
   the payload;
 - writes raw and legacy/canonical results in one unit of work where practical;
 - records a stable parser version; and
+- records fetched/created/updated/skipped/failed/stale outcomes and freshness;
+- links new normalized rows to an immutable source manifest or file reference;
+- prevents partial/failed sources from recording successful freshness; and
 - passes the synthetic secret, deduplication, failure, and retention fixtures.
 
 Legacy JSON remains authoritative until later feature-flagged read cutovers.

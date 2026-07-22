@@ -36,6 +36,12 @@ import httpx
 
 from . import db
 from .config import OWNER_EMAIL, env
+from .connector_provenance import (
+    can_advance_freshness,
+    capture_records,
+    latest_payload_observed,
+    source_failure,
+)
 from .db import config_value, set_config_value
 
 log = logging.getLogger("glucopilot.google_health")
@@ -164,9 +170,17 @@ async def _list_points(
             continue
         if res.status_code >= 400:
             log.warning("google health %s failed: %s %s", data_type, res.status_code, res.text[:200])
+            source_failure(f"Google Health {data_type} failed with status {res.status_code}")
             return points
         data = res.json()
-        points.extend(data.get("dataPoints", []))
+        page = data.get("dataPoints", [])
+        capture_records(
+            page,
+            external_id=data_type,
+            observed_at=latest_payload_observed(page),
+            metadata={"data_type": data_type},
+        )
+        points.extend(page)
         page_token = data.get("nextPageToken")
         if not page_token:
             break
@@ -198,10 +212,18 @@ async def _list_interval(
         res = await client.get(base, params=params, headers={"Authorization": f"Bearer {token}"})
         if res.status_code >= 400:
             log.warning("google health %s failed: %s %s", data_type, res.status_code, res.text[:200])
+            source_failure(f"Google Health {data_type} failed with status {res.status_code}")
             return out
         data = res.json()
+        page = data.get("dataPoints", [])
+        capture_records(
+            page,
+            external_id=data_type,
+            observed_at=latest_payload_observed(page),
+            metadata={"data_type": data_type},
+        )
         stop = False
-        for p in data.get("dataPoints", []):
+        for p in page:
             v = p.get(value_key) or {}
             interval = v.get("interval") or {}
             d = _date_obj(((interval.get("civilStartTime") or {}).get("date")) or {}) or _local_date(
@@ -326,8 +348,9 @@ async def _fetch_window(client: httpx.AsyncClient, token: str, start: date, end:
     for fetch in _FETCHERS:
         try:
             await fetch(client, token, by_day, day, s, e, tz)
-        except Exception:
+        except Exception as error:
             log.exception("google health fetcher %s failed", getattr(fetch, "__name__", fetch))
+            source_failure(error)
     by_day.pop("", None)
     return by_day
 
@@ -359,10 +382,18 @@ async def _sync_heart_rate(minutes: int = 180) -> dict[str, Any]:
             res = await client.get(base, params=params, headers={"Authorization": f"Bearer {token}"})
             if res.status_code >= 400:
                 log.warning("google health heart-rate failed: %s %s", res.status_code, res.text[:200])
+                source_failure(f"Google Health heart-rate failed with status {res.status_code}")
                 break
             data = res.json()
+            page = data.get("dataPoints", [])
+            capture_records(
+                page,
+                external_id="heart-rate",
+                observed_at=latest_payload_observed(page),
+                metadata={"data_type": "heart-rate"},
+            )
             stop = False
-            for p in data.get("dataPoints", []):
+            for p in page:
                 v = p.get("heartRate") or {}
                 st = (v.get("sampleTime") or {}).get("physicalTime")
                 bpm = v.get("beatsPerMinute")
@@ -397,8 +428,14 @@ async def _sync_heart_rate(minutes: int = 180) -> dict[str, Any]:
     ]
     if to_create:
         db.bulk_create_entities("FitbitHeartRate", to_create)
-    set_config_value("google_health_hr_last_sync", _iso_now())
-    return {"success": True, "created": len(to_create), "buckets": len(buckets)}
+    if can_advance_freshness():
+        set_config_value("google_health_hr_last_sync", _iso_now())
+    return {
+        "success": True,
+        "created": len(to_create),
+        "buckets": len(buckets),
+        "samples_skipped": len(buckets) - len(to_create),
+    }
 
 
 async def handle(body: dict[str, Any]) -> dict[str, Any]:
@@ -504,7 +541,8 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
                 else:
                     db.create_entity("FitbitDaily", record)
                     created += 1
-        set_config_value("google_health_last_sync", _iso_now())
+        if can_advance_freshness():
+            set_config_value("google_health_last_sync", _iso_now())
         return {"success": True, "created": created, "updated": updated, "days_synced": len([d for d in by_day.values() if d])}
 
     return {"error": "Unknown action", "_status": 400}

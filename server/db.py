@@ -29,6 +29,7 @@ log = logging.getLogger("glucopilot.db")
 def connect() -> sqlite3.Connection:
     db = sqlite3.connect(DB_PATH, timeout=30)
     db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys=ON")
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA busy_timeout=30000")
     return db
@@ -253,6 +254,9 @@ def bulk_create_entities(
         )
         if owns_connection:
             handle.commit()
+    from .connector_provenance import record_entity_writes
+
+    record_entity_writes("created", etype, [record["id"] for record in created])
     return created
 
 
@@ -278,6 +282,9 @@ def update_entity(
         )
         if owns_connection:
             handle.commit()
+    from .connector_provenance import record_entity_writes
+
+    record_entity_writes("updated", etype, [rid])
     return {**data, "id": rid, "created_date": row["created_date"], "updated_date": now}
 
 

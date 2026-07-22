@@ -249,6 +249,87 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        4,
+        "connector_provenance_runs",
+        (
+            Statement(
+                "ALTER TABLE sync_runs ADD COLUMN run_kind TEXT NOT NULL DEFAULT 'archive' "
+                "CHECK(run_kind IN ('archive', 'connector', 'upload', 'ingest', 'reprocess'))"
+            ),
+            Statement(
+                "ALTER TABLE sync_runs ADD COLUMN trigger_type TEXT NOT NULL DEFAULT 'unknown' "
+                "CHECK(trigger_type IN ('unknown', 'scheduled', 'manual', 'backfill', 'upload', 'ingest', 'reprocess'))"
+            ),
+            Statement(
+                "ALTER TABLE sync_runs ADD COLUMN connector_version TEXT NOT NULL DEFAULT 'legacy'"
+            ),
+            Statement(
+                "ALTER TABLE sync_runs ADD COLUMN fetched_count INTEGER NOT NULL DEFAULT 0 "
+                "CHECK(fetched_count >= 0)"
+            ),
+            Statement(
+                "ALTER TABLE sync_runs ADD COLUMN created_count INTEGER NOT NULL DEFAULT 0 "
+                "CHECK(created_count >= 0)"
+            ),
+            Statement(
+                "ALTER TABLE sync_runs ADD COLUMN updated_count INTEGER NOT NULL DEFAULT 0 "
+                "CHECK(updated_count >= 0)"
+            ),
+            Statement(
+                "ALTER TABLE sync_runs ADD COLUMN skipped_count INTEGER NOT NULL DEFAULT 0 "
+                "CHECK(skipped_count >= 0)"
+            ),
+            Statement(
+                "ALTER TABLE sync_runs ADD COLUMN failed_count INTEGER NOT NULL DEFAULT 0 "
+                "CHECK(failed_count >= 0)"
+            ),
+            Statement(
+                "ALTER TABLE sync_runs ADD COLUMN stale_count INTEGER NOT NULL DEFAULT 0 "
+                "CHECK(stale_count >= 0)"
+            ),
+            Statement("ALTER TABLE sync_runs ADD COLUMN last_successful_data_at TEXT"),
+            Statement(
+                """
+                CREATE TABLE normalized_source_links (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+                    source_record_id TEXT REFERENCES source_records(id) ON DELETE CASCADE,
+                    source_file_id TEXT REFERENCES source_files(id) ON DELETE CASCADE,
+                    sync_run_id TEXT NOT NULL REFERENCES sync_runs(id) ON DELETE CASCADE,
+                    parser_version TEXT NOT NULL,
+                    linked_at TEXT NOT NULL,
+                    CHECK(
+                        (source_record_id IS NOT NULL AND source_file_id IS NULL) OR
+                        (source_record_id IS NULL AND source_file_id IS NOT NULL)
+                    )
+                )
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_normalized_links_entity "
+                "ON normalized_source_links(owner_id, entity_type, entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_normalized_links_run ON normalized_source_links(sync_run_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_sync_runs_freshness "
+                "ON sync_runs(owner_id, source_type, status, last_successful_data_at)"
+            ),
+            Statement(
+                """
+                CREATE TRIGGER normalized_source_links_immutable
+                BEFORE UPDATE ON normalized_source_links
+                BEGIN
+                    SELECT RAISE(ABORT, 'normalized_source_links are immutable');
+                END
+                """
+            ),
+        ),
+    ),
 )
 
 

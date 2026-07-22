@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from . import companion, cycle_inference, dexcom, dexcom_share, fingerstick, fitbit, glooko, google_health, health_summary, insights, insulin, nightscout, oura, patterns, tandem
 from .auth import require_admin
+from .connector_provenance import run_connector
 
 log = logging.getLogger("glucopilot.functions")
 
@@ -16,24 +17,41 @@ router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 async def _dispatch(name: str, body: dict[str, Any]) -> Any:
+    source = {
+        "nightscout": "nightscout",
+        "ouraSync": "oura",
+        "dexcom": "dexcom",
+        "tandem": "tandem",
+        "glooko": "glooko",
+        "dexcomShare": "dexcom_share",
+        "fitbit": "fitbit",
+        "googleHealth": "google_health",
+    }.get(name)
+    action = str(body.get("action") or ("sync" if name == "ouraSync" else ""))
+
+    async def dispatch_connector(operation):
+        if source and action in {"sync", "sync_hr", "backfill"}:
+            return await run_connector(source, action, operation, trigger_type="manual")
+        return await operation()
+
     if name == "nightscout":
-        return await nightscout.handle(body)
+        return await dispatch_connector(lambda: nightscout.handle(body))
     if name == "ouraAuth":
         return await oura.handle_auth(body)
     if name == "ouraSync":
-        return await oura.handle_sync(body)
+        return await dispatch_connector(lambda: oura.handle_sync(body))
     if name == "dexcom":
-        return await dexcom.handle(body)
+        return await dispatch_connector(lambda: dexcom.handle(body))
     if name == "tandem":
-        return await tandem.handle(body)
+        return await dispatch_connector(lambda: tandem.handle(body))
     if name == "glooko":
-        return await glooko.handle(body)
+        return await dispatch_connector(lambda: glooko.handle(body))
     if name == "dexcomShare":
-        return await dexcom_share.handle(body)
+        return await dispatch_connector(lambda: dexcom_share.handle(body))
     if name == "fitbit":
-        return await fitbit.handle(body)
+        return await dispatch_connector(lambda: fitbit.handle(body))
     if name == "googleHealth":
-        return await google_health.handle(body)
+        return await dispatch_connector(lambda: google_health.handle(body))
     if name == "analyzePatterns":
         return await patterns.analyze()
     if name == "healthSummary":
