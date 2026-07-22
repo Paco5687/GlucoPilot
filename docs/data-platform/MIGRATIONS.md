@@ -34,6 +34,7 @@ the other waits, rechecks the ledger, and applies nothing.
 | 8 | `clinical_contradiction_ledger` | Adds versioned rule runs, both-sides contradiction records, and immutable attributed resolution events without changing legacy clinical rows. |
 | 9 | `typed_glucose_and_fingersticks` | Adds strict, indexed, rebuildable glucose and paired-fingerstick projections without changing legacy JSON authority or generic APIs. |
 | 10 | `typed_wearable_storage` | Adds strict, indexed, rebuildable daily wearable and heart-rate sample projections while preserving provider overlap and legacy APIs. |
+| 11 | `governed_relationship_storage` | Adds strict owner-scoped edges plus governed predicate, assertion-status, evidence-level, and deterministic-algorithm registries without changing legacy relationship reads. |
 
 ## Adding a migration
 
@@ -43,6 +44,8 @@ the other waits, rechecks the ledger, and applies nothing.
 - Use parameterized `Statement` objects for data/registry changes.
 - Add new schema metadata to `ENTITY_SCHEMAS` and insert/update it in the new
   migration. Registration must not accidentally grant generic API exposure.
+- Add relationship vocabulary only through a new migration and the immutable
+  code registry; startup rejects predicate/status/evidence/algorithm drift.
 - Keep migrations additive and SQLite-transactional. Network/filesystem work
   does not belong in a schema migration.
 - Add clean-install, legacy-upgrade, idempotency, rollback, drift, and

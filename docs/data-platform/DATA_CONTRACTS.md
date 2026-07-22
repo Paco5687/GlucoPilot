@@ -187,6 +187,25 @@ new inputs requires a new input snapshot/version, not necessarily a new
 algorithm version. Derived outputs may be superseded but are not mutated in a
 way that erases their original algorithm and input version.
 
+## Relationship projection contract
+
+Projected relationships reuse these primitives rather than treating an edge as
+an anonymous subject/predicate/object tuple. Every edge records the deployment
+owner, registered node types, governed predicate, assertion kind/status,
+evidence level, source class/identifier, deterministic generator ID/version,
+immutable input-data version/hash, validity, confidence, and generation time.
+
+Predicate registration fixes its allowed subject/object types and inverse.
+Assertion-status, evidence-level, predicate, and relationship-algorithm
+registries are migration-owned and validated at startup. A new vocabulary term
+or algorithm version therefore requires an additive migration, not an ad hoc
+runtime insert.
+
+Projection identity includes generator and input-data version. The same input
+is idempotent; new input produces a new row, preserving the prior generation
+for later supersession or complete rebuild. See
+[Governed relationship projection](RELATIONSHIP_GRAPH.md).
+
 ## Entity-level destination map
 
 All 34 registered entity types map to the v1 primitives. Envelope
@@ -234,6 +253,7 @@ are omitted from the time column below for brevity.
 | Companion / `ChatMessage` | parent-scoped | envelope only | patient report or algorithm hypothesis; patient or algorithm |
 | Operations / `BugReport` | application record | envelope received/recorded | patient report; patient |
 | Reliability / contradiction ledger | detection fingerprint | first/last detected recorded UTC | versioned rule detection retaining both source assertions; resolution is a separate attributed user action |
+| Relationship projection | owner + generator/version + input-data version + projection key | point, interval, open-ended, or unknown validity | governed assertion/evidence/source metadata; deterministic rebuildable algorithm required |
 
 Mixed-source legacy types such as `PeriodLog`, `Treatment`, `Diagnosis`, and
 `HealthMemory` choose assertion/source metadata per row; the allowed set is not

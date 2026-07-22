@@ -82,6 +82,9 @@ database.
   partially updated.
 - Migration: every maintained prior-release snapshot converges without data
   loss.
+- Relationship graph: governed registry drift/unknowns, subject/object and
+  owner validation, temporal/confidence filters, deterministic immutable
+  generations, compatibility reads, indexes, and backup counts.
 
 ## CI gate
 

@@ -89,6 +89,29 @@ class RelationshipEdge:
     predicate: str
     object_type: str
     object_id: str
+    id: str | None = None
+    owner_id: str | None = None
+    owner_email: str | None = None
+    assertion_kind: str | None = None
+    assertion_status: str | None = None
+    evidence_level: str | None = None
+    evidence_ids: tuple[str, ...] = ()
+    source_class: str | None = None
+    source_id: str | None = None
+    generator_id: str | None = None
+    generator_version: str | None = None
+    input_data_version: str | None = None
+    input_hash: str | None = None
+    projection_key: str | None = None
+    valid_time_kind: str | None = None
+    valid_from: str | None = None
+    valid_to: str | None = None
+    confidence_label: str | None = None
+    confidence_score: float | None = None
+    confidence_method: str | None = None
+    confidence_calibration_version: str | None = None
+    generated_at: str | None = None
+    created_at: str | None = None
 
 
 @runtime_checkable
@@ -242,6 +265,7 @@ class RepositoryCatalog(Protocol):
     fitbit_daily: WearableRepository
     fitbit_heart_rate: WearableRepository
     relationships: RelationshipRepository
+    typed_relationships: RelationshipRepository
     evidence: EvidenceRepository
     source_archive: SourceArchiveRepository
     clinical_time: ClinicalTimeRepository
@@ -444,7 +468,7 @@ class LegacyRepositoryCatalog:
             entity_type: self.entity(entity_type)
             for entity_type in ("OuraDaily", "OuraHeartRate", "FitbitDaily", "FitbitHeartRate")
         }
-        self.relationships = LegacyRelationshipRepository(self)
+        legacy_relationships = LegacyRelationshipRepository(self)
         self.evidence = LegacyEvidenceRepository(self)
         from .source_archive import SqliteSourceArchiveRepository
         from .canonical_time import SqliteClinicalTimeRepository
@@ -465,6 +489,7 @@ class LegacyRepositoryCatalog:
             WearableCompatibilityRepository,
         )
         from .contradictions import SqliteContradictionRepository
+        from .relationships import RelationshipCompatibilityRepository, SqliteRelationshipRepository
 
         self.source_archive = SqliteSourceArchiveRepository(connection)
         self.clinical_time = SqliteClinicalTimeRepository(connection)
@@ -472,6 +497,11 @@ class LegacyRepositoryCatalog:
         self.basal_segments = SqliteBasalSegmentRepository(connection)
         self.pump_daily_totals = SqlitePumpDailyTotalRepository(connection)
         self.contradictions = SqliteContradictionRepository(connection)
+        self.typed_relationships = SqliteRelationshipRepository(connection)
+        self.relationships = RelationshipCompatibilityRepository(
+            legacy_relationships,
+            self.typed_relationships,
+        )
         self.typed_glucose = SqliteTypedGlucoseRepository(connection)
         self.typed_fingersticks = SqliteTypedFingerstickRepository(connection)
         self.glucose = GlucoseCompatibilityRepository(
