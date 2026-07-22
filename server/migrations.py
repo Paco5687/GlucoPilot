@@ -398,6 +398,131 @@ MIGRATIONS = (
             Statement("CREATE INDEX idx_canonical_times_type ON canonical_times(owner_id, entity_type)"),
         ),
     ),
+    Migration(
+        6,
+        "typed_treatment_domain",
+        (
+            Statement(
+                """
+                CREATE TABLE typed_treatments (
+                    entity_id TEXT PRIMARY KEY REFERENCES entities(id) ON DELETE CASCADE,
+                    canonical_id TEXT NOT NULL UNIQUE,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    owner_email TEXT NOT NULL,
+                    source TEXT NOT NULL CHECK(source != ''),
+                    source_record_id TEXT,
+                    source_record_canonical_id TEXT,
+                    occurred_at TEXT NOT NULL CHECK(occurred_at LIKE '%Z'),
+                    source_timestamp TEXT NOT NULL,
+                    local_date TEXT NOT NULL CHECK(length(local_date) = 10),
+                    kind TEXT NOT NULL CHECK(kind IN (
+                        'insulin', 'carbohydrate', 'blood_glucose', 'note',
+                        'basal', 'suspension', 'other'
+                    )),
+                    legacy_type TEXT NOT NULL CHECK(legacy_type != ''),
+                    event_type TEXT,
+                    amount_value REAL CHECK(amount_value IS NULL OR amount_value >= 0),
+                    amount_unit TEXT CHECK(amount_unit IS NULL OR amount_unit IN ('U', 'g')),
+                    insulin_type TEXT,
+                    glucose_mg_dl REAL CHECK(glucose_mg_dl IS NULL OR glucose_mg_dl >= 0),
+                    glucose_type TEXT,
+                    notes TEXT,
+                    reason TEXT,
+                    pre_bolus_minutes REAL,
+                    legacy_fingerprint TEXT NOT NULL CHECK(
+                        length(legacy_fingerprint) = 71 AND legacy_fingerprint LIKE 'sha256:%'
+                    ),
+                    mapping_version TEXT NOT NULL,
+                    received_at TEXT NOT NULL CHECK(received_at LIKE '%Z'),
+                    recorded_at TEXT NOT NULL CHECK(recorded_at LIKE '%Z'),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    updated_at TEXT NOT NULL CHECK(updated_at LIKE '%Z'),
+                    CHECK(kind != 'carbohydrate' OR (amount_value IS NOT NULL AND amount_unit = 'g')),
+                    CHECK(kind != 'blood_glucose' OR glucose_mg_dl IS NOT NULL)
+                )
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE basal_segments (
+                    treatment_entity_id TEXT PRIMARY KEY
+                        REFERENCES typed_treatments(entity_id) ON DELETE CASCADE,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    source TEXT NOT NULL CHECK(source != ''),
+                    source_record_id TEXT,
+                    segment_kind TEXT NOT NULL CHECK(segment_kind IN ('temp_basal', 'suspension')),
+                    started_at TEXT NOT NULL CHECK(started_at LIKE '%Z'),
+                    ended_at TEXT CHECK(ended_at IS NULL OR ended_at LIKE '%Z'),
+                    duration_seconds REAL CHECK(duration_seconds IS NULL OR duration_seconds >= 0),
+                    rate_units_per_hour REAL CHECK(
+                        rate_units_per_hour IS NULL OR rate_units_per_hour >= 0
+                    ),
+                    percent_of_profile REAL,
+                    mapping_version TEXT NOT NULL,
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    updated_at TEXT NOT NULL CHECK(updated_at LIKE '%Z'),
+                    CHECK(
+                        (duration_seconds IS NULL AND ended_at IS NULL) OR
+                        (duration_seconds IS NOT NULL AND ended_at IS NOT NULL)
+                    )
+                )
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE pump_daily_totals (
+                    treatment_entity_id TEXT PRIMARY KEY
+                        REFERENCES typed_treatments(entity_id) ON DELETE CASCADE,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    source TEXT NOT NULL CHECK(source != ''),
+                    source_record_id TEXT,
+                    occurred_at TEXT NOT NULL CHECK(occurred_at LIKE '%Z'),
+                    local_date TEXT NOT NULL CHECK(length(local_date) = 10),
+                    total_units REAL NOT NULL CHECK(total_units >= 0),
+                    basal_units REAL CHECK(basal_units IS NULL OR basal_units >= 0),
+                    bolus_units REAL CHECK(bolus_units IS NULL OR bolus_units >= 0),
+                    completeness TEXT NOT NULL CHECK(completeness IN ('complete', 'partial')),
+                    mapping_version TEXT NOT NULL,
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    updated_at TEXT NOT NULL CHECK(updated_at LIKE '%Z')
+                )
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_typed_treatments_owner_time "
+                "ON typed_treatments(owner_id, occurred_at, entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_typed_treatments_owner_source_time "
+                "ON typed_treatments(owner_id, source, occurred_at, entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_typed_treatments_source_record "
+                "ON typed_treatments(owner_id, source, source_record_id) "
+                "WHERE source_record_id IS NOT NULL"
+            ),
+            Statement(
+                "CREATE INDEX idx_typed_treatments_kind_time "
+                "ON typed_treatments(owner_id, kind, occurred_at, entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_basal_segments_owner_time "
+                "ON basal_segments(owner_id, started_at, treatment_entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_basal_segments_source_time "
+                "ON basal_segments(owner_id, source, started_at, treatment_entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_pump_daily_totals_owner_date "
+                "ON pump_daily_totals(owner_id, local_date, treatment_entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_pump_daily_totals_source_date "
+                "ON pump_daily_totals(owner_id, source, local_date, treatment_entity_id)"
+            ),
+        ),
+    ),
 )
 
 

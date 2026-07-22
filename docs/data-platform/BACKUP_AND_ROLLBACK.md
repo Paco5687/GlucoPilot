@@ -72,9 +72,12 @@ Prefer a read/code rollback over schema reversal:
 
 - If a typed-read feature fails, disable its read feature switch and keep dual
   writes running when safe.
-- If the application fails but the additive migration committed, redeploy the
-  previously recorded image. Older releases must ignore additive tables; do
-  not delete migration-ledger rows or manually reverse DDL.
+- If a feature fails after an additive migration commits, first disable its
+  read/write switches while keeping the migration-compatible image. The
+  migration runner intentionally rejects an older image against a newer schema
+  ledger. To roll the image back, restore the verified pre-migration backup to
+  a new volume and attach that volume to the recorded older image; do not
+  delete migration-ledger rows or manually reverse DDL.
 - If preflight or backup fails, no migration runs. Correct integrity, missing
   file, permissions, or free-space errors—or redeploy the prior image.
 - If a migration statement fails, its entire startup transaction rolls back.

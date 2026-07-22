@@ -30,6 +30,7 @@ uploaded records, and config. One owner per deployment.
 | `source_archive.py` | scrubbed, compressed immutable source payloads, file references, sync runs, retention, and size metrics |
 | `connector_provenance.py` | feature-flagged connector/upload lifecycle, fetch outcomes, freshness, and normalized evidence links |
 | `canonical_time.py` | canonical event/effective/recorded/received time normalization, DST handling, and sidecar repository |
+| `typed_treatments.py` | feature-gated strict treatment, basal-segment, and pump-total projections, backfill, and parity checks |
 | `auth.py` | first-run setup, login, **admin vs. read-only provider role**, `require_admin` |
 | `entities.py` | generic entity REST API (writes gated to admin) |
 | `settings_api.py` | in-app settings & secrets (DB-stored, override env) |

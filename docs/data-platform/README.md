@@ -29,6 +29,8 @@ typed repositories are introduced.
   complete outcomes, normalized evidence links, freshness, and rollout gates.
 - [Canonical clinical time](CANONICAL_TIME.md) — event/recorded/ingestion roles,
   partial dates, duration intervals, DST handling, and rollout/backfill.
+- [Typed treatments](TYPED_TREATMENTS.md) — strict treatment, basal-segment,
+  and pump-total projections, compatibility mapping, parity, and rollout gates.
 
 ## Reproduce the structural audit
 

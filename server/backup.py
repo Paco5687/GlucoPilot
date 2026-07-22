@@ -164,6 +164,17 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                         """
                     ).fetchone()
                 )
+            typed_treatments = None
+            if all(
+                _table_exists(connection, table)
+                for table in ("typed_treatments", "basal_segments", "pump_daily_totals")
+            ):
+                typed_treatments = {
+                    table: dict(
+                        connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+                    )
+                    for table in ("typed_treatments", "basal_segments", "pump_daily_totals")
+                }
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:
@@ -180,6 +191,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
         metadata["source_archive"] = source_archive
     if canonical_time is not None:
         metadata["canonical_time"] = canonical_time
+    if typed_treatments is not None:
+        metadata["typed_treatments"] = typed_treatments
     if include_references:
         metadata["record_references"] = references
     return metadata
@@ -376,6 +389,8 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
         keys.append("source_archive")
     if "canonical_time" in expected_database:
         keys.append("canonical_time")
+    if "typed_treatments" in expected_database:
+        keys.append("typed_treatments")
     for key in keys:
         if metadata[key] != expected_database.get(key):
             raise BackupError(f"restored database metadata mismatch: {key}")
@@ -403,6 +418,14 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
         )
     if "canonical_time" in expected_database:
         verification["canonical_time_count"] = metadata["canonical_time"]["count"]
+    if "typed_treatments" in expected_database:
+        verification.update(
+            {
+                "typed_treatment_count": metadata["typed_treatments"]["typed_treatments"]["count"],
+                "basal_segment_count": metadata["typed_treatments"]["basal_segments"]["count"],
+                "pump_daily_total_count": metadata["typed_treatments"]["pump_daily_totals"]["count"],
+            }
+        )
     return verification
 
 

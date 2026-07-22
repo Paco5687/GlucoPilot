@@ -29,6 +29,36 @@ def test_entity_crud(client):
     assert any(row["value"] == 120 for row in rows)
 
 
+def test_treatment_generic_api_stays_legacy_compatible_with_typed_flags(client, monkeypatch):
+    monkeypatch.setenv("TYPED_TREATMENT_WRITES_ENABLED", "true")
+    monkeypatch.setenv("TYPED_TREATMENT_READS_ENABLED", "true")
+    payload = {
+        "timestamp": "2026-07-18T12:30:00Z",
+        "source": "synthetic",
+        "ns_id": "synthetic-smoke-treatment",
+        "type": "insulin",
+        "event_type": "Bolus",
+        "amount": 1.25,
+        "owner_email": OWNER,
+    }
+    created_response = client.post("/api/entities/Treatment", json=payload)
+    assert created_response.status_code == 200
+    created = created_response.json()
+    assert {key: created[key] for key in payload} == payload
+
+    rows = client.post(
+        "/api/entities/Treatment/query",
+        json={"filter": {"id": created["id"]}, "limit": 1},
+    ).json()
+    assert rows == [created]
+
+    updated = client.put(
+        f"/api/entities/Treatment/{created['id']}", json={"amount": 1.5}
+    ).json()
+    assert updated["amount"] == 1.5
+    assert client.delete(f"/api/entities/Treatment/{created['id']}").json() == {"ok": True}
+
+
 def test_operator_filter(client):
     client.post(
         "/api/entities/GlucoseReading",

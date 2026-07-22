@@ -201,6 +201,22 @@ class ClinicalTimeRepository(Protocol):
 
 
 @runtime_checkable
+class BasalSegmentRepository(Protocol):
+    """Strict pump basal and suspension intervals."""
+
+    def for_treatment(self, entity_id: str) -> dict[str, Any] | None: ...
+
+
+@runtime_checkable
+class PumpDailyTotalRepository(Protocol):
+    """Authoritative pump total projections parsed from Treatment records."""
+
+    def for_treatment(self, entity_id: str) -> dict[str, Any] | None: ...
+
+    def by_date(self, start: str, end: str) -> list[dict[str, Any]]: ...
+
+
+@runtime_checkable
 class RepositoryCatalog(Protocol):
     glucose: GlucoseRepository
     treatments: TreatmentRepository
@@ -213,6 +229,8 @@ class RepositoryCatalog(Protocol):
     evidence: EvidenceRepository
     source_archive: SourceArchiveRepository
     clinical_time: ClinicalTimeRepository
+    basal_segments: BasalSegmentRepository
+    pump_daily_totals: PumpDailyTotalRepository
 
     def entity(self, entity_type: str) -> EntityRepository: ...
 
@@ -402,7 +420,7 @@ class LegacyRepositoryCatalog:
         self._connection = connection
         self._entities: dict[str, LegacyJsonEntityRepository] = {}
         self.glucose = self.entity("GlucoseReading")
-        self.treatments = self.entity("Treatment")
+        legacy_treatments = self.entity("Treatment")
         self.labs = self.entity("LabResult")
         self.oura_daily = self.entity("OuraDaily")
         self.oura_heart_rate = self.entity("OuraHeartRate")
@@ -412,9 +430,22 @@ class LegacyRepositoryCatalog:
         self.evidence = LegacyEvidenceRepository(self)
         from .source_archive import SqliteSourceArchiveRepository
         from .canonical_time import SqliteClinicalTimeRepository
+        from .typed_treatments import (
+            SqliteBasalSegmentRepository,
+            SqlitePumpDailyTotalRepository,
+            SqliteTypedTreatmentRepository,
+            TreatmentCompatibilityRepository,
+        )
 
         self.source_archive = SqliteSourceArchiveRepository(connection)
         self.clinical_time = SqliteClinicalTimeRepository(connection)
+        self.typed_treatments = SqliteTypedTreatmentRepository(connection)
+        self.basal_segments = SqliteBasalSegmentRepository(connection)
+        self.pump_daily_totals = SqlitePumpDailyTotalRepository(connection)
+        self.treatments = TreatmentCompatibilityRepository(
+            legacy_treatments,
+            self.typed_treatments,
+        )
 
     def entity(self, entity_type: str) -> LegacyJsonEntityRepository:
         if entity_type not in self._entities:
