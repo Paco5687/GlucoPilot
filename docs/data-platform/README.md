@@ -43,6 +43,9 @@ typed repositories are introduced.
   assertion/evidence/algorithm registries, owner validation, temporal/confidence
   indexes, deterministic full/scoped rebuild jobs, atomic publication,
   freshness, and compatibility rollback.
+- [Authorized relationship API](RELATIONSHIP_API.md) — owner-scoped neighbors,
+  reverse neighbors, bounded traversal, redacted evidence paths, query budgets,
+  deterministic ordering, and provider-safe GET access.
 - [Evidence sets and observation windows](EVIDENCE_SETS.md) — bounded time-series
   membership, deterministic checksums, exact drill-down, invalidation, and
   feature-gated Pattern citations.

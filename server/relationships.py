@@ -369,6 +369,7 @@ class SqliteRelationshipRepository:
         predicate: str | None = None,
         valid_at: str | None = None,
         min_confidence: float | None = None,
+        limit: int | None = None,
     ) -> list[RelationshipEdge]:
         owner_email = _required(owner_email, "owner_email")
         entity_type = _required(entity_type, "entity_type")
@@ -391,6 +392,12 @@ class SqliteRelationshipRepository:
                 raise RelationshipValidationError("min_confidence must be between 0 and 1")
             where.append("confidence_score>=?")
             parameters.append(min_confidence)
+        limit_clause = ""
+        if limit is not None:
+            if not isinstance(limit, int) or not 1 <= limit <= 1001:
+                raise RelationshipValidationError("limit must be between 1 and 1001")
+            limit_clause = " LIMIT ?"
+            parameters.append(limit)
         with self._scope() as (connection, _):
             rows = connection.execute(
                 "SELECT edge.* FROM entity_relationships edge WHERE "
@@ -400,7 +407,47 @@ class SqliteRelationshipRepository:
                 + "WHERE managed.relationship_id=edge.id) OR "
                 + "EXISTS (SELECT 1 FROM relationship_projection_active_edges active "
                 + "WHERE active.relationship_id=edge.id))"
-                + " ORDER BY predicate, object_type, object_id, id",
+                + " ORDER BY predicate, object_type, object_id, id"
+                + limit_clause,
+                parameters,
+            ).fetchall()
+        return [_edge(row) for row in rows]
+
+    def reverse_for_entity(
+        self,
+        owner_email: str,
+        entity_type: str,
+        entity_id: str,
+        *,
+        predicate: str | None = None,
+        limit: int | None = None,
+    ) -> list[RelationshipEdge]:
+        """Return visible incoming edges in deterministic order."""
+        owner_email = _required(owner_email, "owner_email")
+        entity_type = _required(entity_type, "entity_type")
+        entity_id = _required(entity_id, "entity_id")
+        where = ["owner_id=?", "owner_email=?", "object_type=?", "object_id=?"]
+        parameters: list[object] = [DEPLOYMENT_OWNER_ID, owner_email, entity_type, entity_id]
+        if predicate is not None:
+            where.append("predicate=?")
+            parameters.append(_required(predicate, "predicate"))
+        limit_clause = ""
+        if limit is not None:
+            if not isinstance(limit, int) or not 1 <= limit <= 1001:
+                raise RelationshipValidationError("limit must be between 1 and 1001")
+            limit_clause = " LIMIT ?"
+            parameters.append(limit)
+        with self._scope() as (connection, _):
+            rows = connection.execute(
+                "SELECT edge.* FROM entity_relationships edge WHERE "
+                + " AND ".join(where)
+                + " AND ("
+                + "NOT EXISTS (SELECT 1 FROM relationship_projection_run_edges managed "
+                + "WHERE managed.relationship_id=edge.id) OR "
+                + "EXISTS (SELECT 1 FROM relationship_projection_active_edges active "
+                + "WHERE active.relationship_id=edge.id))"
+                + " ORDER BY predicate, subject_type, subject_id, id"
+                + limit_clause,
                 parameters,
             ).fetchall()
         return [_edge(row) for row in rows]

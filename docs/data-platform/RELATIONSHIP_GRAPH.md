@@ -127,6 +127,10 @@ repair. Disable the write gate again after inspecting the recorded run,
 checksum, count, watermark, and backup verification. Never enable typed reads
 merely because a build completed; read cutover has its own parity gate.
 
+G4's authenticated graph endpoints use this same active-edge view and cutover
+gate. See [Authorized relationship query API](RELATIONSHIP_API.md) for bounds,
+redaction, provider access, and response contracts.
+
 Rollback is therefore a configuration change: keep both
 `RELATIONSHIP_PROJECTION_WRITES_ENABLED=false` and
 `RELATIONSHIP_READS_ENABLED=false`. Migrations 11 and 13 are additive and do
