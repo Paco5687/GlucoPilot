@@ -14,7 +14,8 @@ Core analytics depend on `RepositoryCatalog`, not `db.query_entities`:
 
 | Interface | Current implementation |
 |---|---|
-| `GlucoseRepository` | `GlucoseReading` JSON entities |
+| `GlucoseRepository` | `GlucoseReading` compatibility repository plus feature-gated strict typed projection and repository-owned ±240-second dedup |
+| `FingerstickRepository` | `FingerstickReading` compatibility repository plus strict paired-reading projection |
 | `TreatmentRepository` | `Treatment` JSON entities |
 | `BasalSegmentRepository` | Strict feature-gated `basal_segments` sidecar |
 | `PumpDailyTotalRepository` | Strict feature-gated `pump_daily_totals` sidecar |
@@ -48,6 +49,12 @@ I8 adds `SqliteContradictionRepository` to the catalog. Rule reconciliation may
 mark a detection active or not current, but it cannot resolve it. Admin
 resolution and reopening are explicit, attributable operations; provider access
 is read-only. The typed sidecar does not expand the generic entity API.
+
+I9 wraps the glucose and fingerstick adapters with compatibility repositories.
+All accepted legacy mutations can project into the typed tables in the same
+transaction. Connector/import dedup is a repository operation rather than a
+second storage path. Supported queries can shadow both stores or return typed
+results under independent flags; unsupported JSON fields always fall back.
 
 The relationship and evidence repositories deliberately do not create a hidden
 schema. They project current fields only. G1 and G2 will add reviewed registries

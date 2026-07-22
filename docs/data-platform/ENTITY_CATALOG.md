@@ -35,6 +35,8 @@ value-free production field/type inventory.
 | `FitbitHeartRate` | Owner; `timestamp`, `bpm`, `source`. | Google Health uses exact UTC minute; no DB constraint; normally append-only. | Invalid timestamps skipped; consumers show empty state without coverage metadata. |
 | `MedicalRecord` | Owner; `filename`, `stored_as`, `content_hash`, status/upload fields, extracted title/type/date/summary/page/lab/extraction counts, partial/error and extraction versions. | SHA-256 rejects byte-identical upload. Random stored filename. Deletion removes the file, compatibility labs, and cascaded audit rows. | Partial batch failures remain explicit; field-level state lives in the audit tables. |
 | `LabResult` | Compatibility projection with normalized numeric value/unit/range/flag/date/category, record ID, specimen, source page/location, parser confidence, validation and verification state, original printed fields, and audit observation ID. | Current UI/API compatibility row. Unverified rows refresh on reprocess; approved/edited rows survive and supersede subsequent parser output for the same stable source location. | Qualitative/titer results remain in audited observations rather than being misrepresented as ordinary numeric trends. Invalid results are visibly qualified and excluded from summaries. |
+| `SymptomLog` | Owner; title/description/severity/duration/time-of-day/entry-date. | Random ID; user append/delete; local user date. | Optional text becomes empty string; no not-asked state. |
+| `WeightLog` | Owner; `weight_kg`, `date`. | Appends on profile weight change; no date uniqueness; UTC calendar date. | No interpolation or coverage metadata. |
 
 Migration 7 also adds typed `lab_extraction_runs`, versioned
 `lab_extraction_observations`, and append-only `lab_verification_events`.
@@ -44,8 +46,11 @@ Migration 8 adds typed `contradiction_runs`, `contradictions`, and append-only
 `contradiction_events`. These rows reference both sides of a disagreement but
 do not replace, delete, or silently choose between the source entities. They are
 not exposed through the generic entity API.
-| `SymptomLog` | Owner; title/description/severity/duration/time-of-day/entry-date. | Random ID; user append/delete; local user date. | Optional text becomes empty string; no not-asked state. |
-| `WeightLog` | Owner; `weight_kg`, `date`. | Appends on profile weight change; no date uniqueness; UTC calendar date. | No interpolation or coverage metadata. |
+
+Migration 9 adds strict `glucose_readings` and `fingerstick_readings`
+projections. The latter retains the paired CGM entity, value, timestamp, source,
+and signed delta captured at entry. Invalid compatibility rows remain visible
+only in legacy storage and appear as unmappable in parity reports.
 
 ## Clinical profile and narrative records
 

@@ -14,7 +14,7 @@
 | Google Health | connection, Fitbit daily/HR | Provider date; intraday HR to UTC minute. | Daily patch; HR append if minute absent. |
 | Medical-record upload | file, `MedicalRecord`, audited extraction run/observations, `LabResult` compatibility projection | File SHA-256 plus parser/schema/input versions; every new result preserves original/normalized fields and a page/location when reported. | Reprocess replaces only unverified projections. Approved/edited corrections remain current and new parser output at that source location is superseded. Delete removes the file, compatibility labs, and cascaded audit data. |
 | Lively/phone ingest | `PeriodLog` | Local date key and source. | Merge by date; manual rows respected. |
-| CSV/Base44 imports | Glucose, treatment, Oura, period | Timestamp normalization and proximity/date dedup. | Legacy CSV import replaces owner/source=`csv` glucose/treatment. |
+| CSV/Base44 imports | Glucose, treatment, Oura, period | Timestamp normalization; glucose uses the shared repository ±240-second cross-source rule. | Legacy CSV import replaces owner/source=`csv` glucose/treatment, then reimports only non-overlapping glucose. |
 | Manual APIs | Fingersticks, profile/weight, diagnoses, meds, allergies, insurance, symptoms, history | Random IDs and user-supplied dates. | User edit/append/delete per catalog. |
 | Rule/LLM jobs | Patterns, insights, summary, Companion | Patterns, insights, and summaries carry versioned quality/input hashes; source-record evidence remains future work. | Deactivate/replace/append varies by output; low-quality pattern/insight windows clear stale conclusions. |
 | Contradiction rules | Typed run, contradiction, and immutable event rows | Rules version plus canonical input hash; each fingerprint includes both evidence sides. | Re-evaluation changes detection presence only. Human resolution is attributable and is never silently reset. |
@@ -50,6 +50,7 @@ be reconstructed.
 | Intraday HR timestamp/BPM/source | Live dashboard and glucose overlay, Wearables, cross-domain daily-HR aggregation. |
 | Period date/phase/source/notes | Dashboard, Period Tracker, insights cycle comparisons, Overview, Companion, Visit Report. |
 | Fingerstick value/time/CGM/delta | Dashboard marker/logger, discrepancy statistics, insulin/clinical context. |
+| Typed glucose/fingerstick identity, canonical/source time, value, source, trend, fixed pair, fingerprint/version | Shadow parity, future typed reads, contradiction evaluation, verified backup manifests. |
 | Medical-record status/date/title/file metadata | Records queue/index, delete/reprocess paths, Companion recent-document context. |
 | Lab original/normalized name/value/unit/range/flag/specimen/date, page/location, confidence, validation/verification, category/record ID | Records index/charts/matrix/search and source review, Overview, Companion, Visit Report, record cascade/reprocess. |
 | Profile/weight/demographic fields | Settings, BMI/age computation, insulin per-kg estimate, Overview, Companion, Visit Report. |

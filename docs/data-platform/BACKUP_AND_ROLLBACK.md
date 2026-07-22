@@ -20,6 +20,10 @@ access, and never commit or attach them to an issue.
    counts, migrations, file hashes, and record references before publishing the
    backup directory.
 
+When present, typed treatment, lab-audit, contradiction-ledger, and typed
+glucose/fingerstick counts are part of the manifest and clean-restore equality
+check.
+
 Application startup performs this verified backup automatically before pending
 migrations touch an existing database. The default destination is
 `/data/backups`; set `MIGRATION_BACKUP_DIR` to a separately mounted path for

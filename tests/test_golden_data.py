@@ -120,6 +120,10 @@ def test_fingerstick_disagreement_keeps_both_measurements_and_delta(golden, gold
     assert stored["value"] == fixture["fingerstick"]["value"]
     assert stored["cgm_value"] == expected["matched_cgm"]
     assert stored["delta"] == expected["delta"]
+    matched_cgm = db.query_entities(
+        "GlucoseReading", {"value": expected["matched_cgm"]}, limit=1
+    )[0]
+    assert stored["cgm_reading_id"] == matched_cgm["id"]
 
     stats = asyncio.run(fingerstick.handle({"action": "stats"}))
     assert stats["paired"] == 1

@@ -856,6 +856,11 @@ class SqliteContradictionRepository:
 
 
 def _load_snapshot(now: datetime | None = None) -> dict[str, Any]:
+    # Local import avoids the repository catalog's contradiction-repository
+    # construction cycle while still routing paired glucose evidence through
+    # the I9 shadow/read-switch boundary.
+    from .repositories import get_repositories
+
     current = now or datetime.now(timezone.utc)
     timezone_name = config_value("app_timezone", APP_TIMEZONE)
     tz = ZoneInfo(timezone_name)
@@ -873,8 +878,7 @@ def _load_snapshot(now: datetime | None = None) -> dict[str, Any]:
         start_date=since.astimezone(tz).date().isoformat(),
         end_date=current.astimezone(tz).date().isoformat(),
     )
-    fingersticks = db.query_entities(
-        "FingerstickReading",
+    fingersticks = get_repositories().fingersticks.query(
         {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since_iso}},
         "timestamp",
         10000,

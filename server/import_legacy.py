@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from . import db
 from .config import APP_TIMEZONE, OWNER_EMAIL, REPO_DIR
+from .readings import persist_readings_deduped
 
 DEFAULT_PATH = REPO_DIR / "legacy" / "app" / "static" / "data.json"
 BATCH = 1000
@@ -123,12 +124,14 @@ def run(path: Path) -> None:
 
     treatments = [{k: v for k, v in t.items() if v is not None} for t in treatments]
 
-    for i in range(0, len(readings), BATCH):
-        db.bulk_create_entities("GlucoseReading", readings[i : i + BATCH])
+    readings_created, readings_skipped = persist_readings_deduped(readings)
     for i in range(0, len(treatments), BATCH):
         db.bulk_create_entities("Treatment", treatments[i : i + BATCH])
 
-    print(f"Imported {len(readings)} glucose readings and {len(treatments)} treatments from {path}")
+    print(
+        f"Imported {readings_created} glucose readings ({readings_skipped} duplicates skipped) "
+        f"and {len(treatments)} treatments from {path}"
+    )
 
 
 if __name__ == "__main__":

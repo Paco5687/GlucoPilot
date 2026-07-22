@@ -54,6 +54,18 @@ class EntityRepository(Protocol):
 class GlucoseRepository(EntityRepository, Protocol):
     """Continuous-glucose observations."""
 
+    def create_deduplicated(
+        self,
+        records: list[Entity],
+        *,
+        tolerance_seconds: int = 240,
+    ) -> tuple[list[Entity], int]: ...
+
+
+@runtime_checkable
+class FingerstickRepository(EntityRepository, Protocol):
+    """Patient-reported blood-glucose meter observations."""
+
 
 @runtime_checkable
 class TreatmentRepository(EntityRepository, Protocol):
@@ -222,6 +234,7 @@ class PumpDailyTotalRepository(Protocol):
 @runtime_checkable
 class RepositoryCatalog(Protocol):
     glucose: GlucoseRepository
+    fingersticks: FingerstickRepository
     treatments: TreatmentRepository
     labs: LabRepository
     oura_daily: WearableRepository
@@ -423,7 +436,8 @@ class LegacyRepositoryCatalog:
     def __init__(self, connection: sqlite3.Connection | None = None) -> None:
         self._connection = connection
         self._entities: dict[str, LegacyJsonEntityRepository] = {}
-        self.glucose = self.entity("GlucoseReading")
+        legacy_glucose = self.entity("GlucoseReading")
+        legacy_fingersticks = self.entity("FingerstickReading")
         legacy_treatments = self.entity("Treatment")
         self.labs = self.entity("LabResult")
         self.oura_daily = self.entity("OuraDaily")
@@ -440,6 +454,12 @@ class LegacyRepositoryCatalog:
             SqliteTypedTreatmentRepository,
             TreatmentCompatibilityRepository,
         )
+        from .typed_glucose import (
+            FingerstickCompatibilityRepository,
+            GlucoseCompatibilityRepository,
+            SqliteTypedFingerstickRepository,
+            SqliteTypedGlucoseRepository,
+        )
         from .contradictions import SqliteContradictionRepository
 
         self.source_archive = SqliteSourceArchiveRepository(connection)
@@ -448,6 +468,17 @@ class LegacyRepositoryCatalog:
         self.basal_segments = SqliteBasalSegmentRepository(connection)
         self.pump_daily_totals = SqlitePumpDailyTotalRepository(connection)
         self.contradictions = SqliteContradictionRepository(connection)
+        self.typed_glucose = SqliteTypedGlucoseRepository(connection)
+        self.typed_fingersticks = SqliteTypedFingerstickRepository(connection)
+        self.glucose = GlucoseCompatibilityRepository(
+            legacy_glucose,
+            self.typed_glucose,
+            connection,
+        )
+        self.fingersticks = FingerstickCompatibilityRepository(
+            legacy_fingersticks,
+            self.typed_fingersticks,
+        )
         self.treatments = TreatmentCompatibilityRepository(
             legacy_treatments,
             self.typed_treatments,

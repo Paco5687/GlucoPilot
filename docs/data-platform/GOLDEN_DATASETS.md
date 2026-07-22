@@ -3,7 +3,8 @@
 Status: additive regression layer
 
 Implementations: `tests/fixtures/`, `tests/test_golden_data.py`,
-`tests/test_migration_fixtures.py`, `tests/test_contradictions.py`
+`tests/test_migration_fixtures.py`, `tests/test_contradictions.py`,
+`tests/test_typed_glucose.py`
 
 F5 establishes deterministic, public-safe fixtures for clinical interpretation
 and storage risks. The fixtures contain invented values, synthetic identifiers,
@@ -24,6 +25,7 @@ rows, credentials, or copied health information.
 | Source overlap | Readings within the global four-minute window are skipped across sources; the next physiological sample is retained. |
 | DST fall-back | Both UTC observations in the repeated local 1 a.m. hour remain present, while ambiguous local timestamps require an explicit offset. |
 | Clinical contradictions | Seven synthetic conflicts deterministically preserve both sides across glucose, pump TDD, lab unit/range, hormone timing, and revised-source rules. |
+| Typed glucose/fingersticks | Exact ±240-second dedup boundary, strict mapping, fixed pairing, restartable backfill, shadow parity, rollback, and backup counts remain deterministic. |
 
 `clinical_edge_cases.json` stores both the synthetic inputs and their expected
 outcomes. Tests must compare production parser, deduplication, analytics,
@@ -34,6 +36,12 @@ the expected result.
 `contradictions.json` separately pins contradiction rule output, order, stable
 fingerprints, changed-evidence behavior, explicit hormone timing declarations,
 blocking resolution requirements, actor history, and source-identity redaction.
+
+`typed_glucose.json` uses only invented readings and provider identifiers. It
+pins canonical/source time preservation, strict value/delta constraints,
+cross-source overlap, the inclusive tolerance boundary, invalid timestamp
+handling, idempotent backfill, query checksum/order/aggregate parity, and atomic
+rollback.
 
 ## Migration snapshots
 

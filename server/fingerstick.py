@@ -12,8 +12,8 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from . import db
 from .config import OWNER_EMAIL
+from .repositories import get_repositories
 
 log = logging.getLogger("glucopilot.fingerstick")
 
@@ -32,14 +32,16 @@ def _parse(ts: str) -> datetime | None:
         return None
 
 
-def _nearest_cgm(ts_iso: str) -> tuple[float | None, str | None, str | None]:
+def _nearest_cgm(ts_iso: str) -> tuple[float | None, str | None, str | None, str | None]:
     ts = _parse(ts_iso)
     if ts is None:
-        return None, None, None
+        return None, None, None, None
     lo = (ts - timedelta(minutes=MATCH_WINDOW_MIN)).isoformat(timespec="seconds").replace("+00:00", "Z")
     hi = (ts + timedelta(minutes=MATCH_WINDOW_MIN)).isoformat(timespec="seconds").replace("+00:00", "Z")
-    rows = db.query_entities(
-        "GlucoseReading", {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": lo, "$lte": hi}}, "timestamp", 500
+    rows = get_repositories().glucose.query(
+        {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": lo, "$lte": hi}},
+        "timestamp",
+        500,
     )
     best, best_diff = None, None
     for r in rows:
@@ -50,8 +52,8 @@ def _nearest_cgm(ts_iso: str) -> tuple[float | None, str | None, str | None]:
         if best_diff is None or diff < best_diff:
             best, best_diff = r, diff
     if best is None:
-        return None, None, None
-    return float(best["value"]), best.get("timestamp"), best.get("source")
+        return None, None, None, None
+    return float(best["value"]), best.get("timestamp"), best.get("source"), best.get("id")
 
 
 async def handle(body: dict[str, Any]) -> dict[str, Any]:
@@ -65,14 +67,15 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
         if not (10 <= value <= 800):
             return {"error": "Fingerstick value out of range (10–800 mg/dL).", "_status": 400}
         ts_iso = body.get("timestamp") or _now_iso()
-        cgm, cgm_ts, cgm_source = _nearest_cgm(ts_iso)
+        cgm, cgm_ts, cgm_source, cgm_reading_id = _nearest_cgm(ts_iso)
         delta = round(cgm - value, 1) if cgm is not None else None
-        rec = db.create_entity("FingerstickReading", {
+        rec = get_repositories().fingersticks.create({
             "timestamp": ts_iso,
             "value": value,
             "cgm_value": cgm,
             "cgm_timestamp": cgm_ts,
             "cgm_source": cgm_source,
+            "cgm_reading_id": cgm_reading_id,
             "delta": delta,          # CGM minus fingerstick: + = CGM reads high
             "note": (body.get("note") or "").strip(),
             "source": "manual",
@@ -82,21 +85,24 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
 
     if action == "delete":
         rid = body.get("id")
-        rows = db.query_entities("FingerstickReading", {"id": rid, "owner_email": OWNER_EMAIL}, limit=1)
-        if rows:
-            db.delete_entity("FingerstickReading", rid)
+        repository = get_repositories().fingersticks
+        row = repository.get(rid) if rid else None
+        if row and row.get("owner_email") == OWNER_EMAIL:
+            repository.delete(rid)
         return {"ok": True}
 
     if action == "list":
         days = min(int(body.get("days") or 30), 365)
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds").replace("+00:00", "Z")
-        rows = db.query_entities(
-            "FingerstickReading", {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}}, "-timestamp", 3000
+        rows = get_repositories().fingersticks.query(
+            {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}}, "-timestamp", 3000
         )
         return {"readings": rows}
 
     if action == "stats":
-        rows = db.query_entities("FingerstickReading", {"owner_email": OWNER_EMAIL}, "-timestamp", 5000)
+        rows = get_repositories().fingersticks.query(
+            {"owner_email": OWNER_EMAIL}, "-timestamp", 5000
+        )
         paired = [r for r in rows if r.get("delta") is not None]
         if not paired:
             return {"count": len(rows), "paired": 0}
