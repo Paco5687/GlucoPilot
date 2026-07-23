@@ -10,9 +10,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -30,6 +32,7 @@ from .data_contracts import (
 
 MAPPING_VERSION = "typed-treatment/1.0.0"
 _TRUE = {"1", "true", "yes", "on"}
+log = logging.getLogger("glucopilot.typed_treatments")
 _TOTAL_RE = re.compile(r"(?:^|\|)\s*total:\s*([0-9]+(?:\.[0-9]+)?)\s*u?\b", re.I)
 _BASAL_RE = re.compile(r"(?:^|\|)\s*basal:\s*([0-9]+(?:\.[0-9]+)?)\s*u?\b", re.I)
 _BOLUS_RE = re.compile(r"(?:^|\|)\s*bolus:\s*([0-9]+(?:\.[0-9]+)?)\s*u?\b", re.I)
@@ -108,6 +111,10 @@ class TypedTreatmentProjection:
 
 def typed_treatment_writes_enabled() -> bool:
     return os.getenv("TYPED_TREATMENT_WRITES_ENABLED", "false").strip().lower() in _TRUE
+
+
+def typed_treatment_shadow_reads_enabled() -> bool:
+    return os.getenv("TYPED_TREATMENT_SHADOW_READS_ENABLED", "false").strip().lower() in _TRUE
 
 
 def typed_treatment_reads_enabled() -> bool:
@@ -500,13 +507,21 @@ class SqliteTypedTreatmentRepository:
         direction = "DESC" if sort.startswith("-") else "ASC"
         sort_column = columns[sort.lstrip("-")]
         sql = (
-            "SELECT t.*, b.duration_seconds, b.rate_units_per_hour, b.percent_of_profile "
+            "SELECT t.*, b.segment_kind, b.duration_seconds, b.rate_units_per_hour, "
+            "b.percent_of_profile "
             "FROM typed_treatments t LEFT JOIN basal_segments b "
             "ON b.treatment_entity_id=t.entity_id"
         )
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += f" ORDER BY {sort_column} {direction}, t.entity_id {direction} LIMIT ? OFFSET ?"
+        # Legacy JSON ordering has no explicit tie-breaker and SQLite preserves
+        # its directional insertion scan order for equal values. Typed rows are
+        # inserted in that same legacy-row order, so rowid preserves pagination
+        # boundaries where many treatment events share one provider timestamp.
+        sql += (
+            f" ORDER BY {sort_column} {direction}, t.rowid {direction} "
+            "LIMIT ? OFFSET ?"
+        )
         parameters.extend([int(limit) if limit else -1, int(skip or 0)])
         with _scope(self._connection, self._database) as (connection, _):
             rows = connection.execute(sql, parameters).fetchall()
@@ -558,9 +573,37 @@ class TreatmentCompatibilityRepository:
         self._typed = typed
 
     def query(self, filters=None, sort=None, limit=None, skip=0):
-        if typed_treatment_reads_enabled() and self._typed.supports_query(filters, sort):
+        if not self._typed.supports_query(filters, sort):
+            return self._legacy.query(filters, sort, limit, skip)
+        if not (
+            typed_treatment_reads_enabled()
+            or typed_treatment_shadow_reads_enabled()
+        ):
+            return self._legacy.query(filters, sort, limit, skip)
+        if (
+            typed_treatment_reads_enabled()
+            and not typed_treatment_shadow_reads_enabled()
+        ):
             return self._typed.query(filters, sort, limit, skip)
-        return self._legacy.query(filters, sort, limit, skip)
+        started = time.perf_counter()
+        legacy = self._legacy.query(filters, sort, limit, skip)
+        legacy_ms = (time.perf_counter() - started) * 1000
+        started = time.perf_counter()
+        typed = self._typed.query(filters, sort, limit, skip)
+        typed_ms = (time.perf_counter() - started) * 1000
+        comparison = compare_treatment_query_results(legacy, typed)
+        log.info(
+            "typed treatment shadow %s",
+            json.dumps(
+                {
+                    **comparison,
+                    "legacy_ms": round(legacy_ms, 3),
+                    "typed_ms": round(typed_ms, 3),
+                },
+                sort_keys=True,
+            ),
+        )
+        return typed if typed_treatment_reads_enabled() else legacy
 
     def get(self, entity_id: str):
         if typed_treatment_reads_enabled():
@@ -612,11 +655,95 @@ def _legacy_shape(row: sqlite3.Row, basal: sqlite3.Row | None) -> dict[str, Any]
     if basal:
         if basal["duration_seconds"] is not None:
             result["duration"] = basal["duration_seconds"] / 60
-        if basal["rate_units_per_hour"] is not None:
+        if (
+            basal["rate_units_per_hour"] is not None
+            and basal["segment_kind"] != "suspension"
+        ):
             result["absolute"] = basal["rate_units_per_hour"]
         if basal["percent_of_profile"] is not None:
             result["percent"] = basal["percent_of_profile"]
     return result
+
+
+_QUERY_FIELDS = (
+    "id",
+    "owner_email",
+    "timestamp",
+    "source",
+    "type",
+    "event_type",
+    "amount",
+    "insulin_type",
+    "glucose",
+    "glucose_type",
+    "notes",
+    "reason",
+    "preBolus",
+    "ns_id",
+    "duration",
+    "absolute",
+    "percent",
+    "created_date",
+    "updated_date",
+)
+
+
+def _query_shape(row: dict[str, Any]) -> dict[str, Any]:
+    numeric_fields = {
+        "amount",
+        "glucose",
+        "preBolus",
+        "duration",
+        "absolute",
+        "percent",
+    }
+    return {
+        key: float(row[key]) if key in numeric_fields and row[key] is not None else row[key]
+        for key in _QUERY_FIELDS
+        if key in row
+    }
+
+
+def _query_checksum(rows: list[dict[str, Any]]) -> str:
+    encoded = json.dumps(
+        [_query_shape(row) for row in rows],
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def compare_treatment_query_results(
+    legacy: list[dict[str, Any]],
+    typed: list[dict[str, Any]],
+) -> dict[str, Any]:
+    legacy_checksum = _query_checksum(legacy)
+    typed_checksum = _query_checksum(typed)
+    legacy_sum = sum(float(row.get("amount") or 0) for row in legacy)
+    typed_sum = sum(float(row.get("amount") or 0) for row in typed)
+    return {
+        "legacy_count": len(legacy),
+        "typed_count": len(typed),
+        "count_match": len(legacy) == len(typed),
+        "legacy_checksum": legacy_checksum,
+        "typed_checksum": typed_checksum,
+        "checksum_match": legacy_checksum == typed_checksum,
+        "ordering_match": [row.get("id") for row in legacy]
+        == [row.get("id") for row in typed],
+        "aggregate_match": abs(legacy_sum - typed_sum) < 0.001,
+    }
+
+
+def _mapping_error_code(error: TreatmentMappingError) -> str:
+    message = str(error).lower()
+    if "timestamp" in message or "instant" in message:
+        return "timestamp_not_unambiguous"
+    if "entity id" in message:
+        return "entity_id_missing"
+    if "numeric" in message or "negative" in message:
+        return "numeric_contract_invalid"
+    return "typed_contract_invalid"
 
 
 def record_typed_treatments(
@@ -680,6 +807,8 @@ def compare_treatment_stores(database: Path = DB_PATH) -> dict[str, Any]:
     connection = sqlite3.connect(database)
     connection.row_factory = sqlite3.Row
     expected: dict[str, str] = {}
+    expected_rows: list[tuple[str, str, dict[str, Any]]] = []
+    unmappable_by_reason: dict[str, int] = {}
     unmappable = 0
     try:
         for row in connection.execute("SELECT * FROM entities WHERE type='Treatment'"):
@@ -691,10 +820,19 @@ def compare_treatment_stores(database: Path = DB_PATH) -> dict[str, Any]:
             )
             try:
                 projection = map_legacy_treatment(entity)
-            except TreatmentMappingError:
+            except TreatmentMappingError as error:
                 unmappable += 1
+                code = _mapping_error_code(error)
+                unmappable_by_reason[code] = unmappable_by_reason.get(code, 0) + 1
                 continue
             expected[row["id"]] = projection.treatment["legacy_fingerprint"]
+            expected_rows.append(
+                (
+                    projection.treatment["occurred_at"],
+                    row["id"],
+                    entity,
+                )
+            )
         basal_rows = {
             row["treatment_entity_id"]: dict(row)
             for row in connection.execute("SELECT * FROM basal_segments")
@@ -705,6 +843,7 @@ def compare_treatment_stores(database: Path = DB_PATH) -> dict[str, Any]:
         }
         stored_fingerprints: dict[str, str] = {}
         actual: dict[str, str] = {}
+        actual_rows: list[tuple[str, str, dict[str, Any]]] = []
         for row in connection.execute("SELECT * FROM typed_treatments"):
             treatment = dict(row)
             entity_id = treatment["entity_id"]
@@ -713,6 +852,13 @@ def compare_treatment_stores(database: Path = DB_PATH) -> dict[str, Any]:
                 treatment,
                 basal_rows.get(entity_id),
                 total_rows.get(entity_id),
+            )
+            actual_rows.append(
+                (
+                    treatment["occurred_at"],
+                    entity_id,
+                    _legacy_shape(row, basal_rows.get(entity_id)),
+                )
             )
         missing = set(expected) - set(actual)
         extra = set(actual) - set(expected)
@@ -748,6 +894,7 @@ def compare_treatment_stores(database: Path = DB_PATH) -> dict[str, Any]:
         "legacy_total": len(expected) + unmappable,
         "mappable": len(expected),
         "unmappable": unmappable,
+        "unmappable_by_reason": dict(sorted(unmappable_by_reason.items())),
         "typed_total": len(actual),
         "matched": matched,
         "missing": len(missing),
@@ -755,6 +902,10 @@ def compare_treatment_stores(database: Path = DB_PATH) -> dict[str, Any]:
         "fingerprint_drift": len(fingerprint_drift),
         "extra": len(extra),
         "duplicate_source_identities": duplicate_source_identities,
+        "query": compare_treatment_query_results(
+            [item for _, _, item in sorted(expected_rows)],
+            [item for _, _, item in sorted(actual_rows)],
+        ),
         **child_counts,
         "mapping_version": MAPPING_VERSION,
     }

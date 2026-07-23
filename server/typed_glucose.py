@@ -291,6 +291,21 @@ def map_legacy_fingerstick(entity: dict[str, Any]) -> TypedGlucoseProjection:
     return TypedGlucoseProjection("fingerstick_readings", row)
 
 
+def _mapping_error_code(error: GlucoseMappingError) -> str:
+    message = str(error).lower()
+    if "must be between" in message:
+        return "value_out_of_range"
+    if "timestamp" in message or "instant" in message:
+        return "timestamp_not_unambiguous"
+    if "delta" in message or "paired" in message:
+        return "paired_context_invalid"
+    if "entity id" in message:
+        return "entity_id_missing"
+    if "numeric" in message or "finite" in message:
+        return "numeric_contract_invalid"
+    return "typed_contract_invalid"
+
+
 def map_legacy(entity_type: str, entity: dict[str, Any]) -> TypedGlucoseProjection:
     if entity_type == "GlucoseReading":
         return map_legacy_glucose(entity)
@@ -546,9 +561,62 @@ class SqliteTypedFingerstickRepository:
         return [_fingerstick_legacy_shape(row) for row in rows]
 
 
+_QUERY_COMPARISON_FIELDS = frozenset(
+    {
+        "id",
+        "owner_email",
+        "timestamp",
+        "value",
+        "trend",
+        "source",
+        "ns_id",
+        "note",
+        "cgm_reading_id",
+        "cgm_value",
+        "cgm_timestamp",
+        "cgm_source",
+        "cgm_trend",
+        "delta",
+        "timing_context",
+        "sensor_day",
+        "sensor_site",
+        "activity",
+        "position",
+        "hydration",
+        "compression_possible",
+        "context_note",
+        "created_date",
+        "updated_date",
+    }
+)
+
+
 def _normalized_result(value: Any) -> Any:
     if isinstance(value, dict):
-        return {key: _normalized_result(item) for key, item in value.items()}
+        # Typed fingersticks also expose deterministic reconciliation fields.
+        # Validate those through the projection fingerprint, while the shadow
+        # checksum covers only the established compatibility query contract.
+        return {
+            key: _normalized_result(item)
+            for key, item in value.items()
+            if key in _QUERY_COMPARISON_FIELDS
+            and not (
+                key
+                in {
+                    "timing_context",
+                    "sensor_site",
+                    "activity",
+                    "position",
+                    "hydration",
+                }
+                and item == "unknown"
+            )
+            and not (key in {"note", "context_note"} and item == "")
+            and not (
+                key in {"sensor_day", "compression_possible"}
+                and item is None
+            )
+        }
     if isinstance(value, list):
         return [_normalized_result(item) for item in value]
     if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -704,10 +772,24 @@ class FingerstickCompatibilityRepository:
             return self._legacy.query(filters, sort, limit, skip)
         if typed_glucose_reads_enabled() and not typed_glucose_shadow_reads_enabled():
             return self._typed.query(filters, sort, limit, skip)
+        started = time.perf_counter()
         legacy = self._legacy.query(filters, sort, limit, skip)
+        legacy_ms = (time.perf_counter() - started) * 1000
+        started = time.perf_counter()
         typed = self._typed.query(filters, sort, limit, skip)
+        typed_ms = (time.perf_counter() - started) * 1000
         if typed_glucose_shadow_reads_enabled():
-            log.info("typed fingerstick shadow %s", json.dumps(compare_query_results(legacy, typed), sort_keys=True))
+            log.info(
+                "typed fingerstick shadow %s",
+                json.dumps(
+                    {
+                        **compare_query_results(legacy, typed),
+                        "legacy_ms": round(legacy_ms, 3),
+                        "typed_ms": round(typed_ms, 3),
+                    },
+                    sort_keys=True,
+                ),
+            )
         return typed if typed_glucose_reads_enabled() else legacy
 
     def get(self, entity_id: str):
@@ -808,20 +890,33 @@ def backfill_typed_glucose(database: Path = DB_PATH, *, batch_size: int = 1000) 
 def _domain_comparison(connection: sqlite3.Connection, entity_type: str) -> dict[str, Any]:
     table = "glucose_readings" if entity_type == "GlucoseReading" else "fingerstick_readings"
     mapper = map_legacy_glucose if entity_type == "GlucoseReading" else map_legacy_fingerstick
-    shape = _glucose_legacy_shape if entity_type == "GlucoseReading" else _fingerstick_legacy_shape
+    typed_shape = (
+        _glucose_legacy_shape
+        if entity_type == "GlucoseReading"
+        else _fingerstick_legacy_shape
+    )
     expected: dict[str, str] = {}
     expected_rows = []
+    unmappable_by_reason: dict[str, int] = {}
     unmappable = 0
     for row in connection.execute("SELECT * FROM entities WHERE type=?", (entity_type,)):
         entity = json.loads(row["data"])
         entity.update(id=row["id"], created_date=row["created_date"], updated_date=row["updated_date"])
         try:
             projection = mapper(entity)
-        except GlucoseMappingError:
+        except GlucoseMappingError as error:
             unmappable += 1
+            code = _mapping_error_code(error)
+            unmappable_by_reason[code] = unmappable_by_reason.get(code, 0) + 1
             continue
         expected[row["id"]] = projection.row["legacy_fingerprint"]
-        expected_rows.append((projection.row["observed_at"], projection.row["entity_id"], shape(projection.row)))
+        expected_rows.append(
+            (
+                projection.row["observed_at"],
+                projection.row["entity_id"],
+                entity,
+            )
+        )
     actual: dict[str, str] = {}
     stored: dict[str, str] = {}
     actual_rows = []
@@ -829,7 +924,9 @@ def _domain_comparison(connection: sqlite3.Connection, entity_type: str) -> dict
         item = dict(row)
         actual[item["entity_id"]] = _fingerprint(item)
         stored[item["entity_id"]] = item["legacy_fingerprint"]
-        actual_rows.append((item["observed_at"], item["entity_id"], shape(item)))
+        actual_rows.append(
+            (item["observed_at"], item["entity_id"], typed_shape(item))
+        )
     missing = set(expected) - set(actual)
     extra = set(actual) - set(expected)
     drift = {entity_id for entity_id in actual if actual[entity_id] != stored[entity_id]}
@@ -842,6 +939,7 @@ def _domain_comparison(connection: sqlite3.Connection, entity_type: str) -> dict
         "legacy_total": len(expected) + unmappable,
         "mappable": len(expected),
         "unmappable": unmappable,
+        "unmappable_by_reason": dict(sorted(unmappable_by_reason.items())),
         "typed_total": len(actual),
         "matched": len(set(expected) & set(actual)) - len(mismatched),
         "missing": len(missing),

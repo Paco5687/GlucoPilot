@@ -273,6 +273,10 @@ def test_backfill_is_restartable_and_parity_checks_counts_checksums_order_and_ag
         assert comparison[domain]["query"]["checksum_match"] is True
         assert comparison[domain]["query"]["ordering_match"] is True
         assert comparison[domain]["query"]["aggregate_match"] is True
+    assert comparison["glucose"]["unmappable_by_reason"] == {
+        "value_out_of_range": 1
+    }
+    assert comparison["fingersticks"]["unmappable_by_reason"] == {}
     assert SqliteTypedFingerstickRepository().get(fingerstick["id"])["delta"] == 5
 
 
@@ -283,7 +287,17 @@ def test_shadow_and_typed_read_flags_preserve_supported_queries(
     caplog,
 ):
     monkeypatch.setenv("TYPED_GLUCOSE_WRITES_ENABLED", "true")
-    db.bulk_create_entities("GlucoseReading", [_without_id(row) for row in glucose_cases["glucose"]])
+    glucose_rows = db.bulk_create_entities(
+        "GlucoseReading",
+        [_without_id(row) for row in glucose_cases["glucose"]],
+    )
+    db.create_entity(
+        "FingerstickReading",
+        {
+            **_without_id(glucose_cases["fingerstick"]),
+            "cgm_reading_id": glucose_rows[0]["id"],
+        },
+    )
     repositories = LegacyRepositoryCatalog()
     filters = {"owner_email": "owner@glucopilot.local", "timestamp": {"$gte": "2026-03-01T10:00:00Z"}}
 
@@ -293,6 +307,18 @@ def test_shadow_and_typed_read_flags_preserve_supported_queries(
         legacy = repositories.glucose.query(filters, "timestamp", 100)
     assert "typed glucose shadow" in caplog.text
     assert '"checksum_match": true' in caplog.text
+    assert '"legacy_ms":' in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="glucopilot.typed_glucose"):
+        repositories.fingersticks.query(
+            {"owner_email": "owner@glucopilot.local"},
+            "timestamp",
+            100,
+        )
+    assert "typed fingerstick shadow" in caplog.text
+    assert '"checksum_match": true' in caplog.text
+    assert '"legacy_ms":' in caplog.text
 
     monkeypatch.setenv("TYPED_GLUCOSE_READS_ENABLED", "true")
     typed = repositories.glucose.query(filters, "timestamp", 100)

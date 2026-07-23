@@ -231,6 +231,12 @@ def test_backfill_is_bounded_restartable_and_query_parity_matches(
         assert domain["query"]["checksum_match"] is True
         assert domain["query"]["ordering_match"] is True
         assert domain["query"]["aggregate_match"] is True
+    assert comparison["domains"]["OuraDaily"]["unmappable_by_reason"] == {
+        "value_out_of_range": 1
+    }
+    assert comparison["domains"]["FitbitHeartRate"]["unmappable_by_reason"] == {
+        "value_out_of_range": 1
+    }
 
 
 def test_high_volume_typed_query_avoids_json_store(

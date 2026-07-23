@@ -37,7 +37,9 @@ call `server.db` directly, so F4 does not expand or restrict API exposure.
 I4 wraps the legacy Treatment adapter with `TreatmentCompatibilityRepository`.
 Mutations always retain the legacy behavior. Supported domain reads may use the
 strict typed projection only under `TYPED_TREATMENT_READS_ENABLED`; unsupported
-legacy JSON filters fall back to the compatibility store. See
+legacy JSON filters fall back to the compatibility store. The independent
+`TYPED_TREATMENT_SHADOW_READS_ENABLED` switch runs both supported paths,
+records value-free parity/latency, and still returns legacy rows. See
 [Typed treatments](TYPED_TREATMENTS.md).
 
 I7 keeps existing consumers on `LabRepository` while `records.py` writes and

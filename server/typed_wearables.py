@@ -137,6 +137,23 @@ class TypedWearableProjection:
     row: dict[str, Any]
 
 
+def _mapping_error_code(error: WearableMappingError) -> str:
+    message = str(error).lower()
+    if "must be between" in message:
+        return "value_out_of_range"
+    if "timestamp" in message or "instant" in message:
+        return "timestamp_not_unambiguous"
+    if "date must" in message:
+        return "date_invalid"
+    if "bpm is required" in message:
+        return "metric_missing"
+    if "entity id" in message:
+        return "entity_id_missing"
+    if "numeric" in message:
+        return "numeric_contract_invalid"
+    return "typed_contract_invalid"
+
+
 def typed_wearable_writes_enabled() -> bool:
     return os.getenv("TYPED_WEARABLE_WRITES_ENABLED", "false").strip().lower() in _TRUE
 
@@ -699,14 +716,17 @@ def _domain_comparison(connection: sqlite3.Connection, entity_type: str) -> dict
     sort_field = "date" if daily else "timestamp"
     expected: dict[str, str] = {}
     expected_rows: list[dict[str, Any]] = []
+    unmappable_by_reason: dict[str, int] = {}
     unmappable = 0
     for row in connection.execute("SELECT * FROM entities WHERE type=?", (entity_type,)):
         entity = json.loads(row["data"])
         entity.update(id=row["id"], created_date=row["created_date"], updated_date=row["updated_date"])
         try:
             projection = map_legacy(entity_type, entity)
-        except WearableMappingError:
+        except WearableMappingError as error:
             unmappable += 1
+            code = _mapping_error_code(error)
+            unmappable_by_reason[code] = unmappable_by_reason.get(code, 0) + 1
             continue
         expected[row["id"]] = projection.row["legacy_fingerprint"]
         expected_rows.append(entity)
@@ -730,6 +750,7 @@ def _domain_comparison(connection: sqlite3.Connection, entity_type: str) -> dict
         "legacy_total": len(expected) + unmappable,
         "mappable": len(expected),
         "unmappable": unmappable,
+        "unmappable_by_reason": dict(sorted(unmappable_by_reason.items())),
         "typed_total": len(actual),
         "matched": len(set(expected) & set(actual)) - len(mismatched),
         "missing": len(set(expected) - set(actual)),

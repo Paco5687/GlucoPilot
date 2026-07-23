@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -212,7 +213,12 @@ def test_flag_off_preserves_generic_api_shape_and_backfill_is_explicit(
     second = backfill_typed_treatments(treatment_database, batch_size=2)
     assert first == {"legacy_scanned": 2, "typed_written": 1, "unmappable": 1}
     assert second == first
-    assert compare_treatment_stores(treatment_database) == {
+    comparison = compare_treatment_stores(treatment_database)
+    assert {
+        key: value
+        for key, value in comparison.items()
+        if key not in {"query", "unmappable_by_reason"}
+    } == {
         "legacy_total": 2,
         "mappable": 1,
         "unmappable": 1,
@@ -227,6 +233,16 @@ def test_flag_off_preserves_generic_api_shape_and_backfill_is_explicit(
         "pump_daily_totals": 0,
         "mapping_version": MAPPING_VERSION,
     }
+    assert comparison["unmappable_by_reason"] == {"timestamp_not_unambiguous": 1}
+    assert all(
+        comparison["query"][key]
+        for key in (
+            "count_match",
+            "checksum_match",
+            "ordering_match",
+            "aggregate_match",
+        )
+    )
     with sqlite3.connect(treatment_database) as connection:
         connection.execute(
             "UPDATE typed_treatments SET legacy_fingerprint=? WHERE entity_id=?",
@@ -279,11 +295,60 @@ def test_typed_read_flag_preserves_supported_legacy_query_results(
     assert [{key: row.get(key) for key in fields} for row in typed] == [
         {key: row.get(key) for key in fields} for row in legacy
     ]
-
     # An unknown legacy JSON field intentionally falls back instead of changing
     # an existing core consumer's query semantics during this additive release.
     assert repositories.treatments.query({"percent": 110}, limit=10)[0]["type"] == "tempbasal"
 
+
+def test_shadow_flag_compares_treatments_without_changing_authority(
+    treatment_cases,
+    treatment_database,
+    monkeypatch,
+    caplog,
+):
+    monkeypatch.setenv("TYPED_TREATMENT_WRITES_ENABLED", "true")
+    db.bulk_create_entities(
+        "Treatment",
+        [_without_id(row) for row in treatment_cases["rows"]],
+    )
+    repositories = LegacyRepositoryCatalog()
+    filters = {
+        "owner_email": "owner@glucopilot.local",
+        "timestamp": {"$gte": "2026-01-16T10:00:00Z"},
+    }
+    monkeypatch.setenv("TYPED_TREATMENT_SHADOW_READS_ENABLED", "true")
+    monkeypatch.setenv("TYPED_TREATMENT_READS_ENABLED", "false")
+    with caplog.at_level(logging.INFO, logger="glucopilot.typed_treatments"):
+        legacy = repositories.treatments.query(filters, "timestamp", 100)
+    assert "typed treatment shadow" in caplog.text
+    assert '"checksum_match": true' in caplog.text
+    assert '"legacy_ms":' in caplog.text
+    assert repositories.treatments.query(filters, "timestamp", 100) == legacy
+
+
+def test_equal_timestamp_pagination_preserves_legacy_insertion_order(
+    treatment_database,
+    monkeypatch,
+):
+    monkeypatch.setenv("TYPED_TREATMENT_WRITES_ENABLED", "true")
+    for index in range(12):
+        db.create_entity(
+            "Treatment",
+            {
+                "timestamp": "2026-01-16T10:00:00Z",
+                "source": "synthetic",
+                "type": "note",
+                "notes": f"Synthetic pagination row {index}",
+                "owner_email": "owner@glucopilot.local",
+            },
+        )
+    repository = LegacyRepositoryCatalog().treatments
+    filters = {"owner_email": "owner@glucopilot.local"}
+    for sort in ("timestamp", "-timestamp"):
+        for skip in (0, 5, 10):
+            legacy = repository._legacy.query(filters, sort, 5, skip)
+            typed = repository._typed.query(filters, sort, 5, skip)
+            assert [row["id"] for row in typed] == [row["id"] for row in legacy]
 
 def test_legacy_and_typed_writes_roll_back_in_one_unit_of_work(
     treatment_database,
