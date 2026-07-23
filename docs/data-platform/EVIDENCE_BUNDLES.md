@@ -97,6 +97,13 @@ removed recursively. Free-form source/evidence/version locators from graph and
 archive records are returned only as opaque SHA-256 references. Foreign-owner
 and absent source IDs intentionally produce the same `404` response.
 
+G7 adds authenticated claim-specific paths alongside bundle queries. Pattern
+cards call `GET /api/evidence/claims/{type}/{id}` to load the linked EvidenceSet,
+role-grouped support/limitations, and supersession history only on demand.
+Window links page through exact checksum-validated observations at
+`GET /api/evidence/windows/{window_id}`; each observation links back to the
+redacted normalized-source endpoint above.
+
 ## Rollout behavior
 
 G5 adds no migration and enables no write path. Relationship items follow the

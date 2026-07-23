@@ -7,6 +7,12 @@ from zoneinfo import ZoneInfo
 
 from . import db
 from .analytics_confidence import proportion_confidence, safe_analytics_text
+from .claims import (
+    CLAIM_CONTRACT_VERSION,
+    claim_limitations,
+    evidence_input_version,
+    semantic_claim_key,
+)
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .data_quality import assess_cgm, assess_nutrition, cgm_points
 from .db import config_value
@@ -66,20 +72,37 @@ def _time_of_day(hour: int) -> str:
     return "evening"
 
 
+def _retire_active_patterns() -> None:
+    with unit_of_work() as work:
+        repository = work.repositories.entity("Pattern")
+        for pattern in repository.query({"is_active": True, "owner_email": OWNER_EMAIL}):
+            repository.update(pattern["id"], {
+                "is_active": False,
+                "assertion_status": "superseded",
+            })
+        if evidence_set_writes_enabled():
+            work.repositories.typed_claims.supersede_except(
+                owner_email=OWNER_EMAIL,
+                claim_type="Pattern",
+                current_claim_version_ids=[],
+            )
+        work.commit()
+
+
 async def analyze() -> dict[str, Any]:
     tz = ZoneInfo(config_value("app_timezone", APP_TIMEZONE))
     now = datetime.now(timezone.utc)
     since = now - timedelta(days=14)
 
     readings = _fetch_window("GlucoseReading", since)
+    source_readings = readings
     quality = assess_cgm(
         readings, tz, start=since, end=now, as_of=now.astimezone(tz).date()
     )
     if not quality["ai_eligible"]:
         # Do not leave old derived conclusions active when the current window no
         # longer meets the analysis contract.
-        for old in db.query_entities("Pattern", {"is_active": True, "owner_email": OWNER_EMAIL}):
-            db.update_entity("Pattern", old["id"], {"is_active": False})
+        _retire_active_patterns()
         return {
             "success": True,
             "patternsFound": 0,
@@ -400,6 +423,12 @@ IMPORTANT: This is educational only. Always frame suggestions as "discuss with y
             pass
 
     now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    pattern_evidence_types = [
+        ["GlucoseReading", "Treatment"]
+        if pattern["pattern_type"] in {"post_meal_spike", "ineffective_correction"}
+        else ["GlucoseReading"]
+        for pattern in patterns
+    ]
     to_create = [
         {
             "title": p.get("title") or f"{p['pattern_type'].replace('_', ' ')} detected",
@@ -428,32 +457,116 @@ IMPORTANT: This is educational only. Always frame suggestions as "discuss with y
     ]
     with unit_of_work() as work:
         pattern_repository = work.repositories.entity("Pattern")
-        for old in pattern_repository.query({"is_active": True, "owner_email": OWNER_EMAIL}):
+        old_patterns = pattern_repository.query({"is_active": True, "owner_email": OWNER_EMAIL})
+        for old in old_patterns:
             pattern_repository.update(old["id"], {"is_active": False})
         created = pattern_repository.create_many(to_create) if to_create else []
         if created and evidence_set_writes_enabled():
-            window = work.repositories.typed_evidence.capture_window(
+            windows_by_type = {"GlucoseReading": work.repositories.typed_evidence.capture_window(
                 owner_email=OWNER_EMAIL,
                 entity_type="GlucoseReading",
                 time_field="timestamp",
                 window_start=since.isoformat().replace("+00:00", "Z"),
                 window_end=now,
-                observations=readings,
+                observations=source_readings,
                 filters={"owner_email": OWNER_EMAIL},
                 summary={"data_quality": quality},
-            )
-            for pattern, source in zip(created, to_create):
-                work.repositories.typed_evidence.create_set(
+            )}
+            if treatments and any(
+                "Treatment" in entity_types for entity_types in pattern_evidence_types
+            ):
+                windows_by_type["Treatment"] = work.repositories.typed_evidence.capture_window(
+                    owner_email=OWNER_EMAIL,
+                    entity_type="Treatment",
+                    time_field="timestamp",
+                    window_start=since.isoformat().replace("+00:00", "Z"),
+                    window_end=now,
+                    observations=treatments,
+                    filters={"owner_email": OWNER_EMAIL},
+                    summary={"data_quality": nutrition_quality},
+                )
+            current_versions = []
+            retired_entity_ids: set[str] = set()
+            for pattern, source, evidence_types in zip(
+                created, to_create, pattern_evidence_types
+            ):
+                windows = [windows_by_type[entity_type] for entity_type in evidence_types]
+                input_data_version = evidence_input_version(windows)
+                claim_key = semantic_claim_key("Pattern", source)
+                claim_version, predecessors = work.repositories.typed_claims.create_version(
+                    owner_email=OWNER_EMAIL,
+                    claim_type="Pattern",
+                    claim_entity_id=pattern["id"],
+                    claim_key=claim_key,
+                    content=source,
+                    input_data_version=input_data_version,
+                    analytics_confidence=source["analytics_confidence"],
+                )
+                evidence = work.repositories.typed_evidence.create_set(
                     owner_email=OWNER_EMAIL,
                     claim_type="Pattern",
                     claim_id=pattern["id"],
-                    window_ids=[window["id"]],
+                    window_ids=[window["id"] for window in windows],
                     summary={
                         **json.loads(source["supporting_evidence"]),
                         "analytics_confidence": source["analytics_confidence"],
                     },
-                    input_data_version=quality["input_data_version"],
+                    input_data_version=input_data_version,
+                    window_rationales={
+                        window["id"]: (
+                            "Glucose observations used by the pattern rule."
+                            if window["entity_type"] == "GlucoseReading"
+                            else "Treatment observations used to evaluate meal or correction context."
+                        )
+                        for window in windows
+                    },
+                    limitations=claim_limitations(
+                        source["analytics_confidence"], source["data_quality"]
+                    ),
                 )
+                work.repositories.typed_claims.attach_evidence(claim_version["id"], evidence["id"])
+                pattern_repository.update(pattern["id"], {
+                    "claim_contract_version": CLAIM_CONTRACT_VERSION,
+                    "claim_version_id": claim_version["id"],
+                    "claim_key": claim_key,
+                    "claim_version": claim_version["version_number"],
+                    "assertion_kind": claim_version["assertion_kind"],
+                    "assertion_status": "provisional",
+                    "algorithm_id": claim_version["algorithm_id"],
+                    "algorithm_version": claim_version["algorithm_version"],
+                    "input_data_version": input_data_version,
+                    "evidence_set_id": evidence["id"],
+                    "supersedes_claim_id": predecessors[0] if predecessors else None,
+                })
+                current_versions.append(claim_version["id"])
+                retired_entity_ids.update(predecessors)
+                for predecessor in predecessors:
+                    pattern_repository.update(predecessor, {
+                        "is_active": False,
+                        "assertion_status": "superseded",
+                        "superseded_by_claim_id": pattern["id"],
+                    })
+            retired_entity_ids.update(work.repositories.typed_claims.supersede_except(
+                owner_email=OWNER_EMAIL,
+                claim_type="Pattern",
+                current_claim_version_ids=current_versions,
+            ))
+            for retired_id in retired_entity_ids:
+                pattern_repository.update(retired_id, {
+                    "is_active": False,
+                    "assertion_status": "superseded",
+                })
+        elif evidence_set_writes_enabled():
+            retired = work.repositories.typed_claims.supersede_except(
+                owner_email=OWNER_EMAIL,
+                claim_type="Pattern",
+                current_claim_version_ids=[],
+            )
+            for retired_id in retired:
+                pattern_repository.update(retired_id, {
+                    "is_active": False,
+                    "assertion_status": "superseded",
+                })
         work.commit()
 
     return {

@@ -55,6 +55,9 @@ typed repositories are introduced.
 - [Analytics confidence and replication](ANALYTICS_CONFIDENCE.md) — shared
   samples/effect/interval/missingness metadata, discovery/replication statuses,
   cycle-phase provenance, strength-scaled language, and AI handoff rules.
+- [Evidence-backed claims](EVIDENCE_BACKED_CLAIMS.md) — immutable Pattern and
+  Insight generations, supersession lineage, role-preserving EvidenceSet links,
+  and authenticated observation drill-down.
 
 ## Reproduce the structural audit
 

@@ -169,6 +169,19 @@ def test_schema_registry_drift_prevents_startup(tmp_path):
         run_migrations(database)
 
 
+def test_claim_algorithm_registry_drift_prevents_startup(tmp_path):
+    database = tmp_path / "app.sqlite3"
+    run_migrations(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE claim_algorithm_registry SET description='changed' "
+            "WHERE algorithm_id='glucose-pattern-analysis' AND version='2.0.0'"
+        )
+
+    with pytest.raises(MigrationError, match="claim algorithm registry drift"):
+        run_migrations(database)
+
+
 def test_newer_database_prevents_downgrade_startup(tmp_path):
     database = tmp_path / "app.sqlite3"
     run_migrations(database)

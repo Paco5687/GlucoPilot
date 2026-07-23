@@ -18,11 +18,18 @@ from .analytics_confidence import (
     phase_provenance,
     safe_analytics_text,
 )
+from .claims import (
+    CLAIM_CONTRACT_VERSION,
+    claim_limitations,
+    evidence_input_version,
+    semantic_claim_key,
+)
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .data_quality import assess_cgm, assess_daily, assess_pump_tdd, cgm_points
 from .insulin_reconciliation import reconcile_treatments
 from .db import config_value
 from .llm import invoke_llm
+from .evidence_sets import evidence_set_writes_enabled
 from .repositories import get_repositories
 from .unit_of_work import unit_of_work
 
@@ -34,7 +41,19 @@ R_THRESHOLD = 0.3
 
 def _clear_derived_insights() -> None:
     with unit_of_work() as work:
-        work.repositories.entity("Insight").delete_where({"owner_email": OWNER_EMAIL})
+        repository = work.repositories.entity("Insight")
+        for insight in repository.query({"owner_email": OWNER_EMAIL}):
+            if insight.get("is_active", True):
+                repository.update(insight["id"], {
+                    "is_active": False,
+                    "assertion_status": "superseded",
+                })
+        if evidence_set_writes_enabled():
+            work.repositories.typed_claims.supersede_except(
+                owner_email=OWNER_EMAIL,
+                claim_type="Insight",
+                current_claim_version_ids=[],
+            )
         work.commit()
 
 
@@ -48,7 +67,7 @@ def _parse_ts(value: str) -> datetime | None:
 
 def _daily_glucose_metrics(
     tz: ZoneInfo, since: datetime, now: datetime
-) -> tuple[dict[str, dict[str, float]], dict[str, Any]]:
+) -> tuple[dict[str, dict[str, float]], dict[str, Any], list[dict[str, Any]]]:
     glucose_repository = get_repositories().glucose
     readings = []
     skip = 0
@@ -85,7 +104,7 @@ def _daily_glucose_metrics(
     quality = assess_cgm(
         readings, tz, start=since, end=now, as_of=now.astimezone(tz).date()
     )
-    return metrics, quality
+    return metrics, quality, readings
 
 
 def _correlation_candidates(glucose: dict, oura_by_day: dict) -> list[dict[str, Any]]:
@@ -119,10 +138,22 @@ def _correlation_candidates(glucose: dict, oura_by_day: dict) -> list[dict[str, 
     out = []
     for oura_field, oura_label, g_field, g_label, category, positive_good in axes:
         pairs: list[tuple[str, float, float]] = []
+        source_types: set[str] = set()
         for day, g in glucose.items():
             o = oura_by_day.get(day, {})
             if o.get(oura_field) is not None:
                 pairs.append((day, float(o[oura_field]), float(g[g_field])))
+                field_source = (o.get("_field_sources") or {}).get(oura_field)
+                if field_source:
+                    source_types.add(field_source)
+        if not source_types:
+            source_types.add(
+                "FitbitHeartRate"
+                if oura_field == "avg_heart_rate"
+                else "FitbitDaily"
+                if "Fitbit" in oura_label
+                else "OuraDaily"
+            )
         r, confidence = correlation_confidence(
             pairs,
             expected_days=WINDOW_DAYS,
@@ -142,6 +173,7 @@ def _correlation_candidates(glucose: dict, oura_by_day: dict) -> list[dict[str, 
                 "r": round(r, 2),
                 "n": len(pairs),
                 "analytics_confidence": confidence,
+                "_evidence_types": ["GlucoseReading", *sorted(source_types)],
             }
         )
     return out
@@ -162,7 +194,7 @@ async def analyze() -> dict[str, Any]:
     now = datetime.now(timezone.utc)
     since = now - timedelta(days=WINDOW_DAYS)
 
-    glucose, glucose_quality = _daily_glucose_metrics(tz, since, now)
+    glucose, glucose_quality, glucose_rows = _daily_glucose_metrics(tz, since, now)
     if not glucose_quality["ai_eligible"]:
         _clear_derived_insights()
         return {
@@ -181,17 +213,30 @@ async def analyze() -> dict[str, Any]:
     oura_rows = repositories.oura_daily.query(
         {"owner_email": OWNER_EMAIL}, "-date", 400
     )
-    oura_by_day = {r.get("date"): dict(r) for r in oura_rows if r.get("date")}
+    oura_by_day = {
+        r.get("date"): {
+            **dict(r),
+            "_field_sources": {
+                key: "OuraDaily"
+                for key, value in r.items()
+                if value is not None and key not in {"id", "owner_email", "date"}
+            },
+        }
+        for r in oura_rows
+        if r.get("date")
+    }
 
     # Merge Fitbit daily metrics into the wearable-by-day map. Oura fields win
     # where both exist; Fitbit contributes its unique fields and fills gaps.
-    for f in repositories.fitbit_daily.query(
+    fitbit_rows = repositories.fitbit_daily.query(
         {"owner_email": OWNER_EMAIL}, "-date", 400
-    ):
+    )
+    for f in fitbit_rows:
         day = f.get("date")
         if not day:
             continue
-        merged = oura_by_day.setdefault(day, {})
+        merged = oura_by_day.setdefault(day, {"_field_sources": {}})
+        field_sources = merged.setdefault("_field_sources", {})
         for src_key, dst_key in (
             ("resting_heart_rate", "resting_heart_rate"),
             ("breathing_rate", "breathing_rate"),
@@ -204,23 +249,28 @@ async def analyze() -> dict[str, Any]:
         ):
             if f.get(src_key) is not None and merged.get(dst_key) is None:
                 merged[dst_key] = f[src_key]
+                field_sources[dst_key] = "FitbitDaily"
 
     # Daily average HR from the intraday minute-buckets (FitbitHeartRate). Only
     # covers recent/backfilled days, so it joins once the shared confidence
     # framework has enough pairs to label the result exploratory.
     hr_by_day: dict[str, list[float]] = {}
-    for hr in repositories.fitbit_heart_rate.query(
+    fitbit_hr_rows = repositories.fitbit_heart_rate.query(
         {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since.isoformat().replace("+00:00", "Z")}},
         "timestamp",
         200000,
-    ):
+    )
+    for hr in fitbit_hr_rows:
         ts = _parse_ts(hr.get("timestamp"))
         if ts is None or hr.get("bpm") is None:
             continue
         hr_by_day.setdefault(ts.astimezone(tz).date().isoformat(), []).append(float(hr["bpm"]))
     for day, bpms in hr_by_day.items():
         if len(bpms) >= 60:  # ≥1h of minute-buckets → a representative daily mean
-            oura_by_day.setdefault(day, {}).setdefault("avg_heart_rate", round(sum(bpms) / len(bpms), 1))
+            merged = oura_by_day.setdefault(day, {"_field_sources": {}})
+            if merged.get("avg_heart_rate") is None:
+                merged["avg_heart_rate"] = round(sum(bpms) / len(bpms), 1)
+                merged.setdefault("_field_sources", {})["avg_heart_rate"] = "FitbitHeartRate"
 
     local_today = now.astimezone(tz).date()
     wearable_quality = assess_daily(
@@ -285,6 +335,7 @@ async def analyze() -> dict[str, Any]:
                             period_rows, included_dates=included
                         ),
                     ),
+                    "_evidence_types": ["GlucoseReading", "PeriodLog"],
                 }
             )
 
@@ -318,6 +369,7 @@ async def analyze() -> dict[str, Any]:
                             period_rows, included_dates=included
                         ),
                     ),
+                    "_evidence_types": ["GlucoseReading", "PeriodLog"],
                 }
             )
 
@@ -375,6 +427,7 @@ async def analyze() -> dict[str, Any]:
                             period_rows, included_dates=included
                         ),
                     ),
+                    "_evidence_types": ["GlucoseReading", "PeriodLog", "Treatment"],
                 }
             )
 
@@ -399,6 +452,7 @@ async def analyze() -> dict[str, Any]:
                     expected_days=WINDOW_DAYS,
                     unit="percentage_points",
                 ),
+                "_evidence_types": ["GlucoseReading"],
             }
         )
 
@@ -426,6 +480,7 @@ async def analyze() -> dict[str, Any]:
                         temporal_direction="prior-period to recent-period",
                         unit="percentage_points",
                     ),
+                    "_evidence_types": ["GlucoseReading"],
                 }
             )
 
@@ -493,7 +548,7 @@ Detected relationships (r = Pearson correlation over n days; TIR = % time 70-180
             return f"Weekday TIR {c['weekday_tir']}% vs weekend {c['weekend_tir']}%"
         return f"TIR trend: {c['recent_tir']}% last 30d vs {c['prior_tir']}% prior 30d"
 
-    now = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    generated_at = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
     def candidate_quality(candidate: dict[str, Any]) -> dict[str, Any]:
         quality = {"cgm": glucose_quality}
@@ -505,6 +560,7 @@ Detected relationships (r = Pearson correlation over n days; TIR = % time 70-180
             quality.update({"cycle": cycle_quality, "pump_tdd": pump_quality})
         return quality
 
+    candidate_evidence_types = [candidate["_evidence_types"] for candidate in candidates]
     to_create = [
         {
             "title": titles.get(i, {}).get("title") or fallback_title(c),
@@ -515,21 +571,171 @@ Detected relationships (r = Pearson correlation over n days; TIR = % time 70-180
             ),
             "category": c["category"],
             "severity": c["severity"],
-            "date_generated": now,
-            "supporting_data": json.dumps(c),
+            "date_generated": generated_at,
+            "supporting_data": json.dumps({
+                key: value for key, value in c.items() if not key.startswith("_")
+            }),
             "analytics_confidence": c["analytics_confidence"],
             "data_quality": candidate_quality(c),
             "is_read": False,
+            "is_active": True,
             "owner_email": OWNER_EMAIL,
         }
         for i, c in enumerate(candidates)
     ]
-    # Replace the derived set atomically so readers never observe a partial set.
+    # Publish a new immutable generation. Previous rows remain auditable and are
+    # marked superseded instead of being deleted.
     with unit_of_work() as work:
         insight_repository = work.repositories.entity("Insight")
-        insight_repository.delete_where({"owner_email": OWNER_EMAIL})
-        if to_create:
-            insight_repository.create_many(to_create)
+        old_insights = [
+            insight
+            for insight in insight_repository.query({"owner_email": OWNER_EMAIL})
+            if insight.get("is_active", True)
+        ]
+        for old in old_insights:
+            insight_repository.update(old["id"], {"is_active": False})
+        created = insight_repository.create_many(to_create) if to_create else []
+        if created and evidence_set_writes_enabled():
+            observations_by_type = {
+                "GlucoseReading": ("timestamp", "instant", glucose_rows, {"data_quality": glucose_quality}),
+                "OuraDaily": ("date", "date", oura_rows, {"data_quality": wearable_quality}),
+                "FitbitDaily": ("date", "date", fitbit_rows, {"data_quality": wearable_quality}),
+                "FitbitHeartRate": (
+                    "timestamp", "instant", fitbit_hr_rows, {"data_quality": wearable_quality}
+                ),
+                "PeriodLog": ("date", "date", period_rows, {"data_quality": cycle_quality}),
+                "Treatment": ("timestamp", "instant", treatment_rows, {"data_quality": pump_quality}),
+            }
+            required_types = {
+                entity_type
+                for entity_types in candidate_evidence_types
+                for entity_type in entity_types
+            }
+            windows_by_type: dict[str, list[dict[str, Any]]] = {}
+            for entity_type in sorted(required_types):
+                time_field, time_kind, observations, summary = observations_by_type[entity_type]
+                if not observations:
+                    continue
+                ranges = [(since, now)]
+                if entity_type == "FitbitHeartRate":
+                    ranges = []
+                    cursor = since
+                    while cursor <= now:
+                        chunk_end = min(now, cursor + timedelta(days=30) - timedelta(milliseconds=1))
+                        ranges.append((cursor, chunk_end))
+                        cursor = chunk_end + timedelta(milliseconds=1)
+                for window_start, window_end in ranges:
+                    if time_kind == "date":
+                        has_observation = any(
+                            window_start.date().isoformat() <= str(item.get(time_field) or "")
+                            <= window_end.date().isoformat()
+                            for item in observations
+                        )
+                    else:
+                        has_observation = any(
+                            (observed := _parse_ts(item.get(time_field))) is not None
+                            and window_start <= observed <= window_end
+                            for item in observations
+                        )
+                    if not has_observation:
+                        continue
+                    window = work.repositories.typed_evidence.capture_window(
+                        owner_email=OWNER_EMAIL,
+                        entity_type=entity_type,
+                        time_field=time_field,
+                        time_kind=time_kind,
+                        window_start=window_start.isoformat().replace("+00:00", "Z"),
+                        window_end=window_end.isoformat().replace("+00:00", "Z"),
+                        observations=observations,
+                        filters={"owner_email": OWNER_EMAIL},
+                        summary=summary,
+                    )
+                    windows_by_type.setdefault(entity_type, []).append(window)
+
+            current_versions = []
+            retired_entity_ids: set[str] = set()
+            for insight, source, evidence_types in zip(
+                created, to_create, candidate_evidence_types
+            ):
+                windows = [
+                    window
+                    for entity_type in evidence_types
+                    for window in windows_by_type.get(entity_type, [])
+                ]
+                if not windows:
+                    raise RuntimeError("an evidence-backed Insight requires source observations")
+                input_data_version = evidence_input_version(windows)
+                claim_key = semantic_claim_key("Insight", source)
+                claim_version, predecessors = work.repositories.typed_claims.create_version(
+                    owner_email=OWNER_EMAIL,
+                    claim_type="Insight",
+                    claim_entity_id=insight["id"],
+                    claim_key=claim_key,
+                    content=source,
+                    input_data_version=input_data_version,
+                    analytics_confidence=source["analytics_confidence"],
+                )
+                evidence = work.repositories.typed_evidence.create_set(
+                    owner_email=OWNER_EMAIL,
+                    claim_type="Insight",
+                    claim_id=insight["id"],
+                    window_ids=[window["id"] for window in windows],
+                    summary={
+                        **json.loads(source["supporting_data"]),
+                        "analytics_confidence": source["analytics_confidence"],
+                    },
+                    input_data_version=input_data_version,
+                    window_rationales={
+                        window["id"]: f"{window['entity_type']} observations used by this analysis."
+                        for window in windows
+                    },
+                    limitations=claim_limitations(
+                        source["analytics_confidence"], source["data_quality"]
+                    ),
+                )
+                work.repositories.typed_claims.attach_evidence(claim_version["id"], evidence["id"])
+                insight_repository.update(insight["id"], {
+                    "claim_contract_version": CLAIM_CONTRACT_VERSION,
+                    "claim_version_id": claim_version["id"],
+                    "claim_key": claim_key,
+                    "claim_version": claim_version["version_number"],
+                    "assertion_kind": claim_version["assertion_kind"],
+                    "assertion_status": "provisional",
+                    "algorithm_id": claim_version["algorithm_id"],
+                    "algorithm_version": claim_version["algorithm_version"],
+                    "input_data_version": input_data_version,
+                    "evidence_set_id": evidence["id"],
+                    "supersedes_claim_id": predecessors[0] if predecessors else None,
+                })
+                current_versions.append(claim_version["id"])
+                retired_entity_ids.update(predecessors)
+                for predecessor in predecessors:
+                    insight_repository.update(predecessor, {
+                        "is_active": False,
+                        "assertion_status": "superseded",
+                        "superseded_by_claim_id": insight["id"],
+                    })
+            retired_entity_ids.update(work.repositories.typed_claims.supersede_except(
+                owner_email=OWNER_EMAIL,
+                claim_type="Insight",
+                current_claim_version_ids=current_versions,
+            ))
+            for retired_id in retired_entity_ids:
+                insight_repository.update(retired_id, {
+                    "is_active": False,
+                    "assertion_status": "superseded",
+                })
+        elif evidence_set_writes_enabled():
+            retired = work.repositories.typed_claims.supersede_except(
+                owner_email=OWNER_EMAIL,
+                claim_type="Insight",
+                current_claim_version_ids=[],
+            )
+            for retired_id in retired:
+                insight_repository.update(retired_id, {
+                    "is_active": False,
+                    "assertion_status": "superseded",
+                })
         work.commit()
     return {
         "success": True,

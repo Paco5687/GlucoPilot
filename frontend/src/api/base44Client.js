@@ -92,6 +92,12 @@ export const base44 = {
       return { data };
     },
   },
+  evidence: {
+    claim: (claimType, claimId) =>
+      api(`/api/evidence/claims/${encodeURIComponent(claimType)}/${encodeURIComponent(claimId)}`),
+    window: (windowId, { offset = 0, limit = 50 } = {}) =>
+      api(`/api/evidence/windows/${encodeURIComponent(windowId)}?offset=${offset}&limit=${limit}`),
+  },
   integrations: {
     Core: {
       InvokeLLM: async ({ prompt, response_json_schema }) => {

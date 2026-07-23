@@ -16,7 +16,7 @@
 | Lively/phone ingest | `PeriodLog` | Local date key and source. | Merge by date; manual rows respected. |
 | CSV/Base44 imports | Glucose, treatment, Oura, period | Timestamp normalization; glucose uses the shared repository ±240-second cross-source rule. | Legacy CSV import replaces owner/source=`csv` glucose/treatment, then reimports only non-overlapping glucose. |
 | Manual APIs | Fingersticks, profile/weight, diagnoses, meds, allergies, insurance, symptoms, history | Random IDs and user-supplied dates. | User edit/append/delete per catalog. |
-| Rule/LLM jobs | Patterns, insights, summary, Companion | Patterns, insights, and summaries carry versioned quality/input hashes; source-record evidence remains future work. | Deactivate/replace/append varies by output; low-quality pattern/insight windows clear stale conclusions. |
+| Rule/LLM jobs | Patterns, Insights, claim-version ledger, EvidenceSets, summary, Companion | Pattern/Insight algorithms record content, input, confidence, EvidenceSet, and version lineage; source windows retain exact authoritative entity membership. | Pattern/Insight generations append and supersede without deletion; low-quality windows retire current claims. Other derived outputs retain their compatibility behavior. |
 | Contradiction rules | Typed run, contradiction, and immutable event rows | Rules version plus canonical input hash; each fingerprint includes both evidence sides. | Re-evaluation changes detection presence only. Human resolution is attributable and is never silently reset. |
 
 Every source is operationally owned by its module and the deployment owner.
@@ -65,7 +65,7 @@ be reconstructed.
 | Bug-report context/GitHub link | In-app reporter persistence and GitHub issue bridge only. |
 | Contradiction rule/domain/severity/explanation, both JSON sides, detection/resolution state, actor/history | Contextual Dashboard/Records/Insulin/Cycle panels, Visit Report, Health Summary, Companion, verified backup manifests. |
 | Relationship subject/predicate/object, assertion/evidence status, source/generator/input version, validity, confidence | G3 rebuild projection, authorized graph queries, Evidence Bundles, and verified backup manifests. Legacy consumers remain on field projection by default. |
-| Observation-window query/range/member IDs/checksums and claim Evidence Sets | Pattern time-series support, on-demand source drill-down, Evidence Bundles, stale-evidence detection, and verified backup manifests. |
+| Claim version/key/status/algorithm/input/EvidenceSet and observation-window query/range/member IDs/checksums/roles | Pattern and Insight lineage, on-demand source drill-down, Evidence Bundles, stale-evidence detection, and verified backup manifests. |
 
 ## Frontend generic-entity queries
 
@@ -102,7 +102,7 @@ automatically inject `owner_email`.
 | Nightscout backfill | All owner Nightscout glucose/treatment | Whole-volume restore or remote re-sync; delete/fetch/insert is not one transaction. |
 | Legacy CSV import | All owner/source=`csv` glucose/treatment | Restore or rerun source import. |
 | Record reprocess/delete | Unverified child projections refresh; verified corrections are retained; delete also removes uploaded file and audit rows | Reprocess retained file or restore a verified volume backup. Database changes are transactional per audit/projection refresh; filesystem deletion remains outside SQLite. |
-| Insight generation | All owner insights | Regenerate; previous output/input not retained. |
+| Insight generation | Current owner Insights | New generations append; prior entities and strict claim rows become superseded with bidirectional lineage and retain their original EvidenceSets. |
 | Health summary | All owner summaries | Regenerate; previous output/input not retained. |
 | Cycle inference | All owner Oura-inferred periods | Regenerate from Oura. |
 | Demo cleanup | Every known demo type | Catalog drift can leave unknown types. |
@@ -116,5 +116,6 @@ automatically inject `owner_email`.
 4. Provenance usually ends at one mutable `source` string.
 5. UTC instants, provider dates, local dates, and naive timestamps differ by
    source.
-6. Derived outputs lack algorithm/input versions and missing-data contracts.
+6. Derived outputs outside the governed Pattern/Insight claim path still lack
+   complete algorithm/input versions and missing-data contracts.
 7. Whole-type dedup scans and large browser queries will scale poorly.

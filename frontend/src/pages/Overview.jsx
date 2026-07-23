@@ -46,7 +46,7 @@ export default function Overview() {
     setLoading(true);
     const [s, p] = await Promise.allSettled([
       base44.functions.invoke("healthSummary", { action: "get" }),
-      base44.entities.Pattern.list("-created_date", 50),
+      base44.entities.Pattern.filter({ is_active: true }, "-created_date", 50),
     ]);
     setSummary(s.status === "fulfilled" ? (s.value.data?.summary || null) : null);
     setPatterns(p.status === "fulfilled" ? (p.value || []) : []);

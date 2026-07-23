@@ -5,7 +5,8 @@ Status: additive regression layer
 Implementations: `tests/fixtures/`, `tests/test_golden_data.py`,
 `tests/test_migration_fixtures.py`, `tests/test_contradictions.py`,
 `tests/test_typed_glucose.py`, `tests/test_typed_wearables.py`,
-`tests/test_relationship_projection.py`, and `tests/test_relationship_api.py`
+`tests/test_relationship_projection.py`, `tests/test_relationship_api.py`, and
+`tests/test_evidence_backed_claims.py`
 
 F5 establishes deterministic, public-safe fixtures for clinical interpretation
 and storage risks. The fixtures contain invented values, synthetic identifiers,
@@ -31,6 +32,7 @@ rows, credentials, or copied health information.
 | Relationship projection jobs | Repeated full builds have stable checksums; failed and scoped builds cannot publish mixed generations; authored assertions survive; freshness and backup counts remain observable. |
 | Relationship query API | Anonymous/disabled access, admin/provider GET behavior, owner isolation, deterministic bounds, reverse traversal, evidence paths, and raw-locator redaction remain enforced. |
 | Analytics confidence | Exact effects/intervals/missingness, seven-day exploratory status, reproduced and not-reproduced temporal holdouts, invalid inputs, small-sample language, and confirmed/inferred cycle provenance remain deterministic. |
+| Evidence-backed claims | Pattern/Insight generations preserve predecessor/successor lineage, exact source-window replay, evidence roles/limitations, authenticated source links, and non-destructive refresh. |
 
 `clinical_edge_cases.json` stores both the synthetic inputs and their expected
 outcomes. Tests must compare production parser, deduplication, analytics,
@@ -56,6 +58,9 @@ time identity, and value-free parity.
 `analytics_confidence.json` uses invented linear series, group values, event
 counts, and phase rows. It pins the versioned statistical contract and contains
 no production-derived measurements or dates.
+
+`evidence_backed_claims.json` pins the public claim contract, algorithm
+versions, allowed evidence roles, and two-generation supersession outcome.
 
 ## Migration snapshots
 
@@ -97,6 +102,9 @@ database.
   counts.
 - Evidence windows: checksum determinism, bounded membership, exact drill-down,
   source-change invalidation, Pattern citation cardinality, and restore counts.
+- Evidence-backed claims: Pattern/Insight non-destructive publication, version
+  lineage, governed confidence, role-preserving EvidenceSets, authenticated
+  paged source access, and backup counts.
 - Relationship API: authentication/read gating, provider-safe GET access,
   owner non-enumeration, deterministic budgets/order, and secret-locator
   redaction.

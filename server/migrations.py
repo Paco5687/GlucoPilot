@@ -1469,6 +1469,113 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        14,
+        "versioned_evidence_backed_claims",
+        (
+            Statement(
+                """
+                CREATE TABLE claim_algorithm_registry (
+                    algorithm_id TEXT NOT NULL CHECK(algorithm_id != ''),
+                    version TEXT NOT NULL CHECK(version != ''),
+                    claim_type TEXT NOT NULL REFERENCES entity_schema_registry(entity_type),
+                    deterministic INTEGER NOT NULL CHECK(deterministic IN (0, 1)),
+                    rebuildable INTEGER NOT NULL CHECK(rebuildable IN (0, 1)),
+                    description TEXT NOT NULL CHECK(description != ''),
+                    PRIMARY KEY(algorithm_id, version),
+                    CHECK(claim_type IN ('Pattern', 'Insight'))
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                INSERT INTO claim_algorithm_registry (
+                    algorithm_id, version, claim_type, deterministic, rebuildable, description
+                ) VALUES (
+                    'glucose-pattern-analysis', '2.0.0', 'Pattern', 1, 1,
+                    'Rule-derived glucose patterns with governed confidence and bounded evidence windows'
+                )
+                """
+            ),
+            Statement(
+                """
+                INSERT INTO claim_algorithm_registry (
+                    algorithm_id, version, claim_type, deterministic, rebuildable, description
+                ) VALUES (
+                    'cross-domain-insight-analysis', '2.0.0', 'Insight', 1, 1,
+                    'Cross-domain statistical insights with governed confidence and bounded evidence windows'
+                )
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE claim_versions (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    owner_email TEXT NOT NULL CHECK(owner_email != ''),
+                    claim_type TEXT NOT NULL REFERENCES entity_schema_registry(entity_type),
+                    claim_entity_id TEXT NOT NULL CHECK(claim_entity_id != ''),
+                    claim_key TEXT NOT NULL CHECK(claim_key != ''),
+                    version_number INTEGER NOT NULL CHECK(version_number > 0),
+                    content_checksum TEXT NOT NULL CHECK(
+                        length(content_checksum) = 71 AND content_checksum LIKE 'sha256:%'
+                    ),
+                    assertion_kind TEXT NOT NULL CHECK(
+                        assertion_kind IN ('derived_statistic', 'hypothesis')
+                    ),
+                    assertion_status TEXT NOT NULL REFERENCES assertion_status_registry(status),
+                    algorithm_id TEXT NOT NULL,
+                    algorithm_version TEXT NOT NULL,
+                    input_data_version TEXT NOT NULL CHECK(input_data_version != ''),
+                    analytics_confidence_json TEXT NOT NULL CHECK(
+                        json_valid(analytics_confidence_json)
+                        AND json_type(analytics_confidence_json) = 'object'
+                    ),
+                    evidence_set_id TEXT REFERENCES evidence_sets(id) ON DELETE RESTRICT,
+                    supersedes_claim_version_id TEXT REFERENCES claim_versions(id) ON DELETE RESTRICT,
+                    superseded_by_claim_version_id TEXT REFERENCES claim_versions(id) ON DELETE RESTRICT,
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    updated_at TEXT NOT NULL CHECK(updated_at LIKE '%Z'),
+                    UNIQUE(owner_id, claim_type, claim_entity_id),
+                    UNIQUE(owner_id, claim_type, claim_key, version_number),
+                    FOREIGN KEY(algorithm_id, algorithm_version)
+                        REFERENCES claim_algorithm_registry(algorithm_id, version),
+                    CHECK(claim_type IN ('Pattern', 'Insight')),
+                    CHECK(
+                        (assertion_status = 'superseded') OR
+                        superseded_by_claim_version_id IS NULL
+                    )
+                ) STRICT
+                """
+            ),
+            Statement(
+                "ALTER TABLE evidence_set_windows ADD COLUMN evidence_role TEXT NOT NULL "
+                "DEFAULT 'supporting' CHECK(evidence_role IN ('supporting', 'opposing', 'limiting'))"
+            ),
+            Statement(
+                "ALTER TABLE evidence_set_windows ADD COLUMN rationale TEXT"
+            ),
+            Statement(
+                "ALTER TABLE evidence_sets ADD COLUMN limitations_json TEXT NOT NULL DEFAULT '[]' "
+                "CHECK(json_valid(limitations_json) AND json_type(limitations_json) = 'array')"
+            ),
+            Statement(
+                "CREATE INDEX idx_claim_versions_current ON claim_versions("
+                "owner_id, claim_type, claim_key, assertion_status, version_number DESC)"
+            ),
+            Statement(
+                "CREATE INDEX idx_claim_versions_entity ON claim_versions("
+                "owner_id, claim_type, claim_entity_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_claim_versions_evidence ON claim_versions(evidence_set_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_evidence_set_windows_role ON evidence_set_windows("
+                "evidence_set_id, evidence_role, ordinal)"
+            ),
+        ),
+    ),
 )
 
 
@@ -1636,6 +1743,43 @@ def _validate_relationship_registries(connection: sqlite3.Connection) -> None:
         )
 
 
+def _validate_claim_algorithm_registry(connection: sqlite3.Connection) -> None:
+    if not connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='claim_algorithm_registry'"
+    ).fetchone():
+        return
+    actual = connection.execute(
+        """
+        SELECT algorithm_id, version, claim_type, deterministic, rebuildable, description
+        FROM claim_algorithm_registry ORDER BY algorithm_id, version
+        """
+    ).fetchall()
+    expected = sorted(
+        [
+            (
+                "cross-domain-insight-analysis",
+                "2.0.0",
+                "Insight",
+                1,
+                1,
+                "Cross-domain statistical insights with governed confidence and bounded evidence windows",
+            ),
+            (
+                "glucose-pattern-analysis",
+                "2.0.0",
+                "Pattern",
+                1,
+                1,
+                "Rule-derived glucose patterns with governed confidence and bounded evidence windows",
+            ),
+        ]
+    )
+    if [tuple(row) for row in actual] != expected:
+        raise MigrationError(
+            "claim algorithm registry drift; add an ordered migration for registry changes"
+        )
+
+
 def run_migrations(
     path: Path = DB_PATH, migrations: Iterable[Migration] = MIGRATIONS
 ) -> list[int]:
@@ -1676,6 +1820,7 @@ def run_migrations(
             applied_now.append(current.version)
         _validate_schema_registry(connection)
         _validate_relationship_registries(connection)
+        _validate_claim_algorithm_registry(connection)
         connection.commit()
         return applied_now
     except MigrationError:

@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import { AlertTriangle, TrendingUp, Moon, Clock, Zap, ArrowDown } from "lucide-react";
+import ClaimEvidenceDialog from "@/components/evidence/ClaimEvidenceDialog";
 
 const PATTERN_ICONS = {
   recurring_high: TrendingUp,
@@ -29,7 +30,8 @@ export default function PatternCard({ pattern }) {
   const Icon = PATTERN_ICONS[pattern.pattern_type] || AlertTriangle;
   let evidence = [];
   try {
-    evidence = JSON.parse(pattern.supporting_evidence || "[]");
+    const parsed = JSON.parse(pattern.supporting_evidence || "[]");
+    evidence = Array.isArray(parsed) ? parsed : [];
   } catch {}
 
   return (
@@ -67,9 +69,12 @@ export default function PatternCard({ pattern }) {
         </div>
       )}
       {pattern.occurrences && (
-        <p className="text-xs text-muted-foreground mt-3">
-          Detected {pattern.occurrences} times
-        </p>
+        <div className="flex items-center justify-between gap-2 mt-3">
+          <p className="text-xs text-muted-foreground">Detected {pattern.occurrences} times</p>
+          {pattern.evidence_set_id && (
+            <ClaimEvidenceDialog claimType="Pattern" claimId={pattern.id} />
+          )}
+        </div>
       )}
     </div>
   );
