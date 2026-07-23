@@ -114,6 +114,8 @@ def _insights_snapshot() -> list:
     for insight in get_repositories().entity("Insight").query(
         {"owner_email": OWNER_EMAIL}, "-date_generated", 25
     ):
+        if insight.get("is_active") is False or insight.get("assertion_status") == "superseded":
+            continue
         quality = insight.get("data_quality")
         if not quality or not all(envelope.get("ai_eligible") for envelope in quality.values()):
             continue

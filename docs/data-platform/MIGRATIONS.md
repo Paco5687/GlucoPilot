@@ -37,6 +37,7 @@ the other waits, rechecks the ledger, and applies nothing.
 | 11 | `governed_relationship_storage` | Adds strict owner-scoped edges plus governed predicate, assertion-status, evidence-level, and deterministic-algorithm registries without changing legacy relationship reads. |
 | 12 | `evidence_sets_and_observation_windows` | Adds bounded checksum-addressed time-series windows and claim evidence sets without per-sample graph edges or legacy-read changes. |
 | 13 | `relationship_projection_runs` | Adds strict graph build runs, historical run-edge membership, active generated edges, checksums, watermarks, and freshness state for atomic full/scoped rebuilds. |
+| 14 | `versioned_evidence_backed_claims` | Adds the governed Pattern/Insight algorithm registry, immutable claim-version lineage, EvidenceSet links, evidence roles/rationales, and structured limitations. |
 
 ## Adding a migration
 
@@ -48,6 +49,8 @@ the other waits, rechecks the ledger, and applies nothing.
   migration. Registration must not accidentally grant generic API exposure.
 - Add relationship vocabulary only through a new migration and the immutable
   code registry; startup rejects predicate/status/evidence/algorithm drift.
+- Add Pattern/Insight algorithms only through a new migration; startup rejects
+  claim-algorithm registry drift.
 - Keep migrations additive and SQLite-transactional. Network/filesystem work
   does not belong in a schema migration.
 - Add clean-install, legacy-upgrade, idempotency, rollback, drift, and

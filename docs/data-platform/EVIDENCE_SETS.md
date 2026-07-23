@@ -32,13 +32,16 @@ generation—a fresh checksum-addressed window must be built.
 
 `evidence_sets` binds one claim to 1–16 observation windows through
 `evidence_set_windows`. Its checksum includes claim identity, ordered window
-IDs/checksums, summary, generator version, and input-data version. The claim
-must exist and share the deployment owner. Pattern analysis can create one CGM
-window and cite it from every generated Pattern, avoiding sample-edge explosion.
+IDs/checksums, supporting/opposing/limiting roles and rationales, structured
+limitations, summary, generator version, and input-data version. The claim must
+exist and share the deployment owner. Pattern and Insight analysis cite bounded
+source windows rather than creating per-sample graph edges. Daily source rows
+use explicit calendar-date semantics; instant rows remain canonical UTC.
 
 ## Rollout and rollback
 
-- `EVIDENCE_SET_WRITES_ENABLED=false` disables Pattern projection writes.
+- `EVIDENCE_SET_WRITES_ENABLED=false` disables Pattern/Insight claim and
+  EvidenceSet projection writes.
 - `EVIDENCE_SET_READS_ENABLED=false` keeps existing inline Pattern/Insight and
   ChatMessage evidence reads unchanged.
 - No production backfill is performed in G2.
@@ -47,5 +50,5 @@ window and cite it from every generated Pattern, avoiding sample-edge explosion.
 
 Verified backups compare observation-window, evidence-set, and join counts.
 Synthetic risk-critical tests cover determinism, bounds, exact drill-down,
-mutation invalidation, owner/claim validation, Pattern citation cardinality,
-indexes, and restore parity.
+mutation invalidation, owner/claim validation, Pattern/Insight lineage and
+citation cardinality, evidence roles, indexes, and restore parity.

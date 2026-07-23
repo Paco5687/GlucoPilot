@@ -156,6 +156,48 @@ def test_pattern_claim_cites_one_window_not_each_observation(cases, evidence_dat
         assert connection.execute("SELECT count(*) FROM evidence_set_windows").fetchone() == (1,)
 
 
+def test_evidence_set_preserves_roles_rationales_and_structured_limitations(
+    cases, evidence_database
+):
+    readings = _readings(cases)
+    insight = db.create_entity(
+        "Insight", {"owner_email": cases["owner_email"], "title": "Synthetic insight"}
+    )
+    repository = SqliteEvidenceSetRepository(database=evidence_database)
+    window = _capture(repository, cases, readings)
+    evidence = repository.create_set(
+        owner_email=cases["owner_email"],
+        claim_type="Insight",
+        claim_id=insight["id"],
+        window_ids=[window["id"]],
+        window_roles={window["id"]: "opposing"},
+        window_rationales={window["id"]: "Synthetic counter-signal."},
+        limitations=[{"kind": "missingness", "missing_rate": 0.25}],
+        summary={"synthetic": True},
+        input_data_version="synthetic-role-test",
+    )
+    assert evidence["windows"] == [{
+        "id": window["id"],
+        "role": "opposing",
+        "rationale": "Synthetic counter-signal.",
+    }]
+    assert evidence["limitations"] == [{"kind": "missingness", "missing_rate": 0.25}]
+    reference = repository.for_claim(cases["owner_email"], "Insight", insight["id"])[0]
+    assert reference.value["windows"] == evidence["windows"]
+    assert reference.value["limitations"] == evidence["limitations"]
+
+    with pytest.raises(EvidenceSetError, match="unsupported evidence role"):
+        repository.create_set(
+            owner_email=cases["owner_email"],
+            claim_type="Insight",
+            claim_id=insight["id"],
+            window_ids=[window["id"]],
+            window_roles={window["id"]: "invented"},
+            summary={},
+            input_data_version="synthetic-invalid-role",
+        )
+
+
 def test_bounds_owner_and_claim_validation(cases, evidence_database, monkeypatch):
     readings = _readings(cases)
     repository = SqliteEvidenceSetRepository(database=evidence_database)

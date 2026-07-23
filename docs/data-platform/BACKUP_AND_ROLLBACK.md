@@ -26,7 +26,8 @@ check. Typed wearable daily/sample counts receive the same verification.
 Relationship edge, predicate, assertion-status, evidence-level, and algorithm
 registry counts also participate in manifest and clean-restore equality.
 Observation-window, Evidence Set, and set/window-link counts receive the same
-verification when migration 12 is present.
+verification when migration 12 is present. Claim-algorithm registry and
+claim-version counts are also verified when migration 14 is present.
 
 Application startup performs this verified backup automatically before pending
 migrations touch an existing database. The default destination is
@@ -90,7 +91,9 @@ Prefer a read/code rollback over schema reversal:
   historical run-edge, active-edge, and freshness-state counts.
 - If Evidence Set projection fails, set both `EVIDENCE_SET_WRITES_ENABLED` and
   `EVIDENCE_SET_READS_ENABLED` to `false`; inline legacy claim evidence remains
-  available.
+  available. G7 Pattern/Insight claim-version writes use the same rollback gate;
+  existing ledger history remains retained but no longer drives compatibility
+  reads.
 - If a feature fails after an additive migration commits, first disable its
   read/write switches while keeping the migration-compatible image. The
   migration runner intentionally rejects an older image against a newer schema

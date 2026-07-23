@@ -55,6 +55,18 @@ def _instant(value: str, field: str) -> str:
     return parsed.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
+def _observed_time(value: str, field: str, time_kind: str) -> str:
+    if time_kind == "instant":
+        return _instant(value, field)
+    if time_kind != "date":
+        raise EvidenceSetError("time_kind must be instant or date")
+    try:
+        parsed = datetime.strptime(str(value), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError) as error:
+        raise EvidenceSetError(f"{field} must be a calendar date") from error
+    return parsed.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def _canonical(value: Any) -> str:
     try:
         return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
@@ -122,6 +134,7 @@ class SqliteEvidenceSetRepository:
         window_start: str,
         window_end: str,
         observations: list[dict[str, Any]],
+        time_kind: str = "instant",
         filters: dict[str, Any] | None = None,
         summary: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -135,7 +148,7 @@ class SqliteEvidenceSetRepository:
         for record in observations:
             if record.get("owner_email") != owner_email or not record.get("id"):
                 continue
-            observed = _instant(record.get(time_field), time_field)
+            observed = _observed_time(record.get(time_field), time_field, time_kind)
             if start <= observed <= end:
                 selected.append((observed, str(record["id"]), _observation(record)))
         selected.sort(key=lambda item: (item[0], item[1]))
@@ -150,6 +163,7 @@ class SqliteEvidenceSetRepository:
         query = {
             "entity_type": entity_type,
             "time_field": time_field,
+            "time_kind": time_kind,
             "filters": filters or {},
             "window_start": start,
             "window_end": end,
@@ -277,10 +291,19 @@ class SqliteEvidenceSetRepository:
         window_ids: list[str],
         summary: dict[str, Any],
         input_data_version: str,
+        window_roles: dict[str, str] | None = None,
+        window_rationales: dict[str, str] | None = None,
+        limitations: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         owner_email = _required(owner_email, "owner_email")
         if not 1 <= len(window_ids) <= MAX_WINDOWS_PER_SET or len(set(window_ids)) != len(window_ids):
             raise EvidenceSetError("evidence set requires 1-16 unique windows")
+        roles = window_roles or {}
+        rationales = window_rationales or {}
+        if set(roles) - set(window_ids) or set(rationales) - set(window_ids):
+            raise EvidenceSetError("evidence roles and rationales must reference included windows")
+        if any(role not in {"supporting", "opposing", "limiting"} for role in roles.values()):
+            raise EvidenceSetError("unsupported evidence role")
         claim = self._catalog().entity(claim_type).get(claim_id)
         if not claim or claim.get("owner_email") != owner_email:
             raise EvidenceSetError("claim is missing or outside the owner scope")
@@ -302,6 +325,9 @@ class SqliteEvidenceSetRepository:
                 "generator_id": GENERATOR_ID,
                 "generator_version": GENERATOR_VERSION,
                 "input_data_version": _required(input_data_version, "input_data_version"),
+                "window_roles": [(item, roles.get(item, "supporting")) for item in window_ids],
+                "window_rationales": [(item, rationales.get(item)) for item in window_ids],
+                "limitations": limitations or [],
             }
             set_checksum = _checksum(payload)
             set_id = "urn:glucopilot:evidence-set:" + set_checksum.removeprefix("sha256:")
@@ -310,22 +336,46 @@ class SqliteEvidenceSetRepository:
                 INSERT OR IGNORE INTO evidence_sets (
                     id, owner_id, owner_email, claim_type, claim_id, set_checksum,
                     summary_json, generator_id, generator_version, input_data_version,
-                    status, invalidated_at, invalidation_reason, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    status, invalidated_at, invalidation_reason, created_at, limitations_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     set_id, DEPLOYMENT_OWNER_ID, owner_email, claim_type, claim_id,
                     set_checksum, _canonical(summary), GENERATOR_ID, GENERATOR_VERSION,
                     payload["input_data_version"], "valid", None, None, _now(),
+                    _canonical(payload["limitations"]),
                 ),
             )
             connection.executemany(
                 "INSERT OR IGNORE INTO evidence_set_windows "
-                "(evidence_set_id, observation_window_id, ordinal) VALUES (?, ?, ?)",
-                [(set_id, window_id, index) for index, window_id in enumerate(window_ids)],
+                "(evidence_set_id, observation_window_id, ordinal, evidence_role, rationale) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    (
+                        set_id,
+                        window_id,
+                        index,
+                        roles.get(window_id, "supporting"),
+                        rationales.get(window_id),
+                    )
+                    for index, window_id in enumerate(window_ids)
+                ],
             )
             stored = connection.execute("SELECT * FROM evidence_sets WHERE id=?", (set_id,)).fetchone()
-        return {**dict(stored), "summary": json.loads(stored["summary_json"]), "window_ids": window_ids}
+        return {
+            **dict(stored),
+            "summary": json.loads(stored["summary_json"]),
+            "limitations": json.loads(stored["limitations_json"]),
+            "windows": [
+                {
+                    "id": window_id,
+                    "role": roles.get(window_id, "supporting"),
+                    "rationale": rationales.get(window_id),
+                }
+                for window_id in window_ids
+            ],
+            "window_ids": window_ids,
+        }
 
     def for_claim(self, owner_email: str, claim_type: str, claim_id: str):
         from .repositories import EvidenceReference
@@ -341,10 +391,15 @@ class SqliteEvidenceSetRepository:
             ).fetchall()
             references = []
             for row in rows:
-                window_ids = [
-                    item[0]
+                windows = [
+                    {
+                        "id": item[0],
+                        "role": item[1],
+                        "rationale": item[2],
+                    }
                     for item in connection.execute(
-                        "SELECT observation_window_id FROM evidence_set_windows "
+                        "SELECT observation_window_id, evidence_role, rationale "
+                        "FROM evidence_set_windows "
                         "WHERE evidence_set_id=? ORDER BY ordinal",
                         (row["id"],),
                     )
@@ -359,7 +414,9 @@ class SqliteEvidenceSetRepository:
                             "checksum": row["set_checksum"],
                             "status": row["status"],
                             "summary": json.loads(row["summary_json"]),
-                            "window_ids": window_ids,
+                            "limitations": json.loads(row["limitations_json"]),
+                            "windows": windows,
+                            "window_ids": [window["id"] for window in windows],
                         },
                     )
                 )

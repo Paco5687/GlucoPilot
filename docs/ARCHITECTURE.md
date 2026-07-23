@@ -103,6 +103,14 @@ seven-day result remains exploratory regardless of effect size; only a
 same-direction later temporal holdout may use `reproduced`. Cycle analytics
 retain explicitly recorded/imported versus algorithm-inferred phase-day counts.
 
+Migration 14 adds the G7 Pattern/Insight claim ledger in the same SQLite
+database. New governed generations append instead of deleting history, record
+stable semantic keys plus algorithm/input/content versions, link predecessor
+and successor claims, and cite role-preserving bounded EvidenceSets over the
+exact source entities. Authenticated claim and window endpoints provide paged
+source drill-down; JSON entities remain the compatibility surface and all
+rollout flags default off.
+
 ## Frontend (`frontend/`)
 
 React + Vite + Tailwind + shadcn/ui, charts via Recharts, canvas Explorer chart.

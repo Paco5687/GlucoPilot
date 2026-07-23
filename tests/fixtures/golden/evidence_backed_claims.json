@@ -1,0 +1,14 @@
+{
+  "synthetic": true,
+  "owner_email": "owner@glucopilot.local",
+  "contract_version": "evidence-backed-claim/1.0.0",
+  "algorithms": {
+    "Pattern": ["glucose-pattern-analysis", "2.0.0"],
+    "Insight": ["cross-domain-insight-analysis", "2.0.0"]
+  },
+  "evidence_roles": ["supporting", "opposing", "limiting"],
+  "expected_lineage": [
+    {"version_number": 2, "assertion_status": "provisional"},
+    {"version_number": 1, "assertion_status": "superseded"}
+  ]
+}

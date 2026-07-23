@@ -21,8 +21,13 @@ from . import db
 from .auth import require_login
 from .config import OWNER_EMAIL
 from .contradictions import SqliteContradictionRepository
+from .claims import CLAIM_CONTRACT_VERSION, SqliteClaimVersionRepository
 from .data_contracts import DEPLOYMENT_OWNER_ID
-from .evidence_sets import evidence_set_reads_enabled
+from .evidence_sets import (
+    SqliteEvidenceSetRepository,
+    StaleEvidenceError,
+    evidence_set_reads_enabled,
+)
 from .relationship_api import _public_edge
 from .relationships import SqliteRelationshipRepository, relationship_reads_enabled
 from .repositories import LegacyRepositoryCatalog
@@ -816,6 +821,159 @@ def source_detail(entity_type: str, entity_id: str) -> dict[str, Any]:
     }
 
 
+def claim_detail(claim_type: str, claim_id: str) -> dict[str, Any]:
+    if claim_type not in {"Pattern", "Insight"}:
+        raise HTTPException(status_code=404, detail="Evidence-backed claim not found")
+    claim_repository = SqliteClaimVersionRepository()
+    claim = claim_repository.for_entity(OWNER_EMAIL, claim_type, claim_id)
+    if not claim or not claim.get("evidence_set_id"):
+        raise HTTPException(status_code=404, detail="Evidence-backed claim not found")
+    entity = LegacyRepositoryCatalog().entity(claim_type).get(claim_id)
+    if not entity or entity.get("owner_email") != OWNER_EMAIL:
+        raise HTTPException(status_code=404, detail="Evidence-backed claim not found")
+    with db.connect() as connection:
+        evidence_set = connection.execute(
+            """
+            SELECT * FROM evidence_sets
+            WHERE id=? AND owner_id=? AND owner_email=? AND claim_type=? AND claim_id=?
+            """,
+            (
+                claim["evidence_set_id"],
+                DEPLOYMENT_OWNER_ID,
+                OWNER_EMAIL,
+                claim_type,
+                claim_id,
+            ),
+        ).fetchone()
+        if not evidence_set:
+            raise HTTPException(status_code=404, detail="Evidence-backed claim not found")
+        rows = connection.execute(
+            """
+            SELECT observation_windows.*, evidence_set_windows.evidence_role,
+                   evidence_set_windows.rationale, evidence_set_windows.ordinal
+            FROM evidence_set_windows
+            JOIN observation_windows
+              ON observation_windows.id=evidence_set_windows.observation_window_id
+            WHERE evidence_set_windows.evidence_set_id=?
+              AND observation_windows.owner_id=? AND observation_windows.owner_email=?
+            ORDER BY evidence_set_windows.ordinal
+            """,
+            (evidence_set["id"], DEPLOYMENT_OWNER_ID, OWNER_EMAIL),
+        ).fetchall()
+    evidence: dict[str, list[dict[str, Any]]] = {
+        "supporting": [],
+        "opposing": [],
+        "limiting": [],
+    }
+    for row in rows:
+        member_ids = json.loads(row["member_ids_json"])
+        public = {
+            "window_id": row["id"],
+            "entity_type": row["entity_type"],
+            "window_start": row["window_start"],
+            "window_end": row["window_end"],
+            "observation_count": row["observation_count"],
+            "observation_checksum": row["observation_checksum"],
+            "status": row["status"],
+            "rationale": row["rationale"],
+            "href": f"/api/evidence/windows/{quote(row['id'], safe='')}",
+            "source_preview": [
+                {
+                    "entity_type": row["entity_type"],
+                    "entity_id": member_id,
+                    "href": _source_href(row["entity_type"], member_id),
+                }
+                for member_id in member_ids[:5]
+            ],
+            "source_preview_truncated": len(member_ids) > 5,
+        }
+        evidence[row["evidence_role"]].append(public)
+    evidence["limiting"].extend(json.loads(evidence_set["limitations_json"]))
+    history = claim_repository.history(OWNER_EMAIL, claim_type, claim["claim_key"])
+    return {
+        "claim_contract_version": CLAIM_CONTRACT_VERSION,
+        "claim": {
+            "claim_version_id": claim["id"],
+            "claim_type": claim_type,
+            "claim_id": claim_id,
+            "claim_key": claim["claim_key"],
+            "version_number": claim["version_number"],
+            "assertion_kind": claim["assertion_kind"],
+            "assertion_status": claim["assertion_status"],
+            "algorithm": {
+                "id": claim["algorithm_id"],
+                "version": claim["algorithm_version"],
+            },
+            "input_data_version": claim["input_data_version"],
+            "content_checksum": claim["content_checksum"],
+            "analytics_confidence": claim["analytics_confidence"],
+            "data": _sanitize(entity),
+        },
+        "evidence_set": {
+            "id": evidence_set["id"],
+            "checksum": evidence_set["set_checksum"],
+            "status": evidence_set["status"],
+            "summary": _sanitize(json.loads(evidence_set["summary_json"])),
+        },
+        "evidence": evidence,
+        "lineage": [
+            {
+                "claim_version_id": version["id"],
+                "claim_id": version["claim_entity_id"],
+                "version_number": version["version_number"],
+                "assertion_status": version["assertion_status"],
+                "created_at": version["created_at"],
+                "supersedes_claim_version_id": version["supersedes_claim_version_id"],
+                "superseded_by_claim_version_id": version["superseded_by_claim_version_id"],
+                "href": f"/api/evidence/claims/{quote(claim_type, safe='')}/"
+                f"{quote(version['claim_entity_id'], safe='')}",
+            }
+            for version in history
+        ],
+    }
+
+
+def window_detail(window_id: str, *, offset: int = 0, limit: int = 50) -> dict[str, Any]:
+    repository = SqliteEvidenceSetRepository()
+    window = repository.get_window(window_id)
+    if not window or window.get("owner_email") != OWNER_EMAIL:
+        raise HTTPException(status_code=404, detail="Evidence window not found")
+    try:
+        observations = repository.drill_down(window_id)
+    except StaleEvidenceError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    page = observations[offset : offset + limit]
+    return {
+        "window": {
+            key: window[key]
+            for key in (
+                "id",
+                "entity_type",
+                "query_definition",
+                "window_start",
+                "window_end",
+                "observation_count",
+                "observation_checksum",
+                "summary",
+                "status",
+            )
+        },
+        "offset": offset,
+        "limit": limit,
+        "returned": len(page),
+        "has_more": offset + len(page) < len(observations),
+        "observations": [
+            {
+                "entity_type": window["entity_type"],
+                "entity_id": observation["id"],
+                "data": _sanitize(observation),
+                "href": _source_href(window["entity_type"], observation["id"]),
+            }
+            for observation in page
+        ],
+    }
+
+
 router = APIRouter(prefix="/api/evidence", dependencies=[Depends(require_login)])
 
 
@@ -830,3 +988,15 @@ def query_bundle(body: EvidenceBundleQuery):
 @router.get("/sources/{entity_type}/{entity_id}")
 def get_source(entity_type: str, entity_id: str):
     return source_detail(entity_type, entity_id)
+
+
+@router.get("/claims/{claim_type}/{claim_id}")
+def get_claim(claim_type: str, claim_id: str):
+    return claim_detail(claim_type, claim_id)
+
+
+@router.get("/windows/{window_id}")
+def get_window(window_id: str, offset: int = 0, limit: int = 50):
+    if offset < 0 or not 1 <= limit <= 100:
+        raise HTTPException(status_code=422, detail="offset must be non-negative and limit 1-100")
+    return window_detail(window_id, offset=offset, limit=limit)

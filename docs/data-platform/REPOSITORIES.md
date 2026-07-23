@@ -79,10 +79,13 @@ across derived rebuilds. The explicit
 `RELATIONSHIP_PROJECTION_WRITES_ENABLED` gate controls the operational rebuild
 entry point; `RELATIONSHIP_READS_ENABLED` remains the independent read cutover.
 
-G2 adds `SqliteEvidenceSetRepository` as `typed_evidence`. Pattern generation
-may atomically create one bounded CGM window and small claim-level sets under
-`EVIDENCE_SET_WRITES_ENABLED`; `EVIDENCE_SET_READS_ENABLED` independently keeps
-or cuts over the compatibility evidence reader.
+G2 adds `SqliteEvidenceSetRepository` as `typed_evidence`. G7 adds
+`SqliteClaimVersionRepository` as `typed_claims`; Pattern and Insight generation
+can atomically publish compatibility entities, immutable claim versions,
+candidate-specific bounded source windows, role-preserving EvidenceSets, and
+supersession state under `EVIDENCE_SET_WRITES_ENABLED`.
+`EVIDENCE_SET_READS_ENABLED` independently keeps or cuts over the compatibility
+evidence reader.
 
 ## Swapping implementations
 
@@ -137,7 +140,7 @@ F4 moves direct clinical entity reads out of:
 
 Existing multi-record mutation paths now use a unit of work:
 
-- Insight set replacement;
+- append-only Insight generation with prior-claim supersession;
 - Health Summary replacement plus its `app_settings` scheduler cursor (a real
   two-table transaction);
 - legacy Companion thread migration;

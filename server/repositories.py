@@ -490,6 +490,7 @@ class LegacyRepositoryCatalog:
             WearableCompatibilityRepository,
         )
         from .contradictions import SqliteContradictionRepository
+        from .claims import SqliteClaimVersionRepository
         from .relationships import RelationshipCompatibilityRepository, SqliteRelationshipRepository
         from .evidence_sets import EvidenceCompatibilityRepository, SqliteEvidenceSetRepository
 
@@ -505,6 +506,7 @@ class LegacyRepositoryCatalog:
             self.typed_relationships,
         )
         self.typed_evidence = SqliteEvidenceSetRepository(connection, repositories=self)
+        self.typed_claims = SqliteClaimVersionRepository(connection, repositories=self)
         self.evidence = EvidenceCompatibilityRepository(legacy_evidence, self.typed_evidence)
         self.typed_glucose = SqliteTypedGlucoseRepository(connection)
         self.typed_fingersticks = SqliteTypedFingerstickRepository(connection)

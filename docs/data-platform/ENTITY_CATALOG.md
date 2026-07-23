@@ -87,8 +87,8 @@ configuration/secret store requiring backup and redaction controls.
 
 | Entity | Schema / producer | Identity and incomplete-data behavior |
 |---|---|---|
-| `Pattern` | Rule engine + optional LLM; title, governed explanation, type, legacy confidence label, versioned analytics-confidence envelope, time of day, serialized evidence, occurrences, detection dates, active/dismissed, owner. | Prior rows deactivated and new rows appended. Requires eligible 14-day CGM quality; unavailable rule inputs do not fire. Small event/day samples remain exploratory and evidence sets preserve numerical confidence. |
-| `Insight` | Cross-domain engine + optional LLM; title, governed description, category, severity, generated date, serialized support, versioned analytics-confidence envelope, read flag, owner. | All owner rows replaced. Requires 14 full CGM days globally; a metric with seven paired days may surface only as exploratory. At 28 pairs, first/later halves explicitly report reproduced or not-reproduced. |
+| `Pattern` | Rule engine + optional LLM; compatibility fields plus governed confidence, claim contract/version/key/status, algorithm/input versions, EvidenceSet ID, and supersession IDs. | New generations append. Migration 14's strict ledger retains predecessor/successor lineage; exact CGM and optional treatment windows are openable. Requires eligible 14-day CGM quality; small samples remain exploratory. |
+| `Insight` | Cross-domain engine + optional LLM; compatibility fields plus governed confidence, claim contract/version/key/status, algorithm/input versions, EvidenceSet ID, and supersession IDs. | New generations append instead of replace-all delete. Exact CGM plus candidate-specific wearable/cycle/treatment windows are linked; a metric with seven paired days remains exploratory and eligible 28-pair correlations report temporal replication. |
 | `HealthSummary` | Overview synthesis; generated time, serialized data, owner. | Singleton-by-replacement. Empty context sections omitted; no immutable input snapshot/version. |
 | `HealthMemory` | Companion memory; content, category, source, owner. | Append/delete free text without evidence or verification state. |
 | `CompanionThread` | Title, owner, envelope dates. | Random ID; application-only message cascade on delete. |
@@ -96,6 +96,11 @@ configuration/secret store requiring backup and redaction controls.
 | `AIConversation` | Legacy title, serialized messages, context summary?, archived flag. | Current Companion does not use it; production legacy rows lack owner. |
 | `DailySummary` | Declared legacy type; no active writer or production row. | Undefined schema; establish or retire before migration. |
 | `WeeklySummary` | Declared legacy type; no active writer or production row. | Undefined schema; establish or retire before migration. |
+
+Migration 14 also adds strict `claim_algorithm_registry` and `claim_versions`
+tables plus evidence roles/rationales. They are not generic API entities; JSON
+Pattern/Insight rows remain the compatibility surface and source observations
+remain authoritative.
 
 ## Operational records
 

@@ -94,7 +94,7 @@ def test_migration_adds_strict_run_publication_and_freshness_storage(projection_
             "idx_relationship_projection_active_relationship",
         } <= indexes
         assert tuple(connection.execute(
-            "SELECT version, name FROM schema_migrations ORDER BY version DESC LIMIT 1"
+            "SELECT version, name FROM schema_migrations WHERE version=13"
         ).fetchone()) == (13, "relationship_projection_runs")
 
 

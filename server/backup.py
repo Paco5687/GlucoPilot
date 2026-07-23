@@ -296,6 +296,15 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                     )
                     for table in evidence_tables
                 }
+            claim_projection = None
+            claim_tables = ("claim_algorithm_registry", "claim_versions")
+            if all(_table_exists(connection, table) for table in claim_tables):
+                claim_projection = {
+                    table: dict(
+                        connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()
+                    )
+                    for table in claim_tables
+                }
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:
@@ -328,6 +337,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
         metadata["relationship_builds"] = relationship_builds
     if evidence_projection is not None:
         metadata["evidence_projection"] = evidence_projection
+    if claim_projection is not None:
+        metadata["claim_projection"] = claim_projection
     if include_references:
         metadata["record_references"] = references
     return metadata
@@ -540,6 +551,8 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
         keys.append("relationship_builds")
     if "evidence_projection" in expected_database:
         keys.append("evidence_projection")
+    if "claim_projection" in expected_database:
+        keys.append("claim_projection")
     for key in keys:
         if metadata[key] != expected_database.get(key):
             raise BackupError(f"restored database metadata mismatch: {key}")
@@ -633,6 +646,13 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
                 "observation_window_count": metadata["evidence_projection"]["observation_windows"]["count"],
                 "evidence_set_count": metadata["evidence_projection"]["evidence_sets"]["count"],
                 "evidence_set_window_count": metadata["evidence_projection"]["evidence_set_windows"]["count"],
+            }
+        )
+    if "claim_projection" in expected_database:
+        verification.update(
+            {
+                "claim_algorithm_registry_count": metadata["claim_projection"]["claim_algorithm_registry"]["count"],
+                "claim_version_count": metadata["claim_projection"]["claim_versions"]["count"],
             }
         )
     return verification
