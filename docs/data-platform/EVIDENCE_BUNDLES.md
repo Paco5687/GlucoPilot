@@ -134,6 +134,12 @@ the shared confidence envelope, outcomes as a separate dimension, noncausal
 language, and links back to the normalized source events used in the measured
 effort calculation. Missing source families remain explicit limitations.
 
+P6 specialist briefs are deterministic Evidence Bundle consumers. Each mode
+declares domains, intent, budget, and a fail-closed entity allowlist. Briefs
+retain source links and contradiction/limitation blocks while always omitting
+insurance and unrelated specialty PHI. They do not add a new bundle version or
+permit a generated narrative to become evidence.
+
 ## Shared Overview and Visit Report consumer
 
 `server/clinical_evidence.py` is the common G8 adapter over this API. Overview
