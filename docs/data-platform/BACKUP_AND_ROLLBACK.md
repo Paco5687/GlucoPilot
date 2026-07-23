@@ -96,6 +96,10 @@ Prefer a read/code rollback over schema reversal:
   available. G7 Pattern/Insight claim-version writes use the same rollback gate;
   existing ledger history remains retained but no longer drives compatibility
   reads.
+- Health episodes and medication exposures have no compatibility-read feature
+  switch. If their API/UI fails, retain the migration-compatible image while
+  fixing forward. Verified backups compare all five ledger tables, statuses,
+  membership/event counts, and open-ended exposure counts.
 - If a feature fails after an additive migration commits, first disable its
   read/write switches while keeping the migration-compatible image. The
   migration runner intentionally rejects an older image against a newer schema

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import DataQualityNote from "@/components/DataQualityNote";
 import EvidenceContextBlock from "@/components/evidence/EvidenceContextBlock";
-import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope, ScrollText, Beaker } from "lucide-react";
+import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope, ScrollText, Beaker, CalendarRange } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, Line, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
 } from "recharts";
@@ -317,6 +317,54 @@ export default function Report() {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {(report.health_episodes?.episodes?.length > 0
+        || report.health_episodes?.medication_exposures?.length > 0) && (
+        <div className="report-section report-card rounded-xl border border-border p-4 space-y-3">
+          <div>
+            <h2 className="font-semibold text-sm flex items-center gap-2">
+              <CalendarRange className="w-4 h-4 text-primary" /> Health episodes &amp; medication exposures
+            </h2>
+            <p className="text-[11px] text-muted-foreground">
+              {report.health_episodes.semantics}
+            </p>
+          </div>
+          {report.health_episodes.episodes?.length > 0 && (
+            <div>
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Episodes</p>
+              <ul className="space-y-1.5 text-xs">
+                {report.health_episodes.episodes.map((episode) => (
+                  <li key={episode.id} className="rounded border border-border p-2">
+                    <span className="font-semibold">{episode.title}</span>
+                    {" · "}{episode.start_time} → {episode.end_time}
+                    {" · "}{episode.status} · {episode.origin_kind}
+                    <span className="block text-muted-foreground">
+                      {episode.members?.length || 0} temporal members · confidence{" "}
+                      {episode.confidence?.confidence_label?.replace("_", " ") || "not assessed"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {report.health_episodes.medication_exposures?.length > 0 && (
+            <div>
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Medication exposures</p>
+              <ul className="space-y-1.5 text-xs">
+                {report.health_episodes.medication_exposures.map((exposure) => (
+                  <li key={exposure.id} className="rounded border border-border p-2">
+                    <span className="font-semibold">{exposure.medication_name}</span>
+                    {exposure.dose ? ` · ${exposure.dose}` : ""}
+                    {exposure.formulation ? ` · ${exposure.formulation}` : ""}
+                    {" · "}{exposure.start_time} → {exposure.end_time || "ongoing"}
+                    {" · "}{exposure.status}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
 

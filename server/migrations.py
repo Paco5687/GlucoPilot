@@ -1770,6 +1770,254 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        16,
+        "canonical_health_episodes",
+        (
+            Statement(
+                """
+                CREATE TABLE health_episodes (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    owner_email TEXT NOT NULL CHECK(owner_email != ''),
+                    episode_type TEXT NOT NULL CHECK(episode_type != '' AND length(episode_type) <= 120),
+                    title TEXT NOT NULL CHECK(title != '' AND length(title) <= 240),
+                    description TEXT NOT NULL DEFAULT '' CHECK(length(description) <= 4000),
+                    origin_kind TEXT NOT NULL CHECK(origin_kind IN ('manual', 'rule', 'model')),
+                    origin_label TEXT NOT NULL CHECK(origin_label != '' AND length(origin_label) <= 240),
+                    status TEXT NOT NULL CHECK(status IN ('proposed', 'confirmed', 'dismissed')),
+                    start_time TEXT NOT NULL CHECK(start_time != ''),
+                    end_time TEXT NOT NULL CHECK(end_time != ''),
+                    time_precision TEXT NOT NULL CHECK(time_precision IN ('date', 'minute', 'second')),
+                    confidence_json TEXT NOT NULL CHECK(
+                        json_valid(confidence_json) AND json_type(confidence_json) = 'object'
+                    ),
+                    association_only INTEGER NOT NULL DEFAULT 1 CHECK(association_only = 1),
+                    membership_revision INTEGER NOT NULL CHECK(membership_revision >= 0),
+                    input_hash TEXT NOT NULL CHECK(
+                        length(input_hash) = 71 AND input_hash LIKE 'sha256:%'
+                    ),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    updated_at TEXT NOT NULL CHECK(updated_at LIKE '%Z'),
+                    decided_by TEXT,
+                    decided_at TEXT CHECK(decided_at IS NULL OR decided_at LIKE '%Z'),
+                    decision_reason TEXT NOT NULL DEFAULT '' CHECK(length(decision_reason) <= 2000),
+                    CHECK(start_time <= end_time),
+                    CHECK(
+                        (status = 'proposed' AND decided_by IS NULL AND decided_at IS NULL)
+                        OR
+                        (status IN ('confirmed', 'dismissed')
+                            AND decided_by IS NOT NULL AND decided_at IS NOT NULL
+                            AND decision_reason != '')
+                    )
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE episode_members (
+                    id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL REFERENCES health_episodes(id) ON DELETE RESTRICT,
+                    membership_revision INTEGER NOT NULL CHECK(membership_revision > 0),
+                    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                    entity_type TEXT NOT NULL CHECK(
+                        entity_type IN (
+                            'SymptomLog', 'GlucoseReading', 'PeriodLog', 'Treatment',
+                            'HistoryEntry', 'MedicationExposure'
+                        )
+                    ),
+                    entity_id TEXT NOT NULL CHECK(entity_id != '' AND length(entity_id) <= 500),
+                    member_role TEXT NOT NULL CHECK(
+                        member_role IN (
+                            'symptom', 'glucose_event', 'cycle_day', 'treatment',
+                            'history_event', 'medication_exposure', 'context'
+                        )
+                    ),
+                    relationship_kind TEXT NOT NULL CHECK(
+                        relationship_kind IN ('temporal_overlap', 'within_episode', 'near_episode')
+                    ),
+                    observed_start TEXT NOT NULL CHECK(observed_start != ''),
+                    observed_end TEXT NOT NULL CHECK(observed_end != ''),
+                    source_version TEXT NOT NULL CHECK(source_version != '' AND length(source_version) <= 500),
+                    summary TEXT NOT NULL DEFAULT '' CHECK(length(summary) <= 1000),
+                    causation_asserted INTEGER NOT NULL DEFAULT 0 CHECK(causation_asserted = 0),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    UNIQUE(episode_id, membership_revision, ordinal),
+                    UNIQUE(episode_id, membership_revision, entity_type, entity_id),
+                    CHECK(observed_start <= observed_end)
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE episode_events (
+                    id TEXT PRIMARY KEY,
+                    episode_id TEXT NOT NULL REFERENCES health_episodes(id) ON DELETE RESTRICT,
+                    action TEXT NOT NULL CHECK(
+                        action IN ('created', 'corrected', 'members_revised', 'confirmed', 'dismissed')
+                    ),
+                    actor_role TEXT NOT NULL CHECK(actor_role IN ('admin', 'rule', 'model', 'system')),
+                    actor_label TEXT NOT NULL CHECK(actor_label != '' AND length(actor_label) <= 240),
+                    reason TEXT NOT NULL CHECK(reason != '' AND length(reason) <= 2000),
+                    before_json TEXT NOT NULL CHECK(
+                        json_valid(before_json) AND json_type(before_json) = 'object'
+                    ),
+                    after_json TEXT NOT NULL CHECK(
+                        json_valid(after_json) AND json_type(after_json) = 'object'
+                    ),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z')
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE medication_exposures (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    owner_email TEXT NOT NULL CHECK(owner_email != ''),
+                    medication_entity_id TEXT,
+                    medication_name TEXT NOT NULL CHECK(
+                        medication_name != '' AND length(medication_name) <= 240
+                    ),
+                    dose TEXT NOT NULL DEFAULT '' CHECK(length(dose) <= 240),
+                    formulation TEXT NOT NULL DEFAULT '' CHECK(length(formulation) <= 240),
+                    frequency TEXT NOT NULL DEFAULT '' CHECK(length(frequency) <= 240),
+                    start_time TEXT NOT NULL CHECK(start_time != ''),
+                    end_time TEXT CHECK(end_time IS NULL OR end_time != ''),
+                    time_precision TEXT NOT NULL CHECK(time_precision IN ('date', 'minute', 'second')),
+                    origin_kind TEXT NOT NULL CHECK(origin_kind IN ('manual', 'rule', 'model')),
+                    origin_label TEXT NOT NULL CHECK(origin_label != '' AND length(origin_label) <= 240),
+                    status TEXT NOT NULL CHECK(status IN ('proposed', 'confirmed', 'dismissed')),
+                    confidence_json TEXT NOT NULL CHECK(
+                        json_valid(confidence_json) AND json_type(confidence_json) = 'object'
+                    ),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    updated_at TEXT NOT NULL CHECK(updated_at LIKE '%Z'),
+                    decided_by TEXT,
+                    decided_at TEXT CHECK(decided_at IS NULL OR decided_at LIKE '%Z'),
+                    decision_reason TEXT NOT NULL DEFAULT '' CHECK(length(decision_reason) <= 2000),
+                    CHECK(end_time IS NULL OR start_time <= end_time),
+                    CHECK(
+                        (status = 'proposed' AND decided_by IS NULL AND decided_at IS NULL)
+                        OR
+                        (status IN ('confirmed', 'dismissed')
+                            AND decided_by IS NOT NULL AND decided_at IS NOT NULL
+                            AND decision_reason != '')
+                    )
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE medication_exposure_events (
+                    id TEXT PRIMARY KEY,
+                    exposure_id TEXT NOT NULL REFERENCES medication_exposures(id) ON DELETE RESTRICT,
+                    action TEXT NOT NULL CHECK(
+                        action IN ('created', 'corrected', 'confirmed', 'dismissed')
+                    ),
+                    actor_role TEXT NOT NULL CHECK(actor_role IN ('admin', 'rule', 'model', 'system')),
+                    actor_label TEXT NOT NULL CHECK(actor_label != '' AND length(actor_label) <= 240),
+                    reason TEXT NOT NULL CHECK(reason != '' AND length(reason) <= 2000),
+                    before_json TEXT NOT NULL CHECK(
+                        json_valid(before_json) AND json_type(before_json) = 'object'
+                    ),
+                    after_json TEXT NOT NULL CHECK(
+                        json_valid(after_json) AND json_type(after_json) = 'object'
+                    ),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z')
+                ) STRICT
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_health_episodes_owner_time "
+                "ON health_episodes(owner_id, start_time, end_time, status)"
+            ),
+            Statement(
+                "CREATE INDEX idx_episode_members_entity "
+                "ON episode_members(entity_type, entity_id, episode_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_episode_members_current "
+                "ON episode_members(episode_id, membership_revision, ordinal)"
+            ),
+            Statement(
+                "CREATE INDEX idx_episode_events_record "
+                "ON episode_events(episode_id, created_at, id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_medication_exposures_owner_time "
+                "ON medication_exposures(owner_id, start_time, end_time, status)"
+            ),
+            Statement(
+                "CREATE INDEX idx_medication_exposure_events_record "
+                "ON medication_exposure_events(exposure_id, created_at, id)"
+            ),
+            Statement(
+                """
+                CREATE TRIGGER health_episodes_immutable_delete
+                BEFORE DELETE ON health_episodes BEGIN
+                    SELECT RAISE(ABORT, 'health episodes cannot be deleted');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER episode_members_immutable_update
+                BEFORE UPDATE ON episode_members BEGIN
+                    SELECT RAISE(ABORT, 'episode members are immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER episode_members_immutable_delete
+                BEFORE DELETE ON episode_members BEGIN
+                    SELECT RAISE(ABORT, 'episode members are immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER episode_events_immutable_update
+                BEFORE UPDATE ON episode_events BEGIN
+                    SELECT RAISE(ABORT, 'episode events are immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER episode_events_immutable_delete
+                BEFORE DELETE ON episode_events BEGIN
+                    SELECT RAISE(ABORT, 'episode events are immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER medication_exposures_immutable_delete
+                BEFORE DELETE ON medication_exposures BEGIN
+                    SELECT RAISE(ABORT, 'medication exposures cannot be deleted');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER medication_exposure_events_immutable_update
+                BEFORE UPDATE ON medication_exposure_events BEGIN
+                    SELECT RAISE(ABORT, 'medication exposure events are immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER medication_exposure_events_immutable_delete
+                BEFORE DELETE ON medication_exposure_events BEGIN
+                    SELECT RAISE(ABORT, 'medication exposure events are immutable');
+                END
+                """
+            ),
+        ),
+    ),
 )
 
 

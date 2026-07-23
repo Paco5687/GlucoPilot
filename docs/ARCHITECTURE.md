@@ -48,6 +48,7 @@ uploaded records, and config. One owner per deployment.
 | `llm.py` | provider-agnostic `invoke_llm(...)`; Anthropic + local; vision + `tier="quality"` routing |
 | `companion_evidence.py` | bounded question-ranked Evidence Bundle retrieval, statement classification, citation validation, and change comparison |
 | `hypotheses.py` | guarded patient/algorithm/clinician hypothesis ledger, evidence revisions, attributable confidence, and clinician-gated decisions |
+| `episodes.py` | canonical health and medication-exposure intervals, append-only temporal membership revisions, non-causal semantics, and guarded decisions |
 | `scheduler.py` | background sync loop, per-source intervals |
 | `readings.py` | shared cross-source glucose dedup |
 | **Sources** | `dexcom.py`, `dexcom_share.py`, `nightscout.py`, `tandem.py`, `glooko.py`, `oura.py`, `fitbit.py` |
@@ -130,6 +131,14 @@ append-only; deterministic evidence-balance changes are recorded in immutable
 events; and terminal decisions require an attributable clinician review.
 Settings and Visit Report render hypotheses with an explicit “not a diagnosis”
 guardrail. No graph data becomes authoritative.
+
+Migration 16 adds P1's canonical health episodes and medication exposure
+intervals. Date or UTC ranges, manual/rule/model origin, proposed/confirmed/
+dismissed status, append-only membership revisions and events, shared
+confidence, and owner-validated source references remain in the same database.
+Temporal relationships are database-enforced as non-causal. Symptoms, Settings,
+Visit Report, and clinical Evidence Bundles expose the ledger without making it
+a graph source of truth.
 
 ## Frontend (`frontend/`)
 

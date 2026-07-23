@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { NotebookPen, Plus, X, Loader2, Moon } from "lucide-react";
 import { toast } from "sonner";
+import HealthEpisodes from "@/components/episodes/HealthEpisodes";
 
 const SEV = [
   { n: 1, label: "very mild", tone: "bg-emerald-100 text-emerald-700 border-emerald-200" },
@@ -88,6 +89,8 @@ export default function Symptoms() {
           <Moon className="w-3.5 h-3.5" /> A nightly check-in. Log how you felt today — it becomes part of your health history and the Companion, Overview, and Visit Report can all see it.
         </p>
       </div>
+
+      <HealthEpisodes />
 
       {/* Add form */}
       <div className="bg-card rounded-xl border border-border p-5 space-y-3">

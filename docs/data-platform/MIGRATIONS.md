@@ -39,6 +39,7 @@ the other waits, rechecks the ledger, and applies nothing.
 | 13 | `relationship_projection_runs` | Adds strict graph build runs, historical run-edge membership, active generated edges, checksums, watermarks, and freshness state for atomic full/scoped rebuilds. |
 | 14 | `versioned_evidence_backed_claims` | Adds the governed Pattern/Insight algorithm registry, immutable claim-version lineage, EvidenceSet links, evidence roles/rationales, and structured limitations. |
 | 15 | `guarded_health_hypothesis_ledger` | Adds hypothesis origin/status, append-only supporting/opposing/missing evidence revisions, attributable confidence and lifecycle events, and clinician-gated terminal decisions. |
+| 16 | `canonical_health_episodes` | Adds canonical health and medication-exposure intervals, proposed/confirmed/dismissed lifecycle, append-only membership and audit events, owner/source validation support, and a database-enforced non-causal temporal-membership constraint. |
 
 ## Adding a migration
 

@@ -250,6 +250,8 @@ are omitted from the time column below for brevity.
 | Profile / `WeightLog` | application record | `date` observed day | patient report; patient |
 | Clinical / `Diagnosis` | application record | diagnosed date effective partial | patient report or clinician confirmation; matching patient/clinician source |
 | Clinical / `Medication` | application record | envelope only until exposure interval is added | patient report or clinician confirmation; matching patient/clinician source |
+| Clinical / health episode ledger | application record or versioned derived output | exact date or UTC effective interval | patient report for manual origin; derived temporal grouping for rule/model origin; never a causal claim |
+| Clinical / medication exposure ledger | application record | closed or open-ended exact date or UTC effective interval | patient report; confirmation verifies the reported interval, not treatment efficacy |
 | Clinical / `Allergy` | application record | envelope only | patient report or clinician confirmation; matching patient/clinician source |
 | Clinical / `InsuranceInfo` | owner singleton | effective date partial | source fact or patient report; document, clinician, or patient |
 | Clinical / `SymptomLog` | application record | entry date observed partial | patient report; patient |
