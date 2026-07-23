@@ -272,6 +272,30 @@ def test_high_volume_typed_query_avoids_json_store(
     assert rows[0]["timestamp"] > rows[-1]["timestamp"]
 
 
+def test_equal_timestamp_pagination_preserves_legacy_insertion_order(
+    wearable_database,
+    monkeypatch,
+):
+    monkeypatch.setenv("TYPED_WEARABLE_WRITES_ENABLED", "true")
+    for index in range(12):
+        db.create_entity(
+            "FitbitHeartRate",
+            {
+                "timestamp": "2026-03-02T11:00:00Z",
+                "bpm": 50 + index,
+                "source": "google_health",
+                "owner_email": "owner@glucopilot.local",
+            },
+        )
+    repository = LegacyRepositoryCatalog().fitbit_heart_rate
+    filters = {"owner_email": "owner@glucopilot.local"}
+    for sort in ("timestamp", "-timestamp"):
+        for skip in (0, 5, 10):
+            legacy = repository._legacy.query(filters, sort, 5, skip)
+            typed = repository._typed.query(filters, sort, 5, skip)
+            assert [row["id"] for row in typed] == [row["id"] for row in legacy]
+
+
 def test_shadow_and_read_flags_preserve_supported_and_fallback_queries(
     wearable_cases,
     wearable_database,
