@@ -67,6 +67,9 @@ typed repositories are introduced.
 - [Guarded health-hypothesis ledger](HYPOTHESIS_LEDGER.md) — patient,
   algorithm, and clinician origins; append-only evidence revisions and events;
   attributable confidence changes; and clinician-gated terminal decisions.
+- [Canonical health episodes](HEALTH_EPISODES.md) — date/instant ranges,
+  manual/rule/model proposals, append-only temporal membership, medication
+  exposure intervals, non-causal semantics, and attributable decisions.
 
 ## Reproduce the structural audit
 

@@ -11,6 +11,7 @@ import ProfileSettings from "@/components/settings/ProfileSettings";
 import ConditionsSettings from "@/components/settings/ConditionsSettings";
 import HypothesesSettings from "@/components/settings/HypothesesSettings";
 import MedicationsSettings from "@/components/settings/MedicationsSettings";
+import MedicationExposures from "@/components/settings/MedicationExposures";
 import AllergiesSettings from "@/components/settings/AllergiesSettings";
 
 async function api(path, options = {}) {
@@ -134,6 +135,7 @@ export default function Settings() {
       <HypothesesSettings />
 
       <MedicationsSettings />
+      <MedicationExposures />
 
       <AllergiesSettings />
 

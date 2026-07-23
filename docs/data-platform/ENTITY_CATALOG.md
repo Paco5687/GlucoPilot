@@ -64,7 +64,7 @@ storage and are reported as unmappable.
 |---|---|---|---|
 | `HealthProfile` | Owner singleton; height, weight, date of birth, sex, units. | First owner row patched. | BMI/age null when inputs are absent/invalid. |
 | `Diagnosis` | Owner; name, diagnosed date, active/resolved status, notes. | Random ID; append/delete. | Confirmed conditions only. Legacy `suspected` rows remain readable but are excluded from diagnosis evidence and surfaced through the hypothesis ledger. |
-| `Medication` | Owner; name, medication/supplement kind, dose, frequency, active/stopped status, notes. | Random ID; append/delete. | No exposure start/stop interval. |
+| `Medication` | Owner; name, medication/supplement kind, dose, frequency, active/stopped status, notes. | Random ID; append/delete. | Legacy catalog row has no interval; migration 16's medication-exposure ledger records actual effective ranges separately. |
 | `Allergy` | Owner; allergen, reaction, severity, notes. | Random ID; append/delete. | Empty optional values retained. |
 | `InsuranceInfo` | Owner singleton; carrier/plan/member/Rx/contact/effective-date fields and notes. | First owner row patched; card extraction is preview-only until save. | Unread fields empty; confidence/source location not stored. |
 | `HistoryEntry` | Owner; title, kind, entry date, details. Standing narrative is in `app_settings`. | Random ID; append/delete. | Undated entries retained and sorted last. |
@@ -108,6 +108,14 @@ owner-scoped and use a dedicated guarded API rather than generic entity CRUD.
 They keep patient/algorithm/clinician proposals distinct from `Diagnosis`,
 retain supporting/opposing/missing evidence revisions, and require an
 attributable clinician decision for confirmed or ruled-against status.
+
+Migration 16 adds strict `health_episodes`, `episode_members`,
+`episode_events`, `medication_exposures`, and `medication_exposure_events`.
+These dedicated, owner-scoped API records preserve date/instant ranges,
+manual/rule/model origins, proposed/confirmed/dismissed decisions, append-only
+membership and correction history, and database-enforced temporal-only
+semantics. They do not use generic entity CRUD and do not replace the source
+symptom, glucose, cycle, treatment, history, or medication rows they reference.
 
 ## Operational records
 

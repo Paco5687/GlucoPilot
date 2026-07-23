@@ -340,6 +340,56 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                         ).fetchone()
                     ),
                 }
+            episode_ledger = None
+            episode_tables = (
+                "health_episodes",
+                "episode_members",
+                "episode_events",
+                "medication_exposures",
+                "medication_exposure_events",
+            )
+            if all(_table_exists(connection, table) for table in episode_tables):
+                episode_ledger = {
+                    "episodes": dict(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*) AS count,
+                                   COALESCE(SUM(CASE WHEN status='proposed' THEN 1 ELSE 0 END), 0)
+                                       AS proposed_count,
+                                   COALESCE(SUM(CASE WHEN status='confirmed' THEN 1 ELSE 0 END), 0)
+                                       AS confirmed_count,
+                                   COALESCE(SUM(CASE WHEN status='dismissed' THEN 1 ELSE 0 END), 0)
+                                       AS dismissed_count
+                            FROM health_episodes
+                            """
+                        ).fetchone()
+                    ),
+                    "members": dict(
+                        connection.execute(
+                            "SELECT COUNT(*) AS count FROM episode_members"
+                        ).fetchone()
+                    ),
+                    "events": dict(
+                        connection.execute(
+                            "SELECT COUNT(*) AS count FROM episode_events"
+                        ).fetchone()
+                    ),
+                    "medication_exposures": dict(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*) AS count,
+                                   COALESCE(SUM(CASE WHEN end_time IS NULL THEN 1 ELSE 0 END), 0)
+                                       AS open_ended_count
+                            FROM medication_exposures
+                            """
+                        ).fetchone()
+                    ),
+                    "medication_exposure_events": dict(
+                        connection.execute(
+                            "SELECT COUNT(*) AS count FROM medication_exposure_events"
+                        ).fetchone()
+                    ),
+                }
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:
@@ -376,6 +426,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
         metadata["claim_projection"] = claim_projection
     if hypothesis_ledger is not None:
         metadata["hypothesis_ledger"] = hypothesis_ledger
+    if episode_ledger is not None:
+        metadata["episode_ledger"] = episode_ledger
     if include_references:
         metadata["record_references"] = references
     return metadata
@@ -592,6 +644,8 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
         keys.append("claim_projection")
     if "hypothesis_ledger" in expected_database:
         keys.append("hypothesis_ledger")
+    if "episode_ledger" in expected_database:
+        keys.append("episode_ledger")
     for key in keys:
         if metadata[key] != expected_database.get(key):
             raise BackupError(f"restored database metadata mismatch: {key}")
@@ -704,6 +758,20 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
                 "ruled_against_health_hypothesis_count": metadata["hypothesis_ledger"]["hypotheses"]["ruled_against_count"],
                 "hypothesis_evidence_count": metadata["hypothesis_ledger"]["evidence"]["count"],
                 "hypothesis_event_count": metadata["hypothesis_ledger"]["events"]["count"],
+            }
+        )
+    if "episode_ledger" in expected_database:
+        verification.update(
+            {
+                "health_episode_count": metadata["episode_ledger"]["episodes"]["count"],
+                "proposed_health_episode_count": metadata["episode_ledger"]["episodes"]["proposed_count"],
+                "confirmed_health_episode_count": metadata["episode_ledger"]["episodes"]["confirmed_count"],
+                "dismissed_health_episode_count": metadata["episode_ledger"]["episodes"]["dismissed_count"],
+                "episode_member_count": metadata["episode_ledger"]["members"]["count"],
+                "episode_event_count": metadata["episode_ledger"]["events"]["count"],
+                "medication_exposure_count": metadata["episode_ledger"]["medication_exposures"]["count"],
+                "open_ended_medication_exposure_count": metadata["episode_ledger"]["medication_exposures"]["open_ended_count"],
+                "medication_exposure_event_count": metadata["episode_ledger"]["medication_exposure_events"]["count"],
             }
         )
     return verification

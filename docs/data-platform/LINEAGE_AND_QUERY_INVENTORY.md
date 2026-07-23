@@ -19,6 +19,7 @@
 | Rule/LLM jobs | Patterns, Insights, claim-version ledger, EvidenceSets, summary, Companion | Pattern/Insight algorithms record content, input, confidence, EvidenceSet, and version lineage; source windows retain exact authoritative entity membership. | Pattern/Insight generations append and supersede without deletion; low-quality windows retire current claims. Other derived outputs retain their compatibility behavior. |
 | Contradiction rules | Typed run, contradiction, and immutable event rows | Rules version plus canonical input hash; each fingerprint includes both evidence sides. | Re-evaluation changes detection presence only. Human resolution is attributable and is never silently reset. |
 | Patient/algorithm/clinician hypotheses | Guarded hypothesis row, append-only evidence revisions, immutable events | Origin plus canonical supporting/opposing/missing evidence input version. | Evidence replacement appends a revision and attributable confidence event; only an explicit clinician-attributed action can confirm or rule against. |
+| Manual/rule/model health episodes | Canonical episode, append-only temporal members/events, medication exposure intervals | Exact date or UTC interval, source version per member, origin, shared confidence, and input hash. | New rows start proposed; corrections append membership/event history and explicit confirmation/dismissal is attributable. Temporal membership is never causal. |
 
 Every source is operationally owned by its module and the deployment owner.
 There is no persisted source-record or sync-run model, so partial pages,
@@ -38,7 +39,7 @@ be reconstructed.
 | Cycle inference | Oura temperature + existing period logs | Rebuilds only inferred rows; existing date wins; insufficient input returns none. |
 | Health Overview | Glucose, treatments, wearables, labs, profile/clinical lists, cycle, symptoms/history | CGM, wearable, and cycle values enter the LLM only when their envelopes are eligible. Invalid/rejected labs are excluded and unverified labs carry explicit qualification. |
 | Companion | Overview context, insulin outputs, records, memory/chat, optional trusted web | CGM, pump-TDD, and insulin-response values are gated by their envelopes. Lab/document context identifies machine-extracted results as unverified unless approved/edited. |
-| Visit Report | Windowed glucose/treatment plus profile, clinical lists, labs, symptoms/history, insurance | Domain quality remains visible. Invalid/rejected labs are excluded; included machine-extracted labs and the generated prompt carry verification qualification. |
+| Visit Report | Windowed glucose/treatment plus profile, clinical lists, labs, symptoms/history, canonical episodes/exposures, insurance | Domain quality remains visible. Invalid/rejected labs are excluded; included machine-extracted labs and the generated prompt carry verification qualification. Episode membership remains explicitly non-causal. |
 | Contradiction consumers | Pump TDD, paired CGM/meter, labs, cycle timing, immutable source revisions | Every unresolved item retains and displays both sides. Blocking items suppress definitive derived claims until an attributable resolution. |
 
 ## Field-family consumer matrix
@@ -67,6 +68,7 @@ be reconstructed.
 | Contradiction rule/domain/severity/explanation, both JSON sides, detection/resolution state, actor/history | Contextual Dashboard/Records/Insulin/Cycle panels, Visit Report, Health Summary, Companion, verified backup manifests. |
 | Relationship subject/predicate/object, assertion/evidence status, source/generator/input version, validity, confidence | G3 rebuild projection, authorized graph queries, Evidence Bundles, and verified backup manifests. Legacy consumers remain on field projection by default. |
 | Claim version/key/status/algorithm/input/EvidenceSet and observation-window query/range/member IDs/checksums/roles | Pattern and Insight lineage, on-demand source drill-down, Evidence Bundles, stale-evidence detection, and verified backup manifests. |
+| Episode type/range/origin/status/confidence/input hash, temporal member source/version/revision, medication exposure range/dose/formulation, immutable events | Symptoms and Settings ledgers, Visit Report, clinical Evidence Bundles, source detail, and verified backup manifests. |
 
 ## Frontend generic-entity queries
 

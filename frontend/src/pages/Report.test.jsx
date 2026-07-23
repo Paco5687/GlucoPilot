@@ -42,6 +42,28 @@ const report = {
     },
     suggested_verification: "Synthetic clinician review.",
   }],
+  health_episodes: {
+    semantics: "Temporal membership and co-occurrence do not establish causation.",
+    episodes: [{
+      id: "episode_report_synthetic",
+      title: "Synthetic fatigue flare",
+      start_time: "2026-04-10",
+      end_time: "2026-04-12",
+      status: "confirmed",
+      origin_kind: "manual",
+      members: [{ entity_type: "SymptomLog" }],
+      confidence: { confidence_label: "not_assessed" },
+    }],
+    medication_exposures: [{
+      id: "exposure_report_synthetic",
+      medication_name: "Synthetic medicine",
+      dose: "5 mg",
+      formulation: "tablet",
+      start_time: "2026-04-01",
+      end_time: null,
+      status: "confirmed",
+    }],
+  },
   contradictions: {
     unresolved: [{
       id: "contr_report_synthetic",
@@ -102,5 +124,9 @@ describe("visit report contradictions", () => {
     expect(screen.getByText("Synthetic supporting evidence.")).toBeTruthy();
     expect(screen.getByText("Synthetic opposing evidence.")).toBeTruthy();
     expect(screen.getByText("Synthetic missing evidence.")).toBeTruthy();
+    expect(screen.getByText("Health episodes & medication exposures")).toBeTruthy();
+    expect(screen.getByText(/Temporal membership and co-occurrence do not establish causation/)).toBeTruthy();
+    expect(screen.getByText(/Synthetic fatigue flare/)).toBeTruthy();
+    expect(screen.getByText(/Synthetic medicine/)).toBeTruthy();
   });
 });

@@ -35,7 +35,7 @@ from .repositories import LegacyRepositoryCatalog
 
 
 BUNDLE_GENERATOR = "evidence-bundle"
-BUNDLE_VERSION = "2.0.0"
+BUNDLE_VERSION = "2.1.0"
 MAX_ITEM_BUDGET = 250
 MAX_SOURCE_ROWS = 100_000
 MAX_CONTRADICTIONS = 1_000
@@ -161,6 +161,7 @@ _TIME_FIELDS: dict[str, tuple[str, Literal["instant", "date"], bool]] = {
 }
 
 _DERIVED_TYPES = {"Pattern", "Insight", "DailySummary", "WeeklySummary", "HealthSummary"}
+_CANONICAL_EPISODE_TYPES = {"HealthEpisode", "MedicationExposure"}
 _DOCUMENT_TYPES = {"MedicalRecord"}
 _CATEGORY_PRIORITY = {"derived_metric": 3, "document": 2, "direct_observation": 1, "relationship": 0}
 _CONTRADICTION_DOMAINS: dict[EvidenceDomain, frozenset[str]] = {
@@ -445,6 +446,122 @@ def _load_entity_candidates(
     return candidates, counts
 
 
+def _interval_bounds(start: str, end: str | None) -> tuple[datetime, datetime | None]:
+    if len(start) == 10:
+        lower = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
+    else:
+        lower = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(timezone.utc)
+    if end is None:
+        return lower, None
+    if len(end) == 10:
+        upper = datetime.fromisoformat(end).replace(
+            hour=23, minute=59, second=59, microsecond=999999, tzinfo=timezone.utc
+        )
+    else:
+        upper = datetime.fromisoformat(end.replace("Z", "+00:00")).astimezone(timezone.utc)
+    return lower, upper
+
+
+def _load_episode_candidates(
+    connection: sqlite3.Connection,
+    query: EvidenceBundleQuery,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    if EvidenceDomain.CLINICAL not in query.domains:
+        return [], {}
+    intent_tokens = set(_TOKEN.findall(query.question_intent.lower()))
+    candidates = []
+    counts = {"HealthEpisode": 0, "MedicationExposure": 0}
+    source_total = 0
+    definitions = (
+        (
+            "HealthEpisode",
+            "health_episodes",
+            "/api/episodes",
+            """
+            SELECT id,episode_type,title,description,origin_kind,origin_label,status,
+                   start_time,end_time,time_precision,confidence_json,association_only,
+                   membership_revision,input_hash,created_at,updated_at
+            FROM health_episodes
+            WHERE owner_id=? AND status!='dismissed'
+            ORDER BY start_time,id
+            """,
+        ),
+        (
+            "MedicationExposure",
+            "medication_exposures",
+            "/api/medication-exposures",
+            """
+            SELECT id,medication_entity_id,medication_name,dose,formulation,frequency,
+                   start_time,end_time,time_precision,origin_kind,origin_label,status,
+                   confidence_json,created_at,updated_at
+            FROM medication_exposures
+            WHERE owner_id=? AND status!='dismissed'
+            ORDER BY start_time,id
+            """,
+        ),
+    )
+    for entity_type, table, href_base, statement in definitions:
+        if not connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone():
+            continue
+        rows = connection.execute(statement, (DEPLOYMENT_OWNER_ID,)).fetchall()
+        source_total += len(rows)
+        if source_total > MAX_SOURCE_ROWS:
+            raise EvidenceBundleError(
+                "canonical episode rows exceed the bounded safety limit"
+            )
+        for row in rows:
+            observed_start, observed_end = _interval_bounds(row["start_time"], row["end_time"])
+            if observed_start > query.end or (
+                observed_end is not None and observed_end < query.start
+            ):
+                continue
+            counts[entity_type] += 1
+            data = {
+                key: row[key]
+                for key in row.keys()
+                if key not in {"confidence_json", "created_at", "updated_at"}
+            }
+            data["semantic_class"] = (
+                "patient_report"
+                if row["origin_kind"] == "manual"
+                else "derived_temporal_episode"
+            )
+            data["temporal_association_only"] = True
+            confidence = json.loads(row["confidence_json"])
+            candidates.append({
+                "id": f"canonical:{entity_type}:{row['id']}",
+                "category": (
+                    "direct_observation"
+                    if row["origin_kind"] == "manual"
+                    else "derived_metric"
+                ),
+                "domain": EvidenceDomain.CLINICAL.value,
+                "entity_type": entity_type,
+                "entity_id": row["id"],
+                "observed_at": row["start_time"],
+                "recorded_at": row["updated_at"],
+                "data": _sanitize(data),
+                "confidence": {
+                    "label": confidence.get("confidence_label", "not_assessed"),
+                    "score": confidence.get("confidence_score"),
+                    "method": confidence.get("method"),
+                    "limitations": [
+                        "Temporal membership and co-occurrence do not establish causation."
+                    ],
+                },
+                "source_links": [{
+                    "kind": "canonical_episode",
+                    "entity_type": entity_type,
+                    "entity_id": row["id"],
+                    "href": f"{href_base}/{quote(row['id'], safe='')}",
+                }],
+                "_relevance": _relevance(intent_tokens, entity_type, data),
+            })
+    return candidates, counts
+
+
 def _load_contradictions(
     connection: sqlite3.Connection,
     query: EvidenceBundleQuery,
@@ -640,6 +757,8 @@ def _caveats(
     for domain in query.domains:
         entity_types = _DOMAIN_TYPES[domain]
         available = sum(counts.get(entity_type, 0) for entity_type in entity_types)
+        if domain == EvidenceDomain.CLINICAL:
+            available += sum(counts.get(entity_type, 0) for entity_type in _CANONICAL_EPISODE_TYPES)
         if available == 0:
             message = "No source records were available for this domain and time range."
             code = "domain_missing"
@@ -750,6 +869,8 @@ def build_bundle(query: EvidenceBundleQuery) -> dict[str, Any]:
     with db.connect() as connection:
         connection.execute("BEGIN")
         entity_candidates, counts = _load_entity_candidates(connection, query)
+        episode_candidates, episode_counts = _load_episode_candidates(connection, query)
+        counts.update(episode_counts)
         anchors = sorted(entity_candidates, key=_candidate_key)[:query.item_budget]
         relationship_candidates = _load_relationship_candidates(
             connection,
@@ -757,9 +878,10 @@ def build_bundle(query: EvidenceBundleQuery) -> dict[str, Any]:
             intent_tokens,
             query.domains,
         )
-        selected = sorted([*entity_candidates, *relationship_candidates], key=_candidate_key)[
-            :query.item_budget
-        ]
+        selected = sorted(
+            [*entity_candidates, *episode_candidates, *relationship_candidates],
+            key=_candidate_key,
+        )[:query.item_budget]
         archive_refs = _archive_refs(connection, selected)
         for item in selected:
             item["provenance"] = archive_refs.get((item["entity_type"], item["entity_id"]), [])
@@ -847,7 +969,10 @@ def build_bundle(query: EvidenceBundleQuery) -> dict[str, Any]:
             "available_source_items": sum(counts.values()),
             "protected_blocking_contradictions": len(protected_blocking),
             "blocking_contradictions_count_against_item_limit": False,
-            "truncated": len(entity_candidates) + len(relationship_candidates) > len(selected),
+            "truncated": (
+                len(entity_candidates) + len(episode_candidates) + len(relationship_candidates)
+                > len(selected)
+            ),
         },
         "ordering": list(ORDERING),
     }

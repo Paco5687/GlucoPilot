@@ -5,8 +5,8 @@ Status: additive regression layer
 Implementations: `tests/fixtures/`, `tests/test_golden_data.py`,
 `tests/test_migration_fixtures.py`, `tests/test_contradictions.py`,
 `tests/test_typed_glucose.py`, `tests/test_typed_wearables.py`,
-`tests/test_relationship_projection.py`, `tests/test_relationship_api.py`, and
-`tests/test_evidence_backed_claims.py`
+`tests/test_relationship_projection.py`, `tests/test_relationship_api.py`,
+`tests/test_evidence_backed_claims.py`, and `tests/test_episodes.py`
 
 F5 establishes deterministic, public-safe fixtures for clinical interpretation
 and storage risks. The fixtures contain invented values, synthetic identifiers,
@@ -33,6 +33,7 @@ rows, credentials, or copied health information.
 | Relationship query API | Anonymous/disabled access, admin/provider GET behavior, owner isolation, deterministic bounds, reverse traversal, evidence paths, and raw-locator redaction remain enforced. |
 | Analytics confidence | Exact effects/intervals/missingness, seven-day exploratory status, reproduced and not-reproduced temporal holdouts, invalid inputs, small-sample language, and confirmed/inferred cycle provenance remain deterministic. |
 | Evidence-backed claims | Pattern/Insight generations preserve predecessor/successor lineage, exact source-window replay, evidence roles/limitations, authenticated source links, and non-destructive refresh. |
+| Canonical health episodes | Date/UTC ranges, multi-source temporal membership, non-causal database constraints, append-only corrections, open medication exposures, decisions, provider access, Evidence Bundles, and restore counts remain deterministic. |
 
 `clinical_edge_cases.json` stores both the synthetic inputs and their expected
 outcomes. Tests must compare production parser, deduplication, analytics,
@@ -108,6 +109,10 @@ database.
 - Health hypotheses: origin/status guards, immutable evidence revisions and
   events, supporting/opposing/missing evidence balance, provider read-only
   access, clinician-gated terminal decisions, and backup parity.
+- Health episodes: interval precision, owner-validated multi-source membership,
+  immutable revisions/events, database-enforced non-causal semantics,
+  open-ended medication exposures, admin/provider access, confirmation/
+  correction, clinical Evidence Bundle inclusion, and backup parity.
 - Relationship API: authentication/read gating, provider-safe GET access,
   owner non-enumeration, deterministic budgets/order, and secret-locator
   redaction.
