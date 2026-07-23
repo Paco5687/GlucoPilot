@@ -31,9 +31,14 @@ from .data_contracts import (
     canonical_entity_id,
     canonical_source_record_id,
 )
+from .glucose_reconciliation import (
+    ReconciliationInputError,
+    capture_context,
+    pair_fields,
+)
 
 
-MAPPING_VERSION = "typed-glucose/1.0.0"
+MAPPING_VERSION = "typed-glucose/1.1.0"
 READING_TOLERANCE_SECONDS = 240
 _TRUE = {"1", "true", "yes", "on"}
 log = logging.getLogger("glucopilot.typed_glucose")
@@ -77,6 +82,15 @@ _FINGERSTICK_COLUMNS = (
     "paired_glucose_observed_at",
     "paired_glucose_source",
     "paired_delta_mg_dl",
+    "pair_offset_seconds",
+    "paired_glucose_trend",
+    "absolute_difference_mg_dl",
+    "relative_difference_percent",
+    "directional_difference",
+    "low_classification",
+    "severe_low_classification",
+    "context_json",
+    "reconciliation_version",
     "assertion_kind",
     "source_class",
     "legacy_fingerprint",
@@ -215,6 +229,23 @@ def map_legacy_fingerstick(entity: dict[str, Any]) -> TypedGlucoseProjection:
             raise GlucoseMappingError("delta requires a finite paired CGM value")
         if abs((paired_value - value) - delta) > 0.11:
             raise GlucoseMappingError("delta does not match paired CGM minus fingerstick")
+    try:
+        context = capture_context(entity)
+    except ReconciliationInputError as error:
+        raise GlucoseMappingError(str(error)) from error
+    pair = pair_fields(
+        value,
+        str(entity.get("timestamp")),
+        {
+            "value": paired_value,
+            "timestamp": entity.get("cgm_timestamp"),
+            "source": entity.get("cgm_source"),
+            "id": entity.get("cgm_reading_id"),
+            "trend": entity.get("cgm_trend"),
+        }
+        if paired_value is not None
+        else None,
+    )
     received_at, recorded_at = _envelope(entity, observed_at)
     now = _now_iso()
     row = {
@@ -235,7 +266,18 @@ def map_legacy_fingerstick(entity: dict[str, Any]) -> TypedGlucoseProjection:
         else None,
         "paired_glucose_observed_at": _canonical_optional_instant(entity.get("cgm_timestamp")),
         "paired_glucose_source": str(entity.get("cgm_source") or "").strip() or None,
-        "paired_delta_mg_dl": delta,
+        "paired_delta_mg_dl": pair.get("delta"),
+        "pair_offset_seconds": pair.get("pair_offset_seconds"),
+        "paired_glucose_trend": (
+            str(pair.get("cgm_trend")) if pair.get("cgm_trend") not in (None, "") else None
+        ),
+        "absolute_difference_mg_dl": pair.get("absolute_difference_mg_dl"),
+        "relative_difference_percent": pair.get("relative_difference_percent"),
+        "directional_difference": pair.get("directional_difference"),
+        "low_classification": pair.get("low_classification"),
+        "severe_low_classification": pair.get("severe_low_classification"),
+        "context_json": json.dumps(context, sort_keys=True, separators=(",", ":")),
+        "reconciliation_version": pair["reconciliation_version"],
         "assertion_kind": "patient_report",
         "source_class": "patient",
         "legacy_fingerprint": "",
@@ -380,10 +422,19 @@ def _fingerstick_legacy_shape(row: sqlite3.Row | dict[str, Any]) -> dict[str, An
         "paired_glucose_source_timestamp": "cgm_timestamp",
         "paired_glucose_source": "cgm_source",
         "paired_delta_mg_dl": "delta",
+        "pair_offset_seconds": "pair_offset_seconds",
+        "paired_glucose_trend": "cgm_trend",
+        "absolute_difference_mg_dl": "absolute_difference_mg_dl",
+        "relative_difference_percent": "relative_difference_percent",
+        "directional_difference": "directional_difference",
+        "low_classification": "low_classification",
+        "severe_low_classification": "severe_low_classification",
+        "reconciliation_version": "reconciliation_version",
     }
     for source, target in optional.items():
         if row[source] is not None:
             result[target] = row[source]
+    result.update(json.loads(row["context_json"]))
     return result
 
 

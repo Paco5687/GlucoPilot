@@ -140,6 +140,14 @@ def test_mapping_preserves_identity_time_value_pair_and_assertion(glucose_cases)
     assert fingerstick["paired_glucose_entity_id"] == "synthetic-glucose-share"
     assert fingerstick["paired_delta_mg_dl"] == 5
     assert fingerstick["paired_glucose_source_timestamp"] == "2026-03-01T10:00:00Z"
+    assert fingerstick["pair_offset_seconds"] == -60
+    assert fingerstick["paired_glucose_trend"] == "Flat"
+    assert fingerstick["absolute_difference_mg_dl"] == 5
+    assert fingerstick["relative_difference_percent"] == 5.3
+    assert fingerstick["directional_difference"] == "within_comparison_band"
+    assert fingerstick["low_classification"] == "neither_low"
+    assert json.loads(fingerstick["context_json"])["sensor_day"] == 2
+    assert fingerstick["reconciliation_version"] == "glucose-reconciliation/1.0.0"
 
     with pytest.raises(GlucoseMappingError, match="between 20 and 600"):
         map_legacy_glucose(_with_envelope(glucose_cases["invalid_glucose"]))
@@ -165,7 +173,11 @@ def test_feature_gated_dual_write_is_atomic_idempotent_and_cascades(
     typed_glucose = SqliteTypedGlucoseRepository()
     typed_fingersticks = SqliteTypedFingerstickRepository()
     assert typed_glucose.get(glucose_rows[0]["id"])["value"] == 100
-    assert typed_fingersticks.get(fingerstick["id"])["cgm_reading_id"] == glucose_rows[0]["id"]
+    typed_fingerstick = typed_fingersticks.get(fingerstick["id"])
+    assert typed_fingerstick["cgm_reading_id"] == glucose_rows[0]["id"]
+    assert typed_fingerstick["sensor_day"] == 2
+    assert typed_fingerstick["compression_possible"] is False
+    assert typed_fingerstick["low_classification"] == "neither_low"
 
     typed_glucose.sync_entities(glucose_rows)
     with sqlite3.connect(glucose_database) as connection:

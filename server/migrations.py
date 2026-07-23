@@ -2057,6 +2057,55 @@ MIGRATIONS = (
             )
         ),
     ),
+    Migration(
+        18,
+        "fingerstick_reconciliation_context",
+        (
+            Statement(
+                "ALTER TABLE fingerstick_readings ADD COLUMN "
+                "pair_offset_seconds INTEGER"
+            ),
+            Statement(
+                "ALTER TABLE fingerstick_readings ADD COLUMN "
+                "paired_glucose_trend TEXT"
+            ),
+            Statement(
+                "ALTER TABLE fingerstick_readings ADD COLUMN "
+                "absolute_difference_mg_dl REAL CHECK("
+                "absolute_difference_mg_dl IS NULL OR absolute_difference_mg_dl >= 0)"
+            ),
+            Statement(
+                "ALTER TABLE fingerstick_readings ADD COLUMN "
+                "relative_difference_percent REAL CHECK("
+                "relative_difference_percent IS NULL OR relative_difference_percent >= 0)"
+            ),
+            Statement(
+                "ALTER TABLE fingerstick_readings ADD COLUMN "
+                "directional_difference TEXT CHECK(directional_difference IS NULL OR "
+                "directional_difference IN ('within_comparison_band','cgm_high','cgm_low'))"
+            ),
+            Statement(
+                "ALTER TABLE fingerstick_readings ADD COLUMN "
+                "low_classification TEXT CHECK(low_classification IS NULL OR "
+                "low_classification IN ('confirmed_low','cgm_only_low','meter_only_low','neither_low'))"
+            ),
+            Statement(
+                "ALTER TABLE fingerstick_readings ADD COLUMN "
+                "severe_low_classification TEXT CHECK(severe_low_classification IS NULL OR "
+                "severe_low_classification IN "
+                "('confirmed_low','cgm_only_low','meter_only_low','neither_low'))"
+            ),
+            Statement(
+                "ALTER TABLE fingerstick_readings ADD COLUMN "
+                "context_json TEXT NOT NULL DEFAULT '{}' CHECK("
+                "json_valid(context_json) AND json_type(context_json)='object')"
+            ),
+            Statement(
+                "ALTER TABLE fingerstick_readings ADD COLUMN "
+                "reconciliation_version TEXT"
+            ),
+        ),
+    ),
 )
 
 

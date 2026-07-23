@@ -61,6 +61,9 @@ typed repositories are introduced.
 - [Shared clinical evidence](SHARED_CLINICAL_EVIDENCE.md) — the common Overview
   and Visit Report Evidence Bundle adapter, safety blocks, narrative citations,
   and deterministic-metric boundary.
+- [CGM and fingerstick reconciliation](GLUCOSE_RECONCILIATION.md) — fixed
+  time-bounded pairs, optional capture context, directional-bias sample gates,
+  and confirmed-versus-CGM-only low semantics.
 - [Evidence-grounded Companion](COMPANION_EVIDENCE.md) — question-ranked bounded
   retrieval, validated statement/source links, unverified-lab safeguards,
   local-model prompt limits, and evidence/opposition/change commands.

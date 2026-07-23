@@ -272,6 +272,16 @@ def _confidence(
             "clinically_verified": clinically_verified,
             "limitations": limitations,
         }
+    if entity_type == "FingerstickReading" and data.get("reconciliation_version"):
+        return {
+            "label": "not_assessed",
+            "score": None,
+            "method": data["reconciliation_version"],
+            "limitations": [
+                "The meter and CGM values are separate observations.",
+                "Temporal pairing does not establish either source as clinical truth.",
+            ],
+        }
     analytics = data.get("analytics_confidence")
     if isinstance(analytics, dict):
         score = analytics.get("confidence_score")

@@ -67,6 +67,41 @@ function TIRBar({ g }) {
   );
 }
 
+function FingerstickReconciliation({ g }) {
+  const reconciliation = g.fingerstick_reconciliation;
+  if (!reconciliation?.paired) return null;
+  const lows = reconciliation.low_reconciliation;
+  const bias = reconciliation.persistent_bias;
+  const biasLabel = {
+    cgm_high: "persistent CGM-high direction observed",
+    cgm_low: "persistent CGM-low direction observed",
+    not_detected: "no persistent directional bias detected",
+    insufficient_sample: "insufficient sample for persistent bias",
+  }[bias?.classification] || "not assessed";
+  return (
+    <div className="report-card bg-card rounded-lg border border-border p-4 space-y-2">
+      <div>
+        <p className="text-xs font-medium">CGM and meter reconciliation</p>
+        <p className="text-[11px] text-muted-foreground">{reconciliation.semantics}</p>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+        <div><span className="text-muted-foreground">Paired checks</span><br /><b>{reconciliation.paired}</b></div>
+        <div><span className="text-muted-foreground">Mean absolute gap</span><br /><b>{reconciliation.mean_abs_delta} mg/dL</b></div>
+        <div><span className="text-muted-foreground">Confirmed lows</span><br /><b>{lows?.confirmed_low || 0}</b></div>
+        <div><span className="text-muted-foreground">CGM-only lows</span><br /><b>{lows?.cgm_only_low || 0}</b></div>
+      </div>
+      <p className="text-[11px]">
+        Directional bias: <b>{biasLabel}</b> ({bias?.sample_count || 0} paired checks;
+        minimum {bias?.minimum_sample_count || 5}).
+      </p>
+      <p className="text-[11px] text-muted-foreground">
+        Raw CGM time below range remains {g.tbr70}% below 70 mg/dL and {g.tbr54}% below
+        54 mg/dL. {lows?.caveat}
+      </p>
+    </div>
+  );
+}
+
 function AGPChart({ agp }) {
   const data = agp
     .filter((h) => h.p50 != null)
@@ -490,6 +525,7 @@ export default function Report() {
           <p className="text-xs font-medium mb-2">Time in ranges · {g.readings.toLocaleString()} readings over {g.days} days</p>
           <TIRBar g={g} />
         </div>
+        <FingerstickReconciliation g={g} />
         <div className="report-card bg-card rounded-lg border border-border p-4">
           <p className="text-xs font-medium mb-1">Ambulatory Glucose Profile (typical day)</p>
           <p className="text-[11px] text-muted-foreground mb-2">Median (line) with 25–75% and 5–95% bands by time of day. Green dashes mark the 70–180 target.</p>
