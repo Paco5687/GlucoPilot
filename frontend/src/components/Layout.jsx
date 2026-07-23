@@ -1,7 +1,7 @@
 import { Outlet, Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, LineChart, GitCompare, Plug, Menu, X, Shield,
-  Heart, LogOut, Settings, FolderHeart, FileText, FileHeart, Eye, Watch, Sparkles, Syringe, MessageCircleHeart, NotebookPen, ScrollText,
+  Heart, LogOut, Settings, FolderHeart, FileText, FileHeart, Eye, Watch, Sparkles, Syringe, MessageCircleHeart, NotebookPen, ScrollText, Share2,
 } from "lucide-react";
 import { Bug } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -39,6 +39,7 @@ const navGroups = [
       { path: "/records", label: "Records", icon: FolderHeart },
       { path: "/report", label: "Visit Report", icon: FileText },
       { path: "/brief", label: "Clinician Brief", icon: FileHeart },
+      { path: "/exports", label: "Share Export", icon: Share2 },
     ],
   },
   {
@@ -180,7 +181,7 @@ export default function Layout() {
         )}
         {isProvider && (
           <div className="bg-sky-50 border-b border-sky-200 text-sky-800 text-xs font-medium px-4 py-2 text-center flex items-center justify-center gap-1.5 print:hidden">
-            <Eye className="w-3.5 h-3.5" /> Provider review view — source data and settings are read-only; attributable annotations are available in Clinician Brief.
+            <Eye className="w-3.5 h-3.5" /> Provider review view — source data and settings are read-only; attributable annotations and minimum-necessary exports are available.
           </div>
         )}
 

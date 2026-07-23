@@ -22,6 +22,7 @@ import History from './pages/History';
 import Records from './pages/Records';
 import Report from './pages/Report';
 import ClinicianBrief from './pages/ClinicianBrief';
+import ShareExports from './pages/ShareExports';
 import Settings from './pages/Settings';
 import { ViewingProvider } from './lib/ViewingContext';
 import PrivacyPolicy from './pages/PrivacyPolicy';
@@ -55,6 +56,7 @@ const AuthenticatedApp = () => {
         <Route path="/records" element={<Records />} />
         <Route path="/report" element={<Report />} />
         <Route path="/brief" element={<ClinicianBrief />} />
+        <Route path="/exports" element={<ShareExports />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
       <Route path="*" element={<PageNotFound />} />
