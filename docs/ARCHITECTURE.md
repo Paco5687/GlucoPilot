@@ -43,6 +43,7 @@ uploaded records, and config. One owner per deployment.
 | `clinician_briefs.py` | bounded specialty Evidence Bundle queries, minimum-necessary allowlists, strength language, tentative-hypothesis safeguards, and source-linked brief sections |
 | `clinical_reviews.py` | source-read-only provider annotation/review actions, owner acceptance/dispute, immutable audit history, and Companion confirmation semantics |
 | `share_exports.py` | role-aware explicit export allowlists, recursive secret/identifier exclusion, Evidence Bundle research minimization, and checksum-bound preview/download parity |
+| `diagnostics.py` | privacy-safe source sync/data-through status, quality counters, derived-state freshness, storage/backup visibility, and Companion/report operational caveats |
 | `glucose_reconciliation.py` | pure, versioned CGM/fingerstick pair derivation, contextual strata, directional-bias sample gates, and checked-low semantics |
 | `lab_audit.py` | audited medical-record extraction, validation, verification, correction history, and compatibility projection |
 | `contradictions.py` | deterministic cross-domain contradiction rules, typed ledger, attributed resolution workflow, and API |
@@ -160,6 +161,14 @@ bolus-response, and fingerstick discrepancy comparisons under the shared
 confidence contract. Evidence Bundle 2.3 exposes quantified effects, and
 Companion receives only effects that pass the explicit sample/status/confidence
 gate.
+
+H1 adds no schema. An authenticated diagnostics adapter combines governed sync
+runs, legacy connection state, source data-through times, parser/verification
+counters, graph publication, analytics generations, SQLite size, and visible
+checksummed backup manifests. It exposes no IDs, values, raw errors, paths, or
+credentials. A reduced non-medical source-freshness context is included in
+Companion and shared report evidence; backup and storage details stay out of
+model reasoning.
 
 ## Frontend (`frontend/`)
 

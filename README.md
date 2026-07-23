@@ -68,6 +68,10 @@ no health data ever leaves the machine.
 - **Cycle** — menstrual phases **inferred automatically from Oura nightly temperature**, tied to glucose/insulin.
 - **Wearables** — sleep, activity, HR/HRV, and SpO₂ deep-dives with glucose overlays.
 - **Symptom journal** — a nightly check-in (severity, duration, notes) that feeds the Companion, the analytics, and the report.
+- **Platform diagnostics** — a privacy-safe operational view of source
+  sync/data-through status, import quality, graph and analytics freshness,
+  storage, and visible backup age. Source staleness also qualifies Companion
+  and Visit Report context without becoming a health finding.
 
 **Your clinical picture**
 

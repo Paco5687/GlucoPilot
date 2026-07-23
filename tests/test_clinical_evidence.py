@@ -162,6 +162,50 @@ def test_generated_narrative_can_only_link_selected_bundle_evidence(evidence_dat
     assert all(link["href"].startswith("/api/") for link in linked["evidence_links"])
 
 
+def test_report_context_carries_per_source_freshness_and_operational_caveats(
+    evidence_database,
+    monkeypatch,
+):
+    operational = {
+        "contract_version": "platform-diagnostics/1.0.0",
+        "semantics": {
+            "category": "operational_diagnostics",
+            "not_health_findings": True,
+            "message": "Synthetic operational boundary.",
+        },
+        "sources": [{
+            "source": "dexcom",
+            "label": "Dexcom",
+            "status": "stale",
+            "last_successful_sync_at": "2026-07-18T12:00:00Z",
+            "data_through": "2026-07-18T11:55:00Z",
+            "freshness_days": 2.5,
+            "issues": [],
+        }],
+        "caveats": [{
+            "code": "source_data_stale",
+            "severity": "warning",
+            "message": "Dexcom source data are stale.",
+            "category": "source_health",
+            "scope": "dexcom",
+            "domain": "source:dexcom",
+        }],
+    }
+    monkeypatch.setattr(clinical_evidence, "diagnostic_context", lambda **_kwargs: operational)
+
+    public, reasoning = clinical_evidence.build_context(
+        90,
+        data_quality={},
+        as_of=date(2026, 7, 20),
+    )
+
+    assert public["source_diagnostics"] == operational["sources"]
+    assert reasoning["source_diagnostics"] == operational["sources"]
+    assert public["operational_semantics"]["not_health_findings"] is True
+    assert operational["caveats"][0] in public["missing_data_caveats"]
+    assert operational["caveats"][0] in reasoning["missing_data_caveats"]
+
+
 def test_overview_and_visit_report_use_the_same_shared_context_adapter(
     evidence_database, monkeypatch
 ):

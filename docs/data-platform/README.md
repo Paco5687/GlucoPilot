@@ -90,6 +90,9 @@ typed repositories are introduced.
 - [Canonical health episodes](HEALTH_EPISODES.md) — date/instant ranges,
   manual/rule/model proposals, append-only temporal membership, medication
   exposure intervals, non-causal semantics, and attributable decisions.
+- [Platform self-diagnostics](PLATFORM_DIAGNOSTICS.md) — privacy-safe source
+  data-through/sync status, quality counters, graph/analytics/backup freshness,
+  and operational caveats shared with Companion and reports.
 
 ## Reproduce the structural audit
 
