@@ -425,7 +425,14 @@ def _typed_query(
     selected_sort = (sort or "-created_date").strip()
     direction = "DESC" if selected_sort.startswith("-") else "ASC"
     sql = f"SELECT * FROM {table} WHERE {' AND '.join(where)}"
-    sql += f" ORDER BY {columns[selected_sort.lstrip('-')]} {direction}, entity_id {direction}"
+    # Legacy JSON queries have no explicit tie-breaker and SQLite preserves
+    # directional insertion order for equal sort values. Typed rows retain the
+    # same relative insertion order, so rowid preserves page boundaries when a
+    # provider emits many samples with one timestamp.
+    sql += (
+        f" ORDER BY {columns[selected_sort.lstrip('-')]} {direction}, "
+        f"rowid {direction}"
+    )
     sql += " LIMIT ? OFFSET ?"
     parameters.extend([int(limit) if limit else -1, int(skip or 0)])
     return connection.execute(sql, parameters).fetchall()
