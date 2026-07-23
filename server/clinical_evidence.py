@@ -13,6 +13,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from .contradictions import refresh_current as refresh_contradictions
+from .diagnostics import reasoning_context as diagnostic_context
 from .evidence_bundle import EvidenceBundleQuery, EvidenceDomain, build_bundle
 
 
@@ -233,6 +234,10 @@ def build_context(
         for caveat in bundle["missing_data_caveats"]:
             key = (caveat["code"], caveat["domain"], caveat["message"])
             caveats_by_key[key] = caveat
+    operational = diagnostic_context(as_of=as_of)
+    for caveat in operational["caveats"]:
+        key = (caveat["code"], caveat["domain"], caveat["message"])
+        caveats_by_key[key] = caveat
     items = list(items_by_id.values())
     narrative_items = [
         item for item in items if item.get("entity_type") not in _NARRATIVE_EXCLUDED_TYPES
@@ -258,10 +263,17 @@ def build_context(
         }
         for scope, bundle in scoped_bundles
     ]
-    portfolio_hash = _checksum([
-        {"scope": item["scope"], "id": item["id"], "input_hash": item["data_version"]["input_hash"]}
-        for item in bundle_refs
-    ])
+    portfolio_hash = _checksum({
+        "bundles": [
+            {
+                "scope": item["scope"],
+                "id": item["id"],
+                "input_hash": item["data_version"]["input_hash"],
+            }
+            for item in bundle_refs
+        ],
+        "operational_diagnostics": operational,
+    })
     portfolio_id = (
         "urn:glucopilot:clinical-evidence-context:"
         + portfolio_hash.removeprefix("sha256:")
@@ -283,6 +295,8 @@ def build_context(
         "bundles": bundle_refs,
         "data_quality": quality,
         "data_through": data_through,
+        "source_diagnostics": operational["sources"],
+        "operational_semantics": operational["semantics"],
         "contradictions": contradictions,
         "sources": {
             "links": public_sources,
@@ -299,6 +313,8 @@ def build_context(
         "data_version": public["bundle"]["data_version"],
         "data_quality": quality,
         "data_through": data_through,
+        "source_diagnostics": operational["sources"],
+        "operational_semantics": operational["semantics"],
         "contradictions": contradictions,
         "missing_data_caveats": caveats,
         "items": [

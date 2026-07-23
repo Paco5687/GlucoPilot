@@ -161,6 +161,50 @@ def test_scope_balancing_keeps_question_relevant_source_types(companion_database
     }
 
 
+def test_companion_receives_source_staleness_as_operational_context(
+    companion_database,
+    monkeypatch,
+):
+    operational = {
+        "contract_version": "platform-diagnostics/1.0.0",
+        "semantics": {
+            "category": "operational_diagnostics",
+            "not_health_findings": True,
+            "message": "Synthetic operational boundary.",
+        },
+        "sources": [{
+            "source": "oura",
+            "label": "Oura",
+            "status": "stale",
+            "last_successful_sync_at": "2026-06-01T12:00:00Z",
+            "data_through": "2026-06-01T00:00:00Z",
+            "freshness_days": 49.0,
+            "issues": [],
+        }],
+        "caveats": [{
+            "code": "source_data_stale",
+            "severity": "warning",
+            "message": "Oura source data are stale.",
+            "category": "source_health",
+            "scope": "oura",
+            "domain": "source:oura",
+        }],
+    }
+    monkeypatch.setattr(companion_evidence, "diagnostic_context", lambda **_kwargs: operational)
+
+    public, reasoning = companion_evidence.build_context(
+        "How is my sleep?",
+        as_of=date(2026, 7, 20),
+        refresh=False,
+    )
+
+    assert public["source_diagnostics"] == operational["sources"]
+    assert reasoning["source_diagnostics"] == operational["sources"]
+    assert public["operational_semantics"]["not_health_findings"] is True
+    assert operational["caveats"][0] in public["missing_data_caveats"]
+    assert operational["caveats"][0] in reasoning["missing_data_caveats"]
+
+
 def test_companion_context_distinguishes_clinician_confirmation_and_dispute(
     companion_database,
 ):

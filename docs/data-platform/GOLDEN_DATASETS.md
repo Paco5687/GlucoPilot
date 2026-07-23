@@ -40,6 +40,7 @@ rows, credentials, or copied health information.
 | Specialist briefs | Every mode uses a bounded Evidence Bundle query; irrelevant/insurance PHI is omitted, source links remain openable, exploratory language stays qualified, hypotheses remain tentative, and provider source access remains read-only. |
 | Provider reviews | Provider actions preserve actor/target/time/prior/new state, source mutation stays forbidden, owner disputes retain clinician history, backups retain the audit ledger, and Companion promotes only non-disputed clinician confirmations. |
 | Share-safe exports | All five role policies use explicit field allowlists; synthetic email/token/URL/insurance/RX/employer/internal-ID leaks stay absent; research remains Evidence Bundle-bounded; changed snapshots cannot download under an earlier preview checksum. |
+| Platform diagnostics | Current, stale, configured-without-data, and failed sources retain deterministic safe statuses; aggregate quality/derived/backup freshness remains value-free; stale caveats reach Companion/report; owner/provider auth and frontend rerender/unmount behavior remain enforced. |
 
 `clinical_edge_cases.json` stores both the synthetic inputs and their expected
 outcomes. Tests must compare production parser, deduplication, analytics,
@@ -122,6 +123,9 @@ database.
 - Relationship API: authentication/read gating, provider-safe GET access,
   owner non-enumeration, deterministic budgets/order, and secret-locator
   redaction.
+- Platform diagnostics: source freshness and governed/legacy state, safe
+  aggregate counters, graph/analytics/backup age, secret/path/raw-error
+  exclusion, Companion/report propagation, and explicit-refresh-only UI.
 
 ## CI gate
 

@@ -15,6 +15,12 @@ const context = {
     freshness_status: "current",
   }],
   data_through: [{ domain: "cgm", through: "2026-07-20" }],
+  source_diagnostics: [{
+    source: "dexcom",
+    label: "Dexcom",
+    status: "stale",
+    data_through: "2026-07-18T12:00:00Z",
+  }],
   contradictions: [{ id: "contr_1", severity: "blocking" }],
   claims: [{
     claim_type: "Pattern",
@@ -47,6 +53,8 @@ describe("shared evidence context", () => {
 
     expect(screen.getByText("Shared evidence context")).toBeTruthy();
     expect(screen.getByText("2026-07-20")).toBeTruthy();
+    expect(screen.getByText("Source data through")).toBeTruthy();
+    expect(screen.getByText("2026-07-18 · stale")).toBeTruthy();
     expect(screen.getByText(/machine-extracted lab result is explicitly qualified as unverified/i)).toBeTruthy();
     expect(screen.getByText(/1 unresolved contradiction.*1 blocking/i)).toBeTruthy();
     expect(screen.getByText("Synthetic glucose pattern")).toBeTruthy();

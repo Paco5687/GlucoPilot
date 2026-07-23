@@ -22,9 +22,10 @@
 | Manual/rule/model health episodes | Canonical episode, append-only temporal members/events, medication exposure intervals | Exact date or UTC interval, source version per member, origin, shared confidence, and input hash. | New rows start proposed; corrections append membership/event history and explicit confirmation/dismissal is attributable. Temporal membership is never causal. |
 
 Every source is operationally owned by its module and the deployment owner.
-There is no persisted source-record or sync-run model, so partial pages,
-coverage windows, failures, upstream revisions, and field-level origin cannot
-be reconstructed.
+Governed connectors persist immutable source archives, fetch outcomes, sync
+runs, and normalized-evidence provenance. Legacy connector paths still provide
+only connection/configuration and entity-level source fields; diagnostics label
+those paths as legacy instead of implying governed run coverage.
 
 ## Derived results and missing-data assumptions
 
@@ -44,6 +45,7 @@ be reconstructed.
 | Health Overview | Glucose, treatments, wearables, labs, profile/clinical lists, cycle, symptoms/history | CGM, wearable, and cycle values enter the LLM only when their envelopes are eligible. Invalid/rejected labs are excluded and unverified labs carry explicit qualification. |
 | Companion | Overview context, insulin outputs, records, memory/chat, optional trusted web | CGM, pump-TDD, and insulin-response values are gated by their envelopes. Lab/document context identifies machine-extracted results as unverified unless approved/edited. |
 | Visit Report | Windowed glucose/treatment plus profile, clinical lists, labs, symptoms/history, canonical episodes/exposures, insurance | Domain quality remains visible. Invalid/rejected labs are excluded; included machine-extracted labs and the generated prompt carry verification qualification. Episode membership remains explicitly non-causal. |
+| Platform diagnostics | Sync runs, connection state, source observation maxima, lab/parser/time quality, graph publication, Pattern/Insight generations, SQLite files, and visible backup manifests | Returns operational status and aggregate counters only. Companion and reports receive reduced source freshness/caveats; storage and backup operations stay outside model reasoning. |
 | Contradiction consumers | Pump TDD, paired CGM/meter, labs, cycle timing, immutable source revisions | Every unresolved item retains and displays both sides. Blocking items suppress definitive derived claims until an attributable resolution. |
 
 ## Field-family consumer matrix
@@ -69,6 +71,7 @@ be reconstructed.
 | Connection tokens/status/expiry/last-sync | Connector modules and Connections UI; settings APIs expose redacted metadata. |
 | User settings / `app_settings` configuration | Connector setup, scheduler, auth/LLM/feature configuration, history narrative. |
 | Bug-report context/GitHub link | In-app reporter persistence and GitHub issue bridge only. |
+| Source sync/data-through times, run counters, parser/verification counts, projection/generation timestamps, DB/WAL bytes, backup-manifest age | Authenticated Diagnostics page/API; reduced source freshness and safe caveats in Companion and Visit Report evidence. No source IDs, raw errors, paths, health values, or credentials. |
 | Contradiction rule/domain/severity/explanation, both JSON sides, detection/resolution state, actor/history | Contextual Dashboard/Records/Insulin/Cycle panels, Visit Report, Health Summary, Companion, verified backup manifests. |
 | Relationship subject/predicate/object, assertion/evidence status, source/generator/input version, validity, confidence | G3 rebuild projection, authorized graph queries, Evidence Bundles, and verified backup manifests. Legacy consumers remain on field projection by default. |
 | Claim version/key/status/algorithm/input/EvidenceSet and observation-window query/range/member IDs/checksums/roles | Pattern and Insight lineage, on-demand source drill-down, Evidence Bundles, stale-evidence detection, and verified backup manifests. |

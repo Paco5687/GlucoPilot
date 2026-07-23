@@ -10,6 +10,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from .contradictions import refresh_current as refresh_contradictions
+from .diagnostics import reasoning_context as diagnostic_context
 from .evidence_bundle import EvidenceBundleQuery, EvidenceDomain, build_bundle
 from .clinical_reviews import companion_context as clinical_review_context
 
@@ -388,6 +389,9 @@ def build_context(
         ]
         for key, values in clinical_review_context(limit=12).items()
     }
+    operational = diagnostic_context(as_of=as_of)
+    for caveat in operational["caveats"]:
+        caveats[(caveat["code"], caveat["domain"], caveat["message"])] = caveat
     public_items = [
         _public_item(item["alias"], items_by_id[item["id"]])
         for item in reasoning_items
@@ -419,6 +423,7 @@ def build_context(
             for ref in bundle_refs
         ],
         "clinical_reviews": review_context,
+        "operational_diagnostics": operational,
     })
     portfolio_id = (
         "urn:glucopilot:companion-evidence-context:"
@@ -438,6 +443,8 @@ def build_context(
         "opposing_evidence": public_opposing,
         "contradictions": contradictions,
         "missing_data_caveats": [caveats[key] for key in sorted(caveats)],
+        "source_diagnostics": operational["sources"],
+        "operational_semantics": operational["semantics"],
         "clinical_reviews": review_context,
         "budget": {
             "configured_items": sum(scope.budget for scope, _ in bundles),
@@ -459,6 +466,8 @@ def build_context(
         "opposing_evidence": public_opposing,
         "contradictions": contradictions,
         "missing_data_caveats": public["missing_data_caveats"],
+        "source_diagnostics": operational["sources"],
+        "operational_semantics": operational["semantics"],
         "clinical_reviews": review_context,
         "budget": public["budget"],
     }

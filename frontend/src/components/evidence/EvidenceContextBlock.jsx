@@ -70,6 +70,27 @@ export default function EvidenceContextBlock({ context, narrativeEvidenceIds = [
         </div>
       </div>
 
+      {context.source_diagnostics?.length > 0 && (
+        <div className="rounded-lg bg-muted/50 p-3">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground flex items-center gap-1">
+            <Database className="w-3 h-3" /> Source data through
+          </div>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            Operational source freshness, separate from health findings.
+          </p>
+          <ul className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+            {context.source_diagnostics.map((source) => (
+              <li key={source.source} className="flex justify-between gap-2">
+                <span>{source.label}</span>
+                <span className="text-muted-foreground tabular-nums">
+                  {source.data_through ? source.data_through.slice(0, 10) : "No dated data"} · {humanize(source.status)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {(unverifiedLabs > 0 || (context.contradictions || []).length > 0) && (
         <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-xs text-amber-900 space-y-1">
           {unverifiedLabs > 0 && (
