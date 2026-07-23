@@ -18,7 +18,9 @@ The brief contains concerns, objective patterns, glucose/insulin when relevant,
 management burden, labs/imaging, reassuring and opposing evidence,
 contradictions, limitations, visit questions, and an evidence appendix.
 Appendix entries retain the Evidence Bundle source links so authenticated admin
-and read-only provider sessions can open the underlying evidence.
+and source-read-only provider sessions can open the underlying evidence.
+Providers may append attributable review events without mutating evidence;
+owners may accept or dispute them without erasing clinician history.
 
 ## Language safety
 

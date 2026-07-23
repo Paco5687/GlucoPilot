@@ -8,7 +8,7 @@ pytestmark = pytest.mark.risk_critical
 
 from server import backup, db
 from server.backup import BackupError, create_verified_backup, preflight_backup, restore_backup, verify_backup
-from server.migrations import MIGRATIONS
+from server.migrations import MIGRATIONS, run_migrations
 
 
 def _hash(path):
@@ -195,3 +195,19 @@ def test_startup_backs_up_existing_database_before_migration(tmp_path, monkeypat
         assert connection.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
         ).fetchall() == [(migration.version,) for migration in MIGRATIONS]
+
+
+def test_current_backup_verifies_clinical_review_audit_tables(tmp_path):
+    data_dir = tmp_path / "data"
+    (data_dir / "records").mkdir(parents=True)
+    run_migrations(data_dir / "app.sqlite3")
+
+    backup_dir, verification = create_verified_backup(
+        data_dir, tmp_path / "backups", reason="clinical review audit"
+    )
+
+    assert verification["clinical_review_thread_count"] == 0
+    assert verification["clinical_review_event_count"] == 0
+    restored = verify_backup(backup_dir)
+    assert restored["clinical_review_thread_count"] == 0
+    assert restored["clinical_review_event_count"] == 0

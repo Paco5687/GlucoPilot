@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from datetime import date
 
 import pytest
@@ -158,6 +159,48 @@ def test_scope_balancing_keeps_question_relevant_source_types(companion_database
     assert "Treatment" in {
         item["entity_type"] for item in insulin["evidence_items"]
     }
+
+
+def test_companion_context_distinguishes_clinician_confirmation_and_dispute(
+    companion_database,
+):
+    now = "2026-07-20T12:00:00.000Z"
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO clinical_review_threads (
+                id,owner_id,target_kind,target_type,target_id,target_label,
+                current_action,provider_status,owner_status,current_text,
+                evidence_bundle_id,created_at,updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                str(uuid.uuid4()),
+                "urn:glucopilot:owner:self",
+                "hypothesis",
+                "HealthHypothesis",
+                "synthetic-reviewed-hypothesis",
+                "Synthetic reviewed hypothesis",
+                "hypothesis_confirm",
+                "hypothesis_confirmed",
+                "accepted",
+                "Synthetic clinician confirmation.",
+                None,
+                now,
+                now,
+            ),
+        )
+
+    public, reasoning = companion_evidence.build_context(
+        "What has my clinician confirmed?",
+        as_of=date(2026, 7, 20),
+        refresh=False,
+    )
+    assert public["clinical_reviews"]["clinician_confirmed_facts"][0][
+        "semantic_class"
+    ] == "clinician_confirmation"
+    assert reasoning["clinical_reviews"]["provider_annotations"] == []
+    assert "only entries under clinician_confirmed_facts" in companion.SYSTEM
 
 
 def test_reply_claims_require_valid_links_and_unverified_labs_are_qualified(

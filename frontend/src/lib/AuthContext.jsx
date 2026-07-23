@@ -49,7 +49,8 @@ export const AuthProvider = ({ children }) => {
       isLoadingPublicSettings: false,
       authError,
       appPublicSettings: null,
-      // Provider sessions are read-only; admin is the account owner.
+      // Provider sessions cannot mutate source data; review events use a
+      // separate attributable API. Admin is the account owner.
       isProvider: user?.role === "provider",
       isAdmin: !!user && user.role !== "provider",
       logout,

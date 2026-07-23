@@ -2354,6 +2354,104 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        21,
+        "provider_clinical_review_audit",
+        (
+            Statement(
+                """
+                CREATE TABLE clinical_review_threads (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    target_kind TEXT NOT NULL CHECK(target_kind IN (
+                        'evidence_item','entity','hypothesis','correction','brief'
+                    )),
+                    target_type TEXT NOT NULL CHECK(
+                        target_type != '' AND length(target_type) <= 120
+                    ),
+                    target_id TEXT NOT NULL CHECK(
+                        target_id != '' AND length(target_id) <= 500
+                    ),
+                    target_label TEXT NOT NULL DEFAULT '' CHECK(length(target_label) <= 500),
+                    current_action TEXT NOT NULL CHECK(current_action IN (
+                        'annotate','mark_reviewed','hypothesis_confirm',
+                        'hypothesis_reject','correction_confirm','question'
+                    )),
+                    provider_status TEXT NOT NULL CHECK(provider_status IN (
+                        'annotated','reviewed','hypothesis_confirmed',
+                        'hypothesis_rejected','correction_confirmed','question_open'
+                    )),
+                    owner_status TEXT NOT NULL CHECK(owner_status IN (
+                        'pending','accepted','disputed'
+                    )),
+                    current_text TEXT NOT NULL DEFAULT '' CHECK(length(current_text) <= 4000),
+                    evidence_bundle_id TEXT,
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    updated_at TEXT NOT NULL CHECK(updated_at LIKE '%Z'),
+                    UNIQUE(owner_id,target_kind,target_type,target_id)
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE clinical_review_events (
+                    id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL REFERENCES clinical_review_threads(id)
+                        ON DELETE RESTRICT,
+                    action TEXT NOT NULL CHECK(action IN (
+                        'annotate','mark_reviewed','hypothesis_confirm',
+                        'hypothesis_reject','correction_confirm','question',
+                        'owner_accept','owner_dispute'
+                    )),
+                    actor_role TEXT NOT NULL CHECK(actor_role IN ('provider','admin')),
+                    actor_id TEXT NOT NULL CHECK(actor_id != '' AND length(actor_id) <= 240),
+                    actor_label TEXT NOT NULL CHECK(
+                        actor_label != '' AND length(actor_label) <= 240
+                    ),
+                    reason TEXT NOT NULL CHECK(reason != '' AND length(reason) <= 4000),
+                    prior_state_json TEXT NOT NULL CHECK(
+                        json_valid(prior_state_json) AND
+                        json_type(prior_state_json) = 'object'
+                    ),
+                    new_state_json TEXT NOT NULL CHECK(
+                        json_valid(new_state_json) AND
+                        json_type(new_state_json) = 'object'
+                    ),
+                    evidence_bundle_id TEXT,
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z')
+                ) STRICT
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_clinical_review_target "
+                "ON clinical_review_threads(owner_id,target_kind,target_type,target_id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_clinical_review_status "
+                "ON clinical_review_threads(owner_id,owner_status,updated_at,id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_clinical_review_events "
+                "ON clinical_review_events(thread_id,created_at,id)"
+            ),
+            Statement(
+                """
+                CREATE TRIGGER clinical_review_events_immutable_update
+                BEFORE UPDATE ON clinical_review_events BEGIN
+                    SELECT RAISE(ABORT, 'clinical review audit events are immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER clinical_review_events_immutable_delete
+                BEFORE DELETE ON clinical_review_events BEGIN
+                    SELECT RAISE(ABORT, 'clinical review audit events cannot be deleted');
+                END
+                """
+            ),
+        ),
+    ),
 )
 
 

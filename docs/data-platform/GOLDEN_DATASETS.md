@@ -37,7 +37,8 @@ rows, credentials, or copied health information.
 | CGM/fingerstick reconciliation | Fixed nearest-CGM snapshots preserve both values; absolute/relative differences, pair timing, context strata, persistent-bias sample gates, and confirmed/CGM-only/meter-only low classifications remain deterministic. |
 | Activity/position analysis | Manual-first interval resolution retains inferred rows; glucose/morning slopes, clean bolus response, and fingerstick discrepancy effects preserve samples, interval missingness, confidence/replication status, noncausal language, Companion gates, and backup counts. |
 | Management burden | Visible weighted components, missing-source confidence penalties, rescue/device/overnight inference, append-only exclusions, outcome-versus-effort language, provider authorization, Evidence Bundle links, and backup counts remain deterministic. |
-| Specialist briefs | Every mode uses a bounded Evidence Bundle query; irrelevant/insurance PHI is omitted, source links remain openable, exploratory language stays qualified, hypotheses remain tentative, and provider access remains read-only. |
+| Specialist briefs | Every mode uses a bounded Evidence Bundle query; irrelevant/insurance PHI is omitted, source links remain openable, exploratory language stays qualified, hypotheses remain tentative, and provider source access remains read-only. |
+| Provider reviews | Provider actions preserve actor/target/time/prior/new state, source mutation stays forbidden, owner disputes retain clinician history, backups retain the audit ledger, and Companion promotes only non-disputed clinician confirmations. |
 
 `clinical_edge_cases.json` stores both the synthetic inputs and their expected
 outcomes. Tests must compare production parser, deduplication, analytics,
