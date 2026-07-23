@@ -204,6 +204,7 @@ export default function Report() {
   const i = report.insulin;
   const ir = report.insulin_response;
   const ap = report.activity_position;
+  const mb = report.management_burden;
   const c = report.cycle;
   const w = report.wellness;
   const labs = report.labs;
@@ -570,6 +571,44 @@ export default function Report() {
           )}
           {i.discrepancy_days > 0 && (
             <p className="text-[11px] text-amber-700">{i.discrepancy_days} day{i.discrepancy_days === 1 ? "" : "s"} had a difference greater than rounding between pump-reported and calculated TDD; both values remain separate.</p>
+          )}
+        </div>
+      )}
+
+      {mb?.summary && (
+        <div className="report-section report-card rounded-xl border border-border p-4 space-y-3">
+          <div>
+            <h2 className="font-semibold text-base">Outcomes &amp; management effort</h2>
+            <p className="text-[11px] text-muted-foreground">
+              Control and recorded effort are separate dimensions. Missing event sources reduce
+              confidence and are not counted as zero effort. These calculations are descriptive
+              and do not establish causation or recommend treatment.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Metric label="Time in range" value={mb.outcomes.time_in_range_pct != null ? `${mb.outcomes.time_in_range_pct}%` : "—"} sub="glucose outcome" />
+            <Metric label="Measured effort index" value={`${mb.summary.measured_effort_index}`} sub="visible weighted components" />
+            <Metric label="Active management" value={`${mb.summary.average_active_management_minutes_per_day}`} sub="recorded min/day" />
+            <Metric label="Effort confidence" value={`${Math.round(mb.analytics_confidence.confidence_score * 100)}%`} sub={mb.analytics_confidence.confidence_label} />
+          </div>
+          {mb.outcome_vs_effort.sustainability_review_flag && (
+            <p className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-950">
+              {mb.outcome_vs_effort.language}
+            </p>
+          )}
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
+            {mb.components.map((item) => (
+              <div key={item.category} className="rounded border border-border p-2">
+                <b className="capitalize">{item.category.replaceAll("_", " ")}</b>
+                <p>{item.events} events · {item.minutes} min</p>
+                <p className="text-muted-foreground">weight {item.weight} · {item.weighted_points} points</p>
+              </div>
+            ))}
+          </div>
+          {mb.source_coverage.missing.length > 0 && (
+            <p className="text-[11px] text-amber-700">
+              Unavailable event sources: {mb.source_coverage.missing.join(", ").replaceAll("_", " ")}.
+            </p>
           )}
         </div>
       )}

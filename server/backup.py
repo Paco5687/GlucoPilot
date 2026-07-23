@@ -420,6 +420,39 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                         ).fetchone()
                     ),
                 }
+            management_burden_ledger = None
+            management_burden_tables = (
+                "management_burden_events",
+                "management_burden_audit",
+            )
+            if all(
+                _table_exists(connection, table)
+                for table in management_burden_tables
+            ):
+                management_burden_ledger = {
+                    "events": dict(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*) AS count,
+                                   COALESCE(SUM(CASE WHEN origin_kind='observed' THEN 1 ELSE 0 END), 0)
+                                       AS observed_count,
+                                   COALESCE(SUM(CASE WHEN origin_kind='inferred' THEN 1 ELSE 0 END), 0)
+                                       AS inferred_count,
+                                   COALESCE(SUM(CASE WHEN origin_kind='manual' THEN 1 ELSE 0 END), 0)
+                                       AS manual_count,
+                                   COALESCE(SUM(CASE WHEN origin_kind='correction' THEN 1 ELSE 0 END), 0)
+                                       AS correction_count,
+                                   COALESCE(SUM(excluded), 0) AS excluded_count
+                            FROM management_burden_events
+                            """
+                        ).fetchone()
+                    ),
+                    "audit": dict(
+                        connection.execute(
+                            "SELECT COUNT(*) AS count FROM management_burden_audit"
+                        ).fetchone()
+                    ),
+                }
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:
@@ -460,6 +493,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
         metadata["episode_ledger"] = episode_ledger
     if activity_position_ledger is not None:
         metadata["activity_position_ledger"] = activity_position_ledger
+    if management_burden_ledger is not None:
+        metadata["management_burden_ledger"] = management_burden_ledger
     if include_references:
         metadata["record_references"] = references
     return metadata
@@ -678,6 +713,10 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
         keys.append("hypothesis_ledger")
     if "episode_ledger" in expected_database:
         keys.append("episode_ledger")
+    if "activity_position_ledger" in expected_database:
+        keys.append("activity_position_ledger")
+    if "management_burden_ledger" in expected_database:
+        keys.append("management_burden_ledger")
     for key in keys:
         if metadata[key] != expected_database.get(key):
             raise BackupError(f"restored database metadata mismatch: {key}")
@@ -721,6 +760,31 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
                 "activity_position_event_count": metadata[
                     "activity_position_ledger"
                 ]["events"]["count"],
+            }
+        )
+    if "management_burden_ledger" in expected_database:
+        burden_events = metadata["management_burden_ledger"]["events"]
+        verification.update(
+            {
+                "management_burden_event_count": burden_events["count"],
+                "observed_management_burden_event_count": burden_events[
+                    "observed_count"
+                ],
+                "inferred_management_burden_event_count": burden_events[
+                    "inferred_count"
+                ],
+                "manual_management_burden_event_count": burden_events[
+                    "manual_count"
+                ],
+                "management_burden_correction_count": burden_events[
+                    "correction_count"
+                ],
+                "excluded_management_burden_event_count": burden_events[
+                    "excluded_count"
+                ],
+                "management_burden_audit_count": metadata[
+                    "management_burden_ledger"
+                ]["audit"]["count"],
             }
         )
     if "canonical_time" in expected_database:

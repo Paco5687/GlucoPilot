@@ -178,7 +178,7 @@ def test_bundle_is_deterministic_complete_bounded_and_source_linked(evidence_api
 
     body = first.json()
     assert body["bundle_id"].startswith("urn:glucopilot:evidence-bundle:")
-    assert body["bundle_version"] == "2.3.0"
+    assert body["bundle_version"] == "2.4.0"
     assert body["data_version"]["input_hash"].startswith("sha256:")
     assert body["budget"]["returned_items"] <= body["budget"]["item_limit"] == 20
     assert body["evidence"]["direct_observations"]

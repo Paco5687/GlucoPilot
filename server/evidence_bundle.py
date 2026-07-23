@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import db
-from .activity_position import analysis_for_range
+from .activity_position import analysis_for_range as activity_position_analysis
 from .auth import require_login
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .contradictions import SqliteContradictionRepository
@@ -31,13 +31,14 @@ from .evidence_sets import (
 )
 from .lab_audit import qualification as lab_qualification
 from .insulin_response import build_response_events
+from .management_burden import analysis_for_range as management_burden_analysis
 from .relationship_api import _public_edge
 from .relationships import SqliteRelationshipRepository, relationship_reads_enabled
 from .repositories import LegacyRepositoryCatalog
 
 
 BUNDLE_GENERATOR = "evidence-bundle"
-BUNDLE_VERSION = "2.3.0"
+BUNDLE_VERSION = "2.4.0"
 MAX_ITEM_BUDGET = 250
 MAX_SOURCE_ROWS = 100_000
 MAX_CONTRADICTIONS = 1_000
@@ -128,6 +129,7 @@ _ENTITY_DOMAIN: dict[str, EvidenceDomain] = {
     "WeeklySummary": EvidenceDomain.ANALYTICS,
     "HealthSummary": EvidenceDomain.ANALYTICS,
     "ActivityPositionEffect": EvidenceDomain.ANALYTICS,
+    "ManagementBurdenSummary": EvidenceDomain.ANALYTICS,
 }
 
 _DOMAIN_TYPES: dict[EvidenceDomain, tuple[str, ...]] = {
@@ -668,7 +670,7 @@ def _load_activity_position_candidates(
         "WHERE type='table' AND name='activity_position_intervals'"
     ).fetchone():
         return [], {}
-    analysis = analysis_for_range(query.start, query.end, connection=connection)
+    analysis = activity_position_analysis(query.start, query.end, connection=connection)
     intent_tokens = set(_TOKEN.findall(query.question_intent.lower()))
     candidates = []
     candidate_domain = (
@@ -709,6 +711,103 @@ def _load_activity_position_candidates(
     return candidates, {
         "ActivityPositionInterval": analysis["counts"]["intervals"],
         "ActivityPositionEffect": len(candidates),
+    }
+
+
+def _load_management_burden_candidates(
+    connection: sqlite3.Connection,
+    query: EvidenceBundleQuery,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    if EvidenceDomain.ANALYTICS not in query.domains:
+        return [], {}
+    if not connection.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type='table' AND name='management_burden_events'"
+    ).fetchone():
+        return [], {}
+    analysis = management_burden_analysis(
+        query.start,
+        query.end,
+        connection=connection,
+    )
+    source_links = []
+    seen = set()
+    for event in analysis["events"]:
+        entity_type = str(event.get("source_entity_type") or "")
+        entity_id = str(event.get("source_entity_id") or "")
+        identity = (entity_type, entity_id)
+        if not entity_type or not entity_id or identity in seen:
+            continue
+        seen.add(identity)
+        if entity_type in _ENTITY_DOMAIN:
+            source_links.append(
+                {
+                    "kind": "normalized_entity",
+                    "entity_type": entity_type,
+                    "entity_id": entity_id,
+                    "href": _source_href(entity_type, entity_id),
+                }
+            )
+    identity = _checksum(
+        {
+            "algorithm_version": analysis["algorithm_version"],
+            "window": analysis["window"],
+            "summary": analysis["summary"],
+            "components": analysis["components"],
+            "outcomes": analysis["outcomes"],
+            "source_coverage": analysis["source_coverage"],
+            "event_ids": sorted(event["original_event_id"] for event in analysis["events"]),
+        }
+    ).removeprefix("sha256:")[:32]
+    data = _sanitize(
+        {
+            key: analysis[key]
+            for key in (
+                "algorithm_version",
+                "semantic_class",
+                "window",
+                "summary",
+                "components",
+                "source_coverage",
+                "outcomes",
+                "outcome_vs_effort",
+                "analytics_confidence",
+                "language",
+            )
+        }
+    )
+    confidence = analysis["analytics_confidence"]
+    candidate = {
+        "id": f"derived:ManagementBurdenSummary:{identity}",
+        "category": "derived_metric",
+        "domain": EvidenceDomain.ANALYTICS.value,
+        "entity_type": "ManagementBurdenSummary",
+        "entity_id": identity,
+        "observed_at": query.end.isoformat().replace("+00:00", "Z"),
+        "recorded_at": None,
+        "data": data,
+        "confidence": {
+            "label": confidence["confidence_label"],
+            "score": confidence["confidence_score"],
+            "method": analysis["algorithm_version"],
+            "discovery_status": confidence["discovery_status"],
+            "replication_status": confidence["replication"]["status"],
+            "limitations": [
+                analysis["language"]["observed_only"],
+                analysis["language"]["missing_sources"],
+                analysis["language"]["clinical"],
+            ],
+        },
+        "source_links": source_links,
+        "_relevance": _relevance(
+            set(_TOKEN.findall(query.question_intent.lower())),
+            "ManagementBurdenSummary",
+            data,
+        ),
+    }
+    return [candidate], {
+        "ManagementBurdenEvent": analysis["event_count"],
+        "ManagementBurdenSummary": 1,
     }
 
 
@@ -1145,6 +1244,11 @@ def build_bundle(query: EvidenceBundleQuery) -> dict[str, Any]:
         )
         entity_candidates.extend(activity_candidates)
         counts.update(activity_counts)
+        burden_candidates, burden_counts = _load_management_burden_candidates(
+            connection, query
+        )
+        entity_candidates.extend(burden_candidates)
+        counts.update(burden_counts)
         episode_candidates, episode_counts = _load_episode_candidates(connection, query)
         counts.update(episode_counts)
         anchors = sorted(entity_candidates, key=_candidate_key)[:query.item_budget]

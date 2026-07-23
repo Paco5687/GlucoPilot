@@ -70,6 +70,9 @@ typed repositories are introduced.
 - [Activity and position analysis](ACTIVITY_POSITION_ANALYSIS.md) — immutable
   manual/wearable intervals, manual-first corrections, event-time response
   comparisons, reproducibility metadata, and Companion qualification gates.
+- [Auditable management burden](MANAGEMENT_BURDEN.md) — immutable effort
+  events, append-only corrections, visible score components, missing-source
+  confidence, and noncausal outcome-versus-effort views.
 - [Evidence-grounded Companion](COMPANION_EVIDENCE.md) — question-ranked bounded
   retrieval, validated statement/source links, unverified-lab safeguards,
   local-model prompt limits, and evidence/opposition/change commands.

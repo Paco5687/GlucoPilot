@@ -62,6 +62,26 @@ const report = {
       analytics_confidence: { discovery_status: "emerging" },
     }],
   },
+  management_burden: {
+    summary: {
+      measured_effort_index: 70,
+      average_active_management_minutes_per_day: 48,
+    },
+    outcomes: { time_in_range_pct: 82 },
+    analytics_confidence: { confidence_score: 0.52, confidence_label: "low" },
+    source_coverage: { missing: ["ketones"] },
+    outcome_vs_effort: {
+      sustainability_review_flag: true,
+      language: "Target-range outcomes coexist with high measured effort; sustainability may deserve review.",
+    },
+    components: [{
+      category: "bolus",
+      events: 20,
+      minutes: 40,
+      weighted_points: 20,
+      weight: 1,
+    }],
+  },
   cycle: { available: false, quality: {} },
   wellness: { oura: null, fitbit: null, quality: {} },
   labs: { available: false, categories: {}, flagged: [], verification: {} },
@@ -176,5 +196,8 @@ describe("visit report contradictions", () => {
     expect(screen.getByText("Activity & position associations")).toBeTruthy();
     expect(screen.getByText(/14\/16 intervals measured/)).toBeTruthy();
     expect(screen.getByText(/do not establish that activity or position caused/i)).toBeTruthy();
+    expect(screen.getByText("Outcomes & management effort")).toBeTruthy();
+    expect(screen.getByText(/missing event sources reduce confidence/i)).toBeTruthy();
+    expect(screen.getByText(/sustainability may deserve review/i)).toBeTruthy();
   });
 });
