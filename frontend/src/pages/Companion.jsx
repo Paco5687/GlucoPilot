@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import ReactMarkdown from "react-markdown";
 import SafetyBanner from "../components/SafetyBanner";
+import CompanionEvidence from "@/components/evidence/CompanionEvidence";
 import { MessageCircleHeart, Send, Loader2, Brain, Plus, X, Zap, Sparkles, Trash2, Check, BookMarked } from "lucide-react";
 import { toast } from "sonner";
 
@@ -27,6 +28,7 @@ export default function Companion() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [searching, setSearching] = useState(false);
+  const [grounding, setGrounding] = useState(false);
   const [showMem, setShowMem] = useState(false);
   const [newMem, setNewMem] = useState("");
   const [tier, setTier] = useState(() => localStorage.getItem("companion_tier") || "default");
@@ -79,6 +81,14 @@ export default function Companion() {
       return copy;
     });
   }
+  function setLastEvidence(evidence, messageId) {
+    setMessages((m) => {
+      const copy = m.slice();
+      const last = copy[copy.length - 1];
+      copy[copy.length - 1] = { ...last, role: "assistant", evidence, id: messageId || last?.id };
+      return copy;
+    });
+  }
 
   function newChat() {
     if (busy) return;
@@ -105,6 +115,7 @@ export default function Companion() {
     setMessages((m) => [...m, { role: "user", content: msg }, { role: "assistant", content: "" }]);
     setBusy(true);
     setSearching(false);
+    setGrounding(false);
     let threadId = activeThread;
     try {
       const res = await fetch("/api/companion/stream", {
@@ -133,7 +144,9 @@ export default function Companion() {
           if (evt.thread) { threadId = evt.thread.id; setActiveThread(evt.thread.id); setThreads((t) => [evt.thread, ...t]); }
           if (evt.searching) setSearching(true);
           if (evt.sources) { setSearching(false); if (evt.sources.length) setLastSources(evt.sources); }
+          if (evt.grounding) setGrounding(true);
           if (evt.delta) { got = true; appendToLast(evt.delta); }
+          if (evt.evidence) { setGrounding(false); setLastEvidence(evt.evidence, evt.message_id); }
           if (evt.done) {
             if (evt.remembered?.length) {
               toast.success(`Remembered ${evt.remembered.length} new thing${evt.remembered.length === 1 ? "" : "s"}`);
@@ -155,6 +168,7 @@ export default function Companion() {
     }
     setBusy(false);
     setSearching(false);
+    setGrounding(false);
   }
 
   async function addMemory() {
@@ -255,6 +269,9 @@ export default function Companion() {
                         ))}
                       </div>
                     )}
+                    {m.role === "assistant" && m.evidence && (
+                      <CompanionEvidence messageId={m.id} evidence={m.evidence} />
+                    )}
                     {streaming && <span className="text-[11px] text-muted-foreground mt-1 px-1 inline-flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" /> responding…</span>}
                     {done && <span className="text-[11px] text-muted-foreground/70 mt-1 px-1 inline-flex items-center gap-1"><Check className="w-3 h-3" /> done</span>}
                   </div>
@@ -262,7 +279,7 @@ export default function Companion() {
               })
             )}
             {busy && !messages[messages.length - 1]?.content && (
-              <div className="flex justify-start"><div className="bg-muted rounded-2xl px-4 py-2.5 text-sm text-muted-foreground inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> {searching ? "searching trusted sources…" : tier === "quality" ? "thinking deeply… (slower model, worth the wait)" : "thinking…"}</div></div>
+              <div className="flex justify-start"><div className="bg-muted rounded-2xl px-4 py-2.5 text-sm text-muted-foreground inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> {searching ? "searching trusted sources…" : grounding ? "grounding in your evidence…" : tier === "quality" ? "thinking deeply… (slower model, worth the wait)" : "thinking…"}</div></div>
             )}
             <div ref={endRef} />
           </div>

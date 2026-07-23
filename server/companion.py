@@ -1,12 +1,9 @@
-"""Health Companion — a chat grounded in Emily's full health data, with a
-persistent memory of her lived experience.
+"""Health Companion grounded in bounded Evidence Bundles and lived-experience memory.
 
-Each turn assembles a compact health dossier (glucose, labs w/ dates, cycle,
-wearables, insulin, imaging, profile) + everything the companion remembers about
-her + the recent conversation, and answers with her real data as evidence. After
-each exchange it extracts durable new facts she shared (symptoms, life events,
-how she's feeling, goals) and saves them as HealthMemory — so it keeps learning
-what she's going through and can compare it against her records over time.
+Each turn builds a content-addressed, question-ranked Evidence Bundle portfolio,
+adds only relevant deterministic metrics and bounded recent conversation, and
+requires personal-data statements to cite selected evidence. Durable facts the
+person shares remain separate HealthMemory assertions.
 
 Not a doctor: it offers observations and questions for her care team, never
 diagnoses or dosing.
@@ -23,7 +20,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
-from . import health_summary, insulin, research
+from . import companion_evidence, insulin, research
 from .auth import require_admin
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value
@@ -37,8 +34,10 @@ log = logging.getLogger("glucopilot.companion")
 router = APIRouter(dependencies=[Depends(require_admin)])
 
 MAX_MEMORIES = 150
+PROMPT_MEMORY_LIMIT = 40
 HISTORY_TURNS = 8  # exchanges of prior context sent each turn
 REPLY_MAX_TOKENS = 1200  # enough for a substantive answer without truncating mid-thought
+MAX_REPLY_PROMPT_CHARS = 96_000
 
 # The small model likes to sign replies like a letter ("— Emily's Health Companion").
 # Stop generation before a dash-led sign-off line (em/en dash only — hyphens are
@@ -58,12 +57,15 @@ SYSTEM = (
     "Do NOT funnel every conversation back to glucose or diabetes — follow the evidence and her actual question "
     "wherever they lead, and focus on the parts of her data that are relevant to what she asked.\n"
     "Ground factual claims in her real data: cite specific numbers, dates, and trends rather than generalities, and "
-    "say plainly when the data is old or missing. When she shares how she's feeling or what's happening in her life, "
-    "take it seriously and connect it to what you see.\n"
-    "When the dossier contains an unresolved contradiction, show both sides and call it unresolved. Never choose a "
+    "say plainly when the data is old or missing. Every sentence that makes a personal-data observation, calculation, "
+    "correlation, or hypothesis MUST end with one or more exact [E#] aliases copied from the supplied evidence items. "
+    "Never invent or alter an evidence alias. Cite lived-experience memory only with its exact [M#] alias, and keep "
+    "general medical information separate from personal inference, using [G#] only for supplied trusted references. "
+    "When she shares how she's feeling or what's happening in her life, take it seriously and connect it to what you see.\n"
+    "When the evidence context contains an unresolved contradiction, show both sides and call it unresolved. Never choose a "
     "side silently, and never use a blocking contradiction as the basis for a definitive claim.\n"
     "SHARE YOUR ACTUAL ANALYSIS. Connect the dots, name the patterns you see, and give your real interpretation of "
-    "what they could mean — including which conditions, mechanisms, or explanations the data is consistent with, and "
+    "what they could mean — including which conditions, mechanisms, or explanations the evidence is consistent with, and "
     "how her medications or cycle might be driving what she's feeling. Offer these as hypotheses to explore, not "
     "verdicts. Do NOT hide behind vague hedging, boilerplate disclaimers, or refuse to weigh in — Emily wants your "
     "honest read, and withholding a useful insight helps no one.\n"
@@ -72,7 +74,8 @@ SYSTEM = (
     "dose of a medication (you can absolutely discuss how her meds may be affecting her). Be concise and human — a "
     "few focused paragraphs, not an exhaustive report, and never repeat yourself. If you truly lack the data to "
     "answer, say so plainly. Write as a natural chat message: do NOT sign off, add a signature, or close with a line "
-    "like '— Emily's Health Companion'."
+    "like '— Emily's Health Companion'. Machine-extracted lab evidence with clinically_verified=false must always be "
+    "called unverified; parser confidence is never clinical verification."
 )
 
 MEMORY_SCHEMA = {
@@ -232,44 +235,15 @@ def _ensure_thread_migration() -> None:
         work.commit()
 
 
-def _dossier() -> dict[str, Any]:
-    """Compact, current health picture for grounding (kept small for the local
-    model's context window)."""
-    ctx = health_summary._build_context()
+def _deterministic_metrics(scope_names: set[str]) -> dict[str, Any]:
+    """Keep calculations separate from the selected source-evidence portfolio."""
+    if "metabolic" not in scope_names:
+        return {}
     ins = insulin.estimate()
     absn = insulin.absorption()
     absorption_for_ai = absn.get("quality", {}).get("ai_eligible")
-    recent_docs = [
-        {
-            "title": r.get("title"),
-            "date": r.get("record_date"),
-            "verification": "machine_extracted_unverified",
-        }
-        for r in _entity("MedicalRecord").query(
-            {"owner_email": OWNER_EMAIL}, "-created_date", 500
-        )
-        if r.get("status") == "processed"
-    ]
-    recent_docs.sort(key=lambda d: str(d.get("date") or ""), reverse=True)
-    # Ordered whole-person first (conditions, meds, labs, cycle, wearables),
-    # with the diabetes-specific data last so the model doesn't tunnel on it.
     return {
-        "diagnosed_conditions": ctx.get("conditions"),
-        "medications_and_supplements": ctx.get("medications"),
-        "allergies": ctx.get("allergies"),
-        "profile": ctx.get("profile"),
-        "health_history": ctx.get("health_history"),
-        "symptom_journal": ctx.get("symptom_journal"),
-        "labs_out_of_range": (ctx.get("labs_out_of_range") or [])[:20],
-        "lab_trends": (ctx.get("lab_trends") or [])[:12],
-        "lab_verification_note": ctx.get("lab_verification_note"),
-        "menstrual_cycle": ctx.get("cycle"),
-        "wearables_recent_vs_prior": ctx.get("wearables"),
-        "data_quality": ctx.get("data_quality"),
-        "unresolved_contradictions": ctx.get("unresolved_contradictions"),
-        "imaging": ctx.get("imaging"),
-        "recent_documents": recent_docs[:12],
-        "glucose": _glucose_detail() or ctx.get("glucose"),
+        "glucose": _glucose_detail(),
         "insulin": ({
             "resistance_estimate": ins.get("category"), "tdd_per_kg": ins.get("tdd_per_kg"),
             "complete_data_through": ins.get("data_through"), "current": ins.get("current"),
@@ -288,31 +262,99 @@ def _dossier() -> dict[str, Any]:
     }
 
 
-def _reply_prompt(user_msg: str, dossier: dict, memories: list, history: list, sources: list | None = None) -> str:
-    mem_txt = "\n".join(f"- [{m.get('category', 'note')}] {m.get('content')}" for m in memories) or "(nothing remembered yet)"
-    hist_txt = "\n".join(f"{'Emily' if m['role'] == 'user' else 'Companion'}: {m['content']}" for m in history) or "(start of conversation)"
+def _reply_prompt(
+    user_msg: str,
+    evidence_context: dict,
+    memories: list,
+    history: list,
+    sources: list | None = None,
+    metrics: dict | None = None,
+) -> str:
+    memory_items = companion_evidence.memory_aliases(memories[:PROMPT_MEMORY_LIMIT])
+    mem_txt = "\n".join(
+        f"[{item['alias']}] [{item['category']}] {item['content'][:300]}"
+        for item in memory_items
+    ) or "(nothing remembered yet)"
+    hist_txt = "\n".join(
+        f"{'Emily' if message['role'] == 'user' else 'Companion'}: "
+        f"{str(message.get('content') or '')[:800]}"
+        for message in history[-HISTORY_TURNS * 2:]
+    ) or "(start of conversation)"
     src_txt = ""
     if sources:
-        blocks = [f"[{i}] {s.get('title')} ({s.get('source')}) — {s.get('url')}\n{s.get('snippet')}" for i, s in enumerate(sources, 1)]
+        blocks = [
+            f"[{item['alias']}] {item['title']} ({item['source']}) — {item['url']}\n"
+            f"{item['snippet']}"
+            for item in companion_evidence.external_aliases(sources)
+        ]
         src_txt = (
-            "\n\n=== TRUSTED MEDICAL SOURCES (authoritative reference — cite inline as [1], [2]) ===\n"
+            "\n\n=== TRUSTED GENERAL MEDICAL SOURCES ===\n"
             + "\n\n".join(blocks)
-            + "\n\nFor general medical facts, rely on these sources and cite them inline like [1]. If they don't "
-              "answer something, say so plainly rather than guessing — do NOT invent specifics. Her personal numbers "
-              "still come from her health data above."
+            + "\n\nFor general medical facts, cite only these aliases such as [G1]. If they do not answer something, "
+              "say so rather than guessing. Never use a general source as evidence for a personal-data claim."
         )
-    return (
+    prompt = (
         f"{SYSTEM}\n\n"
-        f"=== EMILY'S HEALTH DATA (evidence to ground your answers) ===\n{json.dumps(dossier, indent=1, default=str)}\n\n"
+        "=== BOUNDED PERSONAL EVIDENCE ===\n"
+        f"{companion_evidence.prompt_context(evidence_context)}\n\n"
+        "=== DETERMINISTIC METRICS (cite the Evidence Bundle sources that support any personal statement) ===\n"
+        f"{json.dumps(metrics or {}, indent=1, default=str)}\n\n"
         f"=== WHAT YOU REMEMBER ABOUT HER LIVED EXPERIENCE ===\n{mem_txt}\n\n"
         f"=== RECENT CONVERSATION ===\n{hist_txt}"
         f"{src_txt}\n\n"
         f"Emily: {user_msg}\nCompanion:"
     )
+    if len(prompt) > MAX_REPLY_PROMPT_CHARS:
+        raise companion_evidence.CompanionEvidenceError(
+            "bounded Companion prompt exceeds the local-model context limit"
+        )
+    return prompt
 
 
-async def _reply(user_msg: str, dossier: dict, memories: list, history: list) -> str:
-    return _strip_signoff(await invoke_llm(_reply_prompt(user_msg, dossier, memories, history), max_tokens=REPLY_MAX_TOKENS))
+async def _reply(
+    user_msg: str,
+    evidence_context: dict,
+    memories: list,
+    history: list,
+    *,
+    metrics: dict | None = None,
+    sources: list | None = None,
+    tier: str = "default",
+) -> str:
+    return _strip_signoff(await invoke_llm(
+        _reply_prompt(
+            user_msg,
+            evidence_context,
+            memories,
+            history,
+            sources,
+            metrics,
+        ),
+        max_tokens=REPLY_MAX_TOKENS,
+        tier=tier,
+    ))
+
+
+def _grounding(
+    user_msg: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    public, reasoning = companion_evidence.build_context(user_msg)
+    scope_names = {item["scope"] for item in public.get("scopes", [])}
+    return public, reasoning, _deterministic_metrics(scope_names)
+
+
+def _companion_message(message_id: str | None) -> dict[str, Any] | None:
+    if not message_id:
+        return None
+    message = _entity("ChatMessage").get(message_id)
+    if (
+        not message
+        or message.get("owner_email") != OWNER_EMAIL
+        or message.get("role") != "assistant"
+        or not isinstance(message.get("evidence"), dict)
+    ):
+        return None
+    return message
 
 
 def _grounding_enabled() -> bool:
@@ -432,6 +474,39 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
             _entity("HealthMemory").delete(body["id"])
         return {"ok": True}
 
+    if action == "evidence_command":
+        message = _companion_message(body.get("message_id"))
+        if not message:
+            return {"error": "Companion evidence not found.", "_status": 404}
+        evidence = message["evidence"]
+        command = str(body.get("command") or "show").strip().lower()
+        if command == "show":
+            return {
+                "command": "show",
+                "contract_version": evidence.get("contract_version"),
+                "bundle": evidence.get("bundle"),
+                "statements": evidence.get("statements") or [],
+                "evidence_items": evidence.get("evidence_items") or [],
+                "external_sources": evidence.get("external_sources") or [],
+                "missing_data_caveats": evidence.get("missing_data_caveats") or [],
+                "budget": evidence.get("budget") or {},
+            }
+        if command == "opposing":
+            return {
+                "command": "opposing",
+                "opposing_evidence": evidence.get("opposing_evidence") or [],
+                "contradictions": evidence.get("contradictions") or [],
+            }
+        if command == "changes":
+            current, _reasoning = companion_evidence.build_context(
+                evidence.get("question_intent") or "whole person health context"
+            )
+            return {
+                "command": "changes",
+                **companion_evidence.compare_contexts(evidence, current),
+            }
+        return {"error": "Unknown evidence command.", "_status": 400}
+
     if action == "send":  # non-streaming fallback (frontend uses /api/companion/stream)
         text = (body.get("message") or "").strip()
         if not text:
@@ -448,17 +523,32 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
         )
         history = _thread_history(tid)
         memories = _memories()
+        prompt_memories = memories[:PROMPT_MEMORY_LIMIT]
         try:
-            reply = await _reply(text, _dossier(), memories, history[:-1])
+            public_evidence, reasoning, metrics = _grounding(text)
+            raw_reply = await _reply(
+                text,
+                reasoning,
+                prompt_memories,
+                history[:-1],
+                metrics=metrics,
+            )
+            reply, evidence = companion_evidence.finalize_reply(
+                raw_reply,
+                public_evidence,
+                prompt_memories,
+                [],
+            )
         except Exception as err:
             log.exception("companion reply failed")
             return {"error": f"Companion is unavailable: {err}", "_status": 502}
         reply = (reply or "").strip()
         with unit_of_work() as work:
-            work.repositories.entity("ChatMessage").create(
+            message = work.repositories.entity("ChatMessage").create(
                 {
                     "role": "assistant",
                     "content": reply,
+                    "evidence": evidence,
                     "thread_id": tid,
                     "created_date": _now(),
                     "owner_email": OWNER_EMAIL,
@@ -469,7 +559,13 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
             )
             work.commit()
         remembered = await _store_new_memories(text, reply, memories)
-        return {"reply": reply, "remembered": remembered, "thread_id": tid}
+        return {
+            "reply": reply,
+            "evidence": evidence,
+            "message_id": message["id"],
+            "remembered": remembered,
+            "thread_id": tid,
+        }
 
     return {"error": "Unknown action", "_status": 400}
 
@@ -524,6 +620,7 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
     )
     history = _thread_history(thread_id)
     memories = _memories()
+    prompt_memories = memories[:PROMPT_MEMORY_LIMIT]
 
     # Optional grounding: search trusted medical sources and let the model cite
     # them, instead of recalling facts from memory (which it hallucinates).
@@ -538,15 +635,27 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
                 log.warning("companion grounding failed", exc_info=True)
         yield json.dumps({"sources": sources}) + "\n"
 
-    prompt = _reply_prompt(text, _dossier(), memories, history[:-1], sources)
-
+    yield json.dumps({"grounding": True}) + "\n"
+    try:
+        public_evidence, reasoning, metrics = _grounding(text)
+        prompt = _reply_prompt(
+            text,
+            reasoning,
+            prompt_memories,
+            history[:-1],
+            sources,
+            metrics,
+        )
+    except Exception as err:
+        log.exception("companion evidence grounding failed")
+        yield json.dumps({"error": f"Companion evidence is unavailable: {err}"}) + "\n"
+        return
     parts: list[str] = []
     try:
         async for chunk in invoke_llm_stream(prompt, max_tokens=REPLY_MAX_TOKENS, tier=tier, stop=SIGNOFF_STOP):
             if not chunk:
                 continue
             parts.append(chunk)
-            yield json.dumps({"delta": chunk}) + "\n"
     except Exception as err:
         log.exception("companion stream failed")
         yield json.dumps({"error": f"Companion is unavailable: {err}"}) + "\n"
@@ -556,13 +665,23 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
     if not reply:
         yield json.dumps({"error": "Companion returned an empty response."}) + "\n"
         return
+    reply, evidence = companion_evidence.finalize_reply(
+        reply,
+        public_evidence,
+        prompt_memories,
+        sources,
+    )
+    if not reply:
+        yield json.dumps({"error": "Companion returned no supported response."}) + "\n"
+        return
     with unit_of_work() as work:
-        work.repositories.entity("ChatMessage").create(
+        message = work.repositories.entity("ChatMessage").create(
             {
                 "role": "assistant",
                 "content": reply,
                 "thread_id": thread_id,
                 "sources": sources or None,
+                "evidence": evidence,
                 "created_date": _now(),
                 "owner_email": OWNER_EMAIL,
             }
@@ -571,6 +690,12 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
             thread_id, {"updated_date": _now()}
         )
         work.commit()
+    for offset in range(0, len(reply), 240):
+        yield json.dumps({"delta": reply[offset:offset + 240]}) + "\n"
+    yield json.dumps({
+        "evidence": evidence,
+        "message_id": message["id"],
+    }) + "\n"
     remembered = await _store_new_memories(text, reply, memories)
     yield json.dumps({"done": True, "remembered": remembered, "thread_id": thread_id}) + "\n"
 

@@ -429,6 +429,8 @@ class EvidenceCompatibilityRepository:
         self.typed = typed
 
     def for_claim(self, owner_email: str, claim_type: str, claim_id: str):
+        if claim_type not in {"Pattern", "Insight"}:
+            return self.legacy.for_claim(owner_email, claim_type, claim_id)
         if evidence_set_reads_enabled():
             return self.typed.for_claim(owner_email, claim_type, claim_id)
         return self.legacy.for_claim(owner_email, claim_type, claim_id)

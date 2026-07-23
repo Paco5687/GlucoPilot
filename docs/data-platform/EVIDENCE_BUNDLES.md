@@ -134,6 +134,17 @@ Deterministic glucose, insulin, cycle, wearable, and lab-count metrics remain
 separate domain calculations; the LLM neither computes nor overwrites them.
 See [Shared clinical evidence](SHARED_CLINICAL_EVIDENCE.md).
 
+## Companion consumer
+
+G9 replaces the Companion's broad dossier-only grounding with a
+question-ranked portfolio of five bounded Evidence Bundle scopes. Personal
+statements may cite only the selected `E#` aliases; invented aliases are
+removed, uncited personal claims fail closed, and unverified lab citations are
+qualified before display or persistence. The assistant message stores exact
+item/source links and exposes evidence, opposing-evidence, and content-hash
+change commands. General web references and user memories remain separately
+typed. See [Evidence-grounded Companion](COMPANION_EVIDENCE.md).
+
 ## Rollout behavior
 
 G5 adds no migration and enables no write path. Relationship items follow the

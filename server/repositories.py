@@ -415,7 +415,6 @@ class LegacyEvidenceRepository:
     _FIELDS = {
         "Pattern": ("supporting_evidence", "legacy_inline"),
         "Insight": ("supporting_data", "legacy_inline"),
-        "ChatMessage": ("sources", "external_source"),
     }
 
     def __init__(self, catalog: LegacyRepositoryCatalog) -> None:
@@ -427,6 +426,34 @@ class LegacyEvidenceRepository:
         claim_type: str,
         claim_id: str,
     ) -> list[EvidenceReference]:
+        if claim_type == "ChatMessage":
+            claim = self._catalog.entity(claim_type).get(claim_id)
+            if not claim or claim.get("owner_email") != owner_email:
+                return []
+            references = [
+                EvidenceReference(
+                    claim_type,
+                    claim_id,
+                    "external_source",
+                    f"ChatMessage.sources[{index}]",
+                    item,
+                )
+                for index, item in enumerate(claim.get("sources") or [])
+            ]
+            evidence = claim.get("evidence")
+            if isinstance(evidence, dict):
+                references.extend(
+                    EvidenceReference(
+                        claim_type,
+                        claim_id,
+                        "evidence_bundle_claim",
+                        f"ChatMessage.evidence.statements[{index}]",
+                        statement,
+                    )
+                    for index, statement in enumerate(evidence.get("statements") or [])
+                    if statement.get("personal_data_claim")
+                )
+            return references
         mapping = self._FIELDS.get(claim_type)
         if not mapping:
             return []
