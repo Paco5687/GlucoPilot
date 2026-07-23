@@ -196,11 +196,16 @@ def _relevant_hypotheses(config: dict[str, Any]) -> list[dict[str, Any]]:
     return output
 
 
-def build_brief(mode: str, days: int) -> dict[str, Any]:
+def build_brief(
+    mode: str,
+    days: int,
+    *,
+    end: datetime | None = None,
+) -> dict[str, Any]:
     if mode not in MODE_CONFIG:
         mode = "clinician"
     config = MODE_CONFIG[mode]
-    end = datetime.now(timezone.utc)
+    end = end or datetime.now(timezone.utc)
     start = end - timedelta(days=max(7, min(int(days), 365)))
     bundle = build_bundle(EvidenceBundleQuery(
         start=start,
