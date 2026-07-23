@@ -13,7 +13,14 @@ from itsdangerous import TimestampSigner
 
 from server import db, insights, patterns
 from server.backup import create_verified_backup, verify_backup
-from server.evidence_bundle import claim_detail, window_detail
+from server.evidence_bundle import (
+    EvidenceBundleQuery,
+    EvidenceDomain,
+    build_bundle,
+    claim_detail,
+    clear_bundle_cache,
+    window_detail,
+)
 from server.migrations import run_migrations
 
 
@@ -114,6 +121,20 @@ def test_pattern_generations_preserve_lineage_and_open_exact_sources(
     assert detail["evidence"]["supporting"]
     assert detail["evidence"]["opposing"] == []
     assert detail["evidence"]["limiting"]
+    clear_bundle_cache()
+    bundle = build_bundle(EvidenceBundleQuery(
+        start=datetime.now(timezone.utc) - timedelta(days=30),
+        end=datetime.now(timezone.utc) + timedelta(days=1),
+        domains=(EvidenceDomain.ANALYTICS,),
+        question_intent="current glucose pattern claim evidence",
+        item_budget=50,
+    ))
+    bundle_claim = next(
+        item for item in bundle["evidence"]["derived_metrics"]
+        if item["entity_id"] == current[0]["id"]
+    )["claim"]
+    assert bundle_claim["href"] == f"/api/evidence/claims/Pattern/{current[0]['id']}"
+    assert bundle_claim["assertion_status"] == "provisional"
     source_window = detail["evidence"]["supporting"][0]
     drilled = window_detail(source_window["window_id"], limit=3)
     assert drilled["returned"] == 3

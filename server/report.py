@@ -20,8 +20,9 @@ from pydantic import BaseModel
 from .analytics_confidence import phase_provenance
 from .auth import require_login
 from .canonical_time import temporal_metadata
+from .clinical_evidence import build_context as build_clinical_evidence
+from .clinical_evidence import link_generated_narrative
 from .config import APP_TIMEZONE, DEMO_MODE, OWNER_EMAIL
-from .contradictions import contradiction_context
 from .db import config_value
 from .data_quality import assess_cgm, assess_daily, assess_nutrition, assess_pump_tdd, cgm_points
 from .insulin_reconciliation import reconcile_treatments
@@ -450,7 +451,7 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
         "cycle": payload["cycle"].get("quality"),
         "wearables": payload["wellness"].get("quality"),
     }
-    summary = {
+    deterministic_metrics = {
         "period_days": payload["days"],
         "glucose": {k: g.get(k) for k in ("avg", "gmi", "cv", "tir", "tbr70", "tar180")}
         if g.get("available") and g.get("quality", {}).get("ai_eligible") else None,
@@ -464,40 +465,29 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
         if payload["cycle"].get("available") and payload["cycle"].get("quality", {}).get("ai_eligible")
         else None,
         "wellness": wellness_for_ai,
-        "flagged_labs": [
-            {
-                "test": f["test_name"], "value": f["value"], "unit": f["unit"],
-                "flag": f["flag"], "verification": f["verification"],
-            }
-            for f in payload["labs"].get("flagged", [])
-        ],
-        "lab_verification": payload["labs"].get("verification"),
-        "symptom_journal": payload.get("symptoms"),
-        "health_history": payload.get("history"),
         "data_quality": quality,
-        "unresolved_contradictions": [
-            {
-                "severity": item["severity"],
-                "domain": item["domain"],
-                "explanation": item["explanation"],
-                "left": item["left"],
-                "right": item["right"],
-                "detection_state": item["detection_state"],
-            }
-            for item in payload.get("contradictions", {}).get("unresolved", [])
-        ],
+    }
+    evidence_reasoning = payload.get("_evidence_reasoning") or {
+        "bundle_id": None,
+        "items": [],
+        "contradictions": [],
+        "missing_data_caveats": [],
+    }
+    summary = {
+        "deterministic_metrics": deterministic_metrics,
+        "shared_evidence_context": evidence_reasoning,
     }
     # Fast default model: the quality (27B) model is currently GPU-starved and
     # takes minutes for 1500 tokens, which hangs the report. The fast model
     # produces a solid structured narrative in seconds.
     try:
-        return await invoke_llm(
+        generated = await invoke_llm(
             f"""You are a diabetes data analyst preparing a summary for a Type 1 diabetes patient to bring to her endocrinologist. You are NOT a physician; this is an observational data summary to support the clinical conversation, never a diagnosis or treatment recommendation.
 
 Data for the last {payload['days']} days:
 {summary}
 
-Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. Explicitly call machine-extracted labs "unverified" unless their verification status is approved or edited; never imply that parser confidence is clinical verification. For every unresolved contradiction, present both sides and say it remains unresolved; never silently choose one value, especially for a blocking contradiction. If a health_history is present, use it as background (diagnoses, exposures, injuries, hospital visits, and the patient's own narrative) to frame what you observe. If a symptom_journal is present, summarize the symptoms she has actually reported (how often and how severe) and note any that coincide with the data. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Distinguish explicitly recorded/imported cycle phase days from algorithm-inferred days. Scale every analytics claim to its supplied discovery status and numerical confidence metadata; exploratory, emerging, or not-reproduced results cannot be presented as definitive. Keep it factual and readable.""",
+Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. Explicitly call machine-extracted labs "unverified" unless their verification status is approved or edited; never imply that parser confidence is clinical verification. For every unresolved contradiction, present both sides and say it remains unresolved; never silently choose one value, especially for a blocking contradiction. If health-history or symptom evidence is present, use it as context without treating it as a clinician-confirmed fact. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Distinguish explicitly recorded/imported cycle phase days from algorithm-inferred days. Scale every analytics claim to its supplied discovery status and numerical confidence metadata; exploratory, emerging, or not-reproduced results cannot be presented as definitive. Copy the IDs of every Evidence Bundle item used into evidence_item_ids; never invent an ID. Keep it factual and readable.""",
             response_json_schema={
                 "type": "object",
                 "properties": {
@@ -510,11 +500,17 @@ Write a concise, professional "quarter in review" for the care team. Reference t
                         "items": {"type": "string"},
                         "description": "3-5 specific things worth discussing with the care team",
                     },
+                    "evidence_item_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "IDs copied only from shared_evidence_context.items that support the generated narrative",
+                    },
                 },
-                "required": ["headline", "glucose_summary", "discussion_points"],
+                "required": ["headline", "glucose_summary", "discussion_points", "evidence_item_ids"],
             },
             max_tokens=1500,
         )
+        return link_generated_narrative(generated, evidence_reasoning)
     except Exception:
         return None
 
@@ -536,6 +532,18 @@ def _demo_narrative_allowed(payload: dict[str, Any]) -> bool:
     )
 
 
+def _evidence_quality(payload: dict[str, Any]) -> dict[str, Any]:
+    wellness_quality = payload["wellness"].get("quality", {})
+    return {
+        "cgm": payload["glucose"].get("quality"),
+        "pump_tdd": payload["insulin"].get("quality"),
+        "nutrition": payload["insulin"].get("nutrition_quality"),
+        "cycle": payload["cycle"].get("quality"),
+        "oura": wellness_quality.get("oura"),
+        "fitbit": wellness_quality.get("fitbit"),
+    }
+
+
 @router.post("/api/report/visit")
 async def visit_report(body: ReportBody):
     days = max(7, min(body.days, 365))
@@ -548,7 +556,6 @@ async def visit_report(body: ReportBody):
     cycle = _cycle(tz, since_iso, glucose)
     wellness = _wellness(days)
     labs = _labs()
-    contradictions = contradiction_context(refresh=True, limit=100)
 
     from . import conditions, history, insurance, meds, symptoms
 
@@ -567,13 +574,31 @@ async def visit_report(body: ReportBody):
         "cycle": cycle,
         "wellness": wellness,
         "labs": labs,
-        "contradictions": contradictions,
         "insurance": insurance.report_block(),
+    }
+    evidence_context, evidence_reasoning = build_clinical_evidence(
+        days,
+        data_quality=_evidence_quality(payload),
+        as_of=datetime.now(timezone.utc).date(),
+    )
+    payload["evidence_context"] = evidence_context
+    payload["_evidence_reasoning"] = evidence_reasoning
+    unresolved = evidence_context["contradictions"]
+    payload["contradictions"] = {
+        "unresolved": unresolved,
+        "counts": {
+            "unresolved": len(unresolved),
+            "blocking": sum(item["severity"] == "blocking" for item in unresolved),
+        },
     }
     payload["narrative"] = await _narrative(payload)
     if payload["narrative"] is None and DEMO_MODE and _demo_narrative_allowed(payload):
         # Self-contained demo: show a representative narrative even without an
         # LLM configured, but only when its source domains pass the same quality
         # contract as a generated narrative.
-        payload["narrative"] = DEMO_NARRATIVE
+        payload["narrative"] = link_generated_narrative(
+            {**DEMO_NARRATIVE, "evidence_item_ids": []},
+            evidence_reasoning,
+        )
+    payload.pop("_evidence_reasoning", None)
     return payload

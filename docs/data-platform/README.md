@@ -58,6 +58,9 @@ typed repositories are introduced.
 - [Evidence-backed claims](EVIDENCE_BACKED_CLAIMS.md) — immutable Pattern and
   Insight generations, supersession lineage, role-preserving EvidenceSet links,
   and authenticated observation drill-down.
+- [Shared clinical evidence](SHARED_CLINICAL_EVIDENCE.md) — the common Overview
+  and Visit Report Evidence Bundle adapter, safety blocks, narrative citations,
+  and deterministic-metric boundary.
 
 ## Reproduce the structural audit
 

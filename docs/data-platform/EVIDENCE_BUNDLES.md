@@ -1,6 +1,6 @@
 # Deterministic Evidence Bundle API
 
-Status: additive, authenticated, read-only
+Status: v2, additive, authenticated, read-only
 
 Implementation: `server/evidence_bundle.py`
 
@@ -103,6 +103,36 @@ role-grouped support/limitations, and supersession history only on demand.
 Window links page through exact checksum-validated observations at
 `GET /api/evidence/windows/{window_id}`; each observation links back to the
 redacted normalized-source endpoint above.
+
+Evidence Bundle 2.0 adds two safety semantics used by G8 consumers:
+
+- a machine parser score can no longer label an unverified `LabResult` as
+  clinically high-confidence; lab confidence includes verification status,
+  validation status, an explicit `clinically_verified` boolean, and the
+  unverified limitation; and
+- selected governed Pattern/Insight items carry a claim-version block plus an
+  authenticated claim-evidence link. Legacy rows remain visible as derived
+  metrics but are not presented as governed evidence-backed claims.
+
+## Shared Overview and Visit Report consumer
+
+`server/clinical_evidence.py` is the common G8 adapter over this API. Overview
+generation and the Visit Report use the same calendar-bounded, content-addressed
+portfolio of three scoped bundles: governed claims, clinical context, and
+labs/records. Their declared budgets total 250, preventing a large lab dossier
+from crowding clinical history or claims out of the shared context. The adapter
+returns explicit data-quality, data-through, contradiction, source,
+missing-data, and governed-claim blocks. The bounded sanitized item list is the
+only non-metric dossier supplied to the LLM. Prior generated summaries are
+excluded from that list so a narrative cannot become evidence for its own
+replacement.
+
+Generated narratives may cite only item IDs present in that bundle. Unknown or
+invented IDs are removed server-side before persistence or response, and valid
+IDs resolve only to links already attached to the selected evidence item.
+Deterministic glucose, insulin, cycle, wearable, and lab-count metrics remain
+separate domain calculations; the LLM neither computes nor overwrites them.
+See [Shared clinical evidence](SHARED_CLINICAL_EVIDENCE.md).
 
 ## Rollout behavior
 
