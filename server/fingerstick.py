@@ -1,11 +1,7 @@
-"""Fingerstick (BGM) readings + CGM-vs-fingerstick discrepancy tracking.
+"""Fingerstick readings and time-bounded CGM comparison capture.
 
-A finger-prick is the ground-truth glucose at a moment; the Dexcom reads
-interstitial fluid and can differ substantially (lag, compression, calibration) —
-Emily has seen gaps up to ~60 mg/dL. We store each fingerstick, match it to the
-CGM value at that time, and record the delta so the discrepancy itself becomes a
-measurable signal. On the chart these show as manual 'correction points' — they
-do NOT replace or override the CGM trace.
+The sources remain separate observations. A fixed CGM snapshot is attached to a
+new fingerstick when one is available nearby; it never replaces the CGM trace.
 """
 
 import logging
@@ -13,6 +9,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .config import OWNER_EMAIL
+from .glucose_reconciliation import (
+    ReconciliationInputError,
+    capture_context,
+    pair_fields,
+    summarize,
+)
 from .repositories import get_repositories
 
 log = logging.getLogger("glucopilot.fingerstick")
@@ -32,10 +34,10 @@ def _parse(ts: str) -> datetime | None:
         return None
 
 
-def _nearest_cgm(ts_iso: str) -> tuple[float | None, str | None, str | None, str | None]:
+def _nearest_cgm(ts_iso: str) -> dict[str, Any] | None:
     ts = _parse(ts_iso)
     if ts is None:
-        return None, None, None, None
+        return None
     lo = (ts - timedelta(minutes=MATCH_WINDOW_MIN)).isoformat(timespec="seconds").replace("+00:00", "Z")
     hi = (ts + timedelta(minutes=MATCH_WINDOW_MIN)).isoformat(timespec="seconds").replace("+00:00", "Z")
     rows = get_repositories().glucose.query(
@@ -52,8 +54,14 @@ def _nearest_cgm(ts_iso: str) -> tuple[float | None, str | None, str | None, str
         if best_diff is None or diff < best_diff:
             best, best_diff = r, diff
     if best is None:
-        return None, None, None, None
-    return float(best["value"]), best.get("timestamp"), best.get("source"), best.get("id")
+        return None
+    return {
+        "value": float(best["value"]),
+        "timestamp": best.get("timestamp"),
+        "source": best.get("source"),
+        "id": best.get("id"),
+        "trend": best.get("trend"),
+    }
 
 
 async def handle(body: dict[str, Any]) -> dict[str, Any]:
@@ -67,20 +75,24 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
         if not (10 <= value <= 800):
             return {"error": "Fingerstick value out of range (10–800 mg/dL).", "_status": 400}
         ts_iso = body.get("timestamp") or _now_iso()
-        cgm, cgm_ts, cgm_source, cgm_reading_id = _nearest_cgm(ts_iso)
-        delta = round(cgm - value, 1) if cgm is not None else None
-        rec = get_repositories().fingersticks.create({
-            "timestamp": ts_iso,
-            "value": value,
-            "cgm_value": cgm,
-            "cgm_timestamp": cgm_ts,
-            "cgm_source": cgm_source,
-            "cgm_reading_id": cgm_reading_id,
-            "delta": delta,          # CGM minus fingerstick: + = CGM reads high
-            "note": (body.get("note") or "").strip(),
-            "source": "manual",
-            "owner_email": OWNER_EMAIL,
-        })
+        if _parse(ts_iso) is None:
+            return {"error": "A valid fingerstick timestamp is required.", "_status": 400}
+        try:
+            context = capture_context(body)
+        except ReconciliationInputError as error:
+            return {"error": str(error), "_status": 400}
+        pair = pair_fields(value, ts_iso, _nearest_cgm(ts_iso))
+        rec = get_repositories().fingersticks.create(
+            {
+                "timestamp": ts_iso,
+                "value": value,
+                **pair,
+                **context,
+                "note": (body.get("note") or "").strip(),
+                "source": "manual",
+                "owner_email": OWNER_EMAIL,
+            }
+        )
         return {"ok": True, "reading": rec}
 
     if action == "delete":
@@ -103,23 +115,30 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
         rows = get_repositories().fingersticks.query(
             {"owner_email": OWNER_EMAIL}, "-timestamp", 5000
         )
-        paired = [r for r in rows if r.get("delta") is not None]
-        if not paired:
-            return {"count": len(rows), "paired": 0}
-        deltas = [r["delta"] for r in paired]
-        abs_deltas = [abs(d) for d in deltas]
-        mean_delta = sum(deltas) / len(deltas)
-        worst = max(paired, key=lambda r: abs(r["delta"]))
-        return {
-            "count": len(rows),
-            "paired": len(paired),
-            "mean_delta": round(mean_delta, 1),
-            "mean_abs_delta": round(sum(abs_deltas) / len(abs_deltas), 1),
-            "max_abs_delta": max(abs_deltas),
-            "worst": {"timestamp": worst.get("timestamp"), "fingerstick": worst.get("value"),
-                      "cgm": worst.get("cgm_value"), "delta": worst.get("delta")},
-            # CGM reads high/low vs meter (mean); >3 mg/dL to call a bias
-            "bias": "cgm_high" if mean_delta > 3 else "cgm_low" if mean_delta < -3 else "balanced",
-        }
+        result = summarize(rows)
+        paired = [
+            row
+            for row in rows
+            if row.get("value") is not None and row.get("cgm_value") is not None
+        ]
+        if paired:
+            worst = max(
+                paired,
+                key=lambda row: abs(float(row["cgm_value"]) - float(row["value"])),
+            )
+            worst_delta = round(float(worst["cgm_value"]) - float(worst["value"]), 1)
+            result["worst"] = {
+                "timestamp": worst.get("timestamp"),
+                "fingerstick": worst.get("value"),
+                "cgm": worst.get("cgm_value"),
+                "delta": worst_delta,
+            }
+            # Compatibility label for existing clients; persistent_bias is the
+            # sample-size-aware field for new consumers.
+            mean_delta = float(result["mean_delta"])
+            result["bias"] = (
+                "cgm_high" if mean_delta > 3 else "cgm_low" if mean_delta < -3 else "balanced"
+            )
+        return result
 
     return {"error": "Unknown action", "_status": 400}

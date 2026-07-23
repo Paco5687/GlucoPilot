@@ -229,11 +229,18 @@
     "fingerstick": {
       "timestamp": "2026-03-01T10:00:00Z",
       "value": 110,
-      "note": "synthetic meter comparison"
+      "note": "synthetic meter comparison",
+      "sensor_day": 3,
+      "sensor_site": "arm",
+      "activity": "resting",
+      "position": "seated",
+      "hydration": "usual",
+      "compression_possible": false
     },
     "expected": {
       "matched_cgm": 160,
       "delta": 50,
+      "pair_offset_seconds": 180,
       "bias": "cgm_high"
     }
   },

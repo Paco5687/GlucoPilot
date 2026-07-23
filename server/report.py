@@ -25,6 +25,7 @@ from .clinical_evidence import link_generated_narrative
 from .config import APP_TIMEZONE, DEMO_MODE, OWNER_EMAIL
 from .db import config_value
 from .data_quality import assess_cgm, assess_daily, assess_nutrition, assess_pump_tdd, cgm_points
+from .glucose_reconciliation import summarize as summarize_fingersticks
 from .insulin_reconciliation import reconcile_treatments
 from .lab_audit import qualification as lab_qualification
 from .lab_audit import summary_eligible as lab_summary_eligible
@@ -453,7 +454,10 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
     }
     deterministic_metrics = {
         "period_days": payload["days"],
-        "glucose": {k: g.get(k) for k in ("avg", "gmi", "cv", "tir", "tbr70", "tar180")}
+        "glucose": {
+            **{k: g.get(k) for k in ("avg", "gmi", "cv", "tir", "tbr70", "tar180")},
+            "fingerstick_reconciliation": g.get("fingerstick_reconciliation"),
+        }
         if g.get("available") and g.get("quality", {}).get("ai_eligible") else None,
         "insulin": insulin_for_ai,
         "cycle": {
@@ -552,6 +556,9 @@ async def visit_report(body: ReportBody):
     since_iso = since.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
     glucose = _glucose(tz, since_iso)
+    glucose["fingerstick_reconciliation"] = summarize_fingersticks(
+        _paged("FingerstickReading", since_iso)
+    )
     insulin = _insulin(tz, since_iso, glucose.get("days", 0))
     cycle = _cycle(tz, since_iso, glucose)
     wellness = _wellness(days)

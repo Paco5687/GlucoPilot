@@ -34,6 +34,7 @@ rows, credentials, or copied health information.
 | Analytics confidence | Exact effects/intervals/missingness, seven-day exploratory status, reproduced and not-reproduced temporal holdouts, invalid inputs, small-sample language, and confirmed/inferred cycle provenance remain deterministic. |
 | Evidence-backed claims | Pattern/Insight generations preserve predecessor/successor lineage, exact source-window replay, evidence roles/limitations, authenticated source links, and non-destructive refresh. |
 | Canonical health episodes | Date/UTC ranges, multi-source temporal membership, non-causal database constraints, append-only corrections, open medication exposures, decisions, provider access, Evidence Bundles, and restore counts remain deterministic. |
+| CGM/fingerstick reconciliation | Fixed nearest-CGM snapshots preserve both values; absolute/relative differences, pair timing, context strata, persistent-bias sample gates, and confirmed/CGM-only/meter-only low classifications remain deterministic. |
 
 `clinical_edge_cases.json` stores both the synthetic inputs and their expected
 outcomes. Tests must compare production parser, deduplication, analytics,

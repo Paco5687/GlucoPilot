@@ -40,6 +40,8 @@ the other waits, rechecks the ledger, and applies nothing.
 | 14 | `versioned_evidence_backed_claims` | Adds the governed Pattern/Insight algorithm registry, immutable claim-version lineage, EvidenceSet links, evidence roles/rationales, and structured limitations. |
 | 15 | `guarded_health_hypothesis_ledger` | Adds hypothesis origin/status, append-only supporting/opposing/missing evidence revisions, attributable confidence and lifecycle events, and clinician-gated terminal decisions. |
 | 16 | `canonical_health_episodes` | Adds canonical health and medication-exposure intervals, proposed/confirmed/dismissed lifecycle, append-only membership and audit events, owner/source validation support, and a database-enforced non-causal temporal-membership constraint. |
+| 17 | `oura_sleep_score_relabel` | Relabels legacy Oura contributor scores that were stored under duration names without overwriting real durations or existing score fields. |
+| 18 | `fingerstick_reconciliation_context` | Extends the rebuildable strict fingerstick projection with fixed pair timing/trend, absolute and relative differences, low semantic classes, bounded context JSON, and reconciliation algorithm version. |
 
 ## Adding a migration
 

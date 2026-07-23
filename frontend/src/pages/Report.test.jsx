@@ -21,6 +21,21 @@ const report = {
     tar180: 16,
     tar250: 3,
     agp: [],
+    fingerstick_reconciliation: {
+      paired: 6,
+      mean_abs_delta: 12.5,
+      semantics: "CGM and meter values remain separate observations.",
+      persistent_bias: {
+        classification: "cgm_high",
+        sample_count: 6,
+        minimum_sample_count: 5,
+      },
+      low_reconciliation: {
+        confirmed_low: 2,
+        cgm_only_low: 1,
+        caveat: "These counts describe only meter-checked moments and do not correct CGM time-below-range.",
+      },
+    },
   },
   insulin: { available: false, quality: {}, nutrition_quality: {} },
   cycle: { available: false, quality: {} },
@@ -128,5 +143,8 @@ describe("visit report contradictions", () => {
     expect(screen.getByText(/Temporal membership and co-occurrence do not establish causation/)).toBeTruthy();
     expect(screen.getByText(/Synthetic fatigue flare/)).toBeTruthy();
     expect(screen.getByText(/Synthetic medicine/)).toBeTruthy();
+    expect(screen.getByText("CGM and meter reconciliation")).toBeTruthy();
+    expect(screen.getByText(/persistent CGM-high direction observed/)).toBeTruthy();
+    expect(screen.getByText(/do not correct CGM time-below-range/)).toBeTruthy();
   });
 });

@@ -240,4 +240,6 @@ def test_overview_and_visit_report_use_the_same_shared_context_adapter(
         "unresolved": public["contradictions"],
         "counts": {"unresolved": 1, "blocking": 1},
     }
+    assert visit["glucose"]["fingerstick_reconciliation"]["paired"] == 0
+    assert "separate observations" in visit["glucose"]["fingerstick_reconciliation"]["semantics"]
     assert [call["days"] for call in calls] == [90, 90]

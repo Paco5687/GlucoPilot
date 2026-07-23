@@ -40,6 +40,7 @@ uploaded records, and config. One owner per deployment.
 | `evidence_sets.py` | bounded checksum-addressed observation windows, claim evidence sets, drill-down verification, and source-change invalidation |
 | `evidence_bundle.py` | authenticated cross-domain evidence queries, deterministic ranking/versioning, protected contradictions, source links, and content-addressed caching |
 | `clinical_evidence.py` | shared Overview/Visit Report Evidence Bundle consumer, quality/data-through/source/claim blocks, and validated narrative evidence citations |
+| `glucose_reconciliation.py` | pure, versioned CGM/fingerstick pair derivation, contextual strata, directional-bias sample gates, and checked-low semantics |
 | `lab_audit.py` | audited medical-record extraction, validation, verification, correction history, and compatibility projection |
 | `contradictions.py` | deterministic cross-domain contradiction rules, typed ledger, attributed resolution workflow, and API |
 | `auth.py` | first-run setup, login, **admin vs. read-only provider role**, `require_admin` |
