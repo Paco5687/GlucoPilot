@@ -105,6 +105,9 @@ database.
 - Evidence-backed claims: Pattern/Insight non-destructive publication, version
   lineage, governed confidence, role-preserving EvidenceSets, authenticated
   paged source access, and backup counts.
+- Health hypotheses: origin/status guards, immutable evidence revisions and
+  events, supporting/opposing/missing evidence balance, provider read-only
+  access, clinician-gated terminal decisions, and backup parity.
 - Relationship API: authentication/read gating, provider-safe GET access,
   owner non-enumeration, deterministic budgets/order, and secret-locator
   redaction.

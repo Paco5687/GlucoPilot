@@ -18,6 +18,7 @@
 | Manual APIs | Fingersticks, profile/weight, diagnoses, meds, allergies, insurance, symptoms, history | Random IDs and user-supplied dates. | User edit/append/delete per catalog. |
 | Rule/LLM jobs | Patterns, Insights, claim-version ledger, EvidenceSets, summary, Companion | Pattern/Insight algorithms record content, input, confidence, EvidenceSet, and version lineage; source windows retain exact authoritative entity membership. | Pattern/Insight generations append and supersede without deletion; low-quality windows retire current claims. Other derived outputs retain their compatibility behavior. |
 | Contradiction rules | Typed run, contradiction, and immutable event rows | Rules version plus canonical input hash; each fingerprint includes both evidence sides. | Re-evaluation changes detection presence only. Human resolution is attributable and is never silently reset. |
+| Patient/algorithm/clinician hypotheses | Guarded hypothesis row, append-only evidence revisions, immutable events | Origin plus canonical supporting/opposing/missing evidence input version. | Evidence replacement appends a revision and attributable confidence event; only an explicit clinician-attributed action can confirm or rule against. |
 
 Every source is operationally owned by its module and the deployment owner.
 There is no persisted source-record or sync-run model, so partial pages,

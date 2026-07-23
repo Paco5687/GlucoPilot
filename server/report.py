@@ -557,10 +557,11 @@ async def visit_report(body: ReportBody):
     wellness = _wellness(days)
     labs = _labs()
 
-    from . import conditions, history, insurance, meds, symptoms
+    from . import conditions, history, hypotheses, insurance, meds, symptoms
 
     payload = {
         "conditions": conditions.report_block(),
+        "hypotheses": hypotheses.report_block(),
         "medications": meds.get_medications(),
         "allergies": meds.get_allergies(),
         "history": history.report_block(),

@@ -87,6 +87,11 @@ supersession state under `EVIDENCE_SET_WRITES_ENABLED`.
 `EVIDENCE_SET_READS_ENABLED` independently keeps or cuts over the compatibility
 evidence reader.
 
+G10 adds `SqliteHypothesisRepository` as a dedicated guarded repository. It is
+not generic entity CRUD and does not require a rollout flag: all new proposals
+begin tentative, evidence revisions and events append, providers remain
+read-only, and terminal decisions require explicit clinician attribution.
+
 ## Swapping implementations
 
 `get_repositories()` returns the production legacy catalog. Tests and isolated

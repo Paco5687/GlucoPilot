@@ -47,6 +47,7 @@ uploaded records, and config. One owner per deployment.
 | `settings_api.py` | in-app settings & secrets (DB-stored, override env) |
 | `llm.py` | provider-agnostic `invoke_llm(...)`; Anthropic + local; vision + `tier="quality"` routing |
 | `companion_evidence.py` | bounded question-ranked Evidence Bundle retrieval, statement classification, citation validation, and change comparison |
+| `hypotheses.py` | guarded patient/algorithm/clinician hypothesis ledger, evidence revisions, attributable confidence, and clinician-gated decisions |
 | `scheduler.py` | background sync loop, per-source intervals |
 | `readings.py` | shared cross-source glucose dedup |
 | **Sources** | `dexcom.py`, `dexcom_share.py`, `nightscout.py`, `tandem.py`, `glooko.py`, `oura.py`, `fitbit.py` |
@@ -121,6 +122,14 @@ general medical references and user memory, and expose owner-checked evidence,
 opposition, and content-hash change commands. Invented citations and uncited
 personal claims fail closed; unverified machine-extracted labs are qualified
 before display or persistence.
+
+Migration 15 adds G10's guarded hypothesis ledger in the same SQLite database.
+Patient, algorithm, and clinician proposals remain separate from confirmed
+diagnoses; supporting, opposing, and missing evidence is revisioned
+append-only; deterministic evidence-balance changes are recorded in immutable
+events; and terminal decisions require an attributable clinician review.
+Settings and Visit Report render hypotheses with an explicit “not a diagnosis”
+guardrail. No graph data becomes authoritative.
 
 ## Frontend (`frontend/`)
 

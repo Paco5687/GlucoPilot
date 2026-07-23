@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import DataQualityNote from "@/components/DataQualityNote";
 import EvidenceContextBlock from "@/components/evidence/EvidenceContextBlock";
-import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope, ScrollText } from "lucide-react";
+import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope, ScrollText, Beaker } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, Line, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
 } from "recharts";
@@ -245,7 +245,7 @@ export default function Report() {
       {report.conditions?.length > 0 && (
         <div className="report-section report-card rounded-xl border border-border p-4">
           <h2 className="font-semibold text-sm mb-2 flex items-center gap-2">
-            <Stethoscope className="w-4 h-4 text-primary" /> Conditions
+            <Stethoscope className="w-4 h-4 text-primary" /> Confirmed conditions &amp; diagnoses
           </h2>
           <div className="flex flex-wrap gap-2">
             {report.conditions.map((c, i) => (
@@ -256,6 +256,67 @@ export default function Report() {
               </span>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Guarded hypotheses — deliberately separate from diagnoses */}
+      {report.hypotheses?.length > 0 && (
+        <div className="report-section space-y-2">
+          <h2 className="font-semibold text-sm flex items-center gap-2 text-amber-900">
+            <Beaker className="w-4 h-4" /> Health hypotheses — not diagnoses
+          </h2>
+          <p className="text-[11px] text-muted-foreground">
+            Tentative questions for review. Evidence balance is not a diagnostic probability.
+          </p>
+          {report.hypotheses.map((hypothesis) => (
+            <div key={hypothesis.id} className="report-card rounded-lg border border-amber-300 bg-amber-50 p-3 space-y-2">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <p className="font-semibold text-sm">{hypothesis.title}</p>
+                  {hypothesis.description && <p className="text-xs text-muted-foreground">{hypothesis.description}</p>}
+                </div>
+                <span className="text-[10px] rounded-full border border-amber-300 bg-white px-2 py-1 font-semibold uppercase">
+                  {hypothesis.status?.replace("_", " ")}
+                </span>
+              </div>
+              <p className="text-[11px]">
+                Origin: {hypothesis.origin_kind} · {hypothesis.origin_label} · evidence balance{" "}
+                {Math.round(Number(hypothesis.confidence_score || 0) * 100)}%
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                {[
+                  ["Supporting evidence", "supporting", "border-emerald-200 bg-emerald-50"],
+                  ["Opposing evidence", "opposing", "border-rose-200 bg-rose-50"],
+                  ["Missing evidence", "missing", "border-amber-200 bg-white"],
+                ].map(([label, role, tone]) => {
+                  const evidence = hypothesis.evidence_by_role?.[role] || [];
+                  return (
+                    <div key={role} className={`rounded border p-2 ${tone}`}>
+                      <p className="font-semibold">{label}</p>
+                      {evidence.length ? (
+                        <ul className="mt-1 list-disc pl-4 space-y-0.5">
+                          {evidence.map((item, index) => <li key={index}>{item.summary}</li>)}
+                        </ul>
+                      ) : (
+                        <p className="mt-1 text-muted-foreground">None recorded.</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              {hypothesis.suggested_verification && (
+                <p className="text-xs">
+                  <span className="font-semibold">Suggested verification:</span>{" "}
+                  {hypothesis.suggested_verification}
+                </p>
+              )}
+              {hypothesis.decided_by && (
+                <p className="text-xs font-semibold">
+                  Decision recorded by {hypothesis.decided_by} at {hypothesis.decided_at}
+                </p>
+              )}
+            </div>
+          ))}
         </div>
       )}
 

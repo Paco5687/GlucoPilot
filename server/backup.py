@@ -305,6 +305,41 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                     )
                     for table in claim_tables
                 }
+            hypothesis_ledger = None
+            hypothesis_tables = (
+                "health_hypotheses",
+                "hypothesis_evidence",
+                "hypothesis_events",
+            )
+            if all(_table_exists(connection, table) for table in hypothesis_tables):
+                hypothesis_ledger = {
+                    "hypotheses": dict(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*) AS count,
+                                   COALESCE(SUM(CASE WHEN status='proposed' THEN 1 ELSE 0 END), 0)
+                                       AS proposed_count,
+                                   COALESCE(SUM(CASE WHEN status='under_review' THEN 1 ELSE 0 END), 0)
+                                       AS under_review_count,
+                                   COALESCE(SUM(CASE WHEN status='confirmed' THEN 1 ELSE 0 END), 0)
+                                       AS confirmed_count,
+                                   COALESCE(SUM(CASE WHEN status='ruled_against' THEN 1 ELSE 0 END), 0)
+                                       AS ruled_against_count
+                            FROM health_hypotheses
+                            """
+                        ).fetchone()
+                    ),
+                    "evidence": dict(
+                        connection.execute(
+                            "SELECT COUNT(*) AS count FROM hypothesis_evidence"
+                        ).fetchone()
+                    ),
+                    "events": dict(
+                        connection.execute(
+                            "SELECT COUNT(*) AS count FROM hypothesis_events"
+                        ).fetchone()
+                    ),
+                }
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:
@@ -339,6 +374,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
         metadata["evidence_projection"] = evidence_projection
     if claim_projection is not None:
         metadata["claim_projection"] = claim_projection
+    if hypothesis_ledger is not None:
+        metadata["hypothesis_ledger"] = hypothesis_ledger
     if include_references:
         metadata["record_references"] = references
     return metadata
@@ -553,6 +590,8 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
         keys.append("evidence_projection")
     if "claim_projection" in expected_database:
         keys.append("claim_projection")
+    if "hypothesis_ledger" in expected_database:
+        keys.append("hypothesis_ledger")
     for key in keys:
         if metadata[key] != expected_database.get(key):
             raise BackupError(f"restored database metadata mismatch: {key}")
@@ -653,6 +692,18 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
             {
                 "claim_algorithm_registry_count": metadata["claim_projection"]["claim_algorithm_registry"]["count"],
                 "claim_version_count": metadata["claim_projection"]["claim_versions"]["count"],
+            }
+        )
+    if "hypothesis_ledger" in expected_database:
+        verification.update(
+            {
+                "health_hypothesis_count": metadata["hypothesis_ledger"]["hypotheses"]["count"],
+                "proposed_health_hypothesis_count": metadata["hypothesis_ledger"]["hypotheses"]["proposed_count"],
+                "under_review_health_hypothesis_count": metadata["hypothesis_ledger"]["hypotheses"]["under_review_count"],
+                "confirmed_health_hypothesis_count": metadata["hypothesis_ledger"]["hypotheses"]["confirmed_count"],
+                "ruled_against_health_hypothesis_count": metadata["hypothesis_ledger"]["hypotheses"]["ruled_against_count"],
+                "hypothesis_evidence_count": metadata["hypothesis_ledger"]["evidence"]["count"],
+                "hypothesis_event_count": metadata["hypothesis_ledger"]["events"]["count"],
             }
         )
     return verification
