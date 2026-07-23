@@ -1,6 +1,6 @@
 # Deterministic Evidence Bundle API
 
-Status: v2, additive, authenticated, read-only
+Status: v2.2, additive, authenticated, read-only
 
 Implementation: `server/evidence_bundle.py`
 
@@ -113,6 +113,13 @@ Evidence Bundle 2.0 adds two safety semantics used by G8 consumers:
 - selected governed Pattern/Insight items carry a claim-version block plus an
   authenticated claim-evidence link. Legacy rows remain visible as derived
   metrics but are not presented as governed evidence-backed claims.
+
+Evidence Bundle 2.2 adds on-demand `InsulinResponseEvent` derived metrics to a
+bounded `insulin` query. Each event carries
+`insulin-response/1.0.0`, its input hash, clean/confounded/excluded state,
+explicit reasons, and exact normalized source links. These items are ranked
+within the existing shared budget, do not persist a second copy of source
+facts, and do not infer causation, resistance, or absorption.
 
 ## Shared Overview and Visit Report consumer
 

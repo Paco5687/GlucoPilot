@@ -202,6 +202,7 @@ export default function Report() {
 
   const g = report.glucose;
   const i = report.insulin;
+  const ir = report.insulin_response;
   const c = report.cycle;
   const w = report.wellness;
   const labs = report.labs;
@@ -569,6 +570,36 @@ export default function Report() {
           {i.discrepancy_days > 0 && (
             <p className="text-[11px] text-amber-700">{i.discrepancy_days} day{i.discrepancy_days === 1 ? "" : "s"} had a difference greater than rounding between pump-reported and calculated TDD; both values remain separate.</p>
           )}
+        </div>
+      )}
+
+      {ir?.counts?.total > 0 && (
+        <div className="report-section space-y-3">
+          <h2 className="font-semibold text-base">Observed insulin response events</h2>
+          <DataQualityNote label="Insulin response" quality={ir.quality} />
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Metric label="Response windows" value={`${ir.counts.total}`} sub={`${ir.window_days}-day source window`} />
+            <Metric label="Clean by default" value={`${ir.counts.clean}`} sub="used in summaries" />
+            <Metric label="Confounded" value={`${ir.counts.confounded}`} sub="retained, not summarized" />
+            <Metric label="Excluded" value={`${ir.counts.excluded}`} sub="insufficient or invalid input" />
+          </div>
+          {ir.available && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Metric label="Median observed drop" value={`${ir.median_drop_per_unit}`} sub="mg/dL/U" />
+              <Metric label="Mean observed drop" value={`${ir.mean_drop_per_unit}`} sub="mg/dL/U" />
+              <Metric label="Variability" value={`${ir.cv_pct}%`} sub={`${ir.confidence?.confidence_label || "low"} confidence`} />
+              <Metric label="Clean sample" value={`${ir.n}`} sub={ir.confidence?.discovery_status || "not assessed"} />
+            </div>
+          )}
+          {!ir.available && <p className="text-xs text-muted-foreground">{ir.reason}</p>}
+          {Object.keys(ir.reason_counts || {}).length > 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              Exclusion/confounder reasons: {Object.entries(ir.reason_counts).map(([reason, count]) => `${reason.replaceAll("_", " ")} (${count})`).join(" · ")}
+            </p>
+          )}
+          <p className="text-[11px] text-muted-foreground">
+            These are time-bounded observations under algorithm {ir.algorithm_version}. Confounded events are excluded from summaries by default. The observed glucose change does not establish insulin causation, resistance, or absorption; estimated IOB is a declared comparison assumption, not pump-reported IOB.
+          </p>
         </div>
       )}
 
