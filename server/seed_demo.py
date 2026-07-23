@@ -133,11 +133,23 @@ def _seed_oura_and_fitbit() -> None:
         # biphasic nightly temperature: low follicular, +0.3-0.5 luteal
         temp = round(RNG.gauss(0.35 if 15 <= cd <= 27 else -0.15, 0.08), 2)
         sleep_score = max(55, min(97, round(RNG.gauss(83, 8))))
+        sleep_seconds = max(10800, round(RNG.gauss(27000, 3000)))
+        # Both rings report nightly HRV, and the demo mirrors the real spread:
+        # Oura reads higher than Google Health on the same night. Each tracks
+        # sleep quality slightly, so the correlation engine has something honest
+        # to find.
+        hrv_night = (sleep_score - 83) * 0.25
         oura.append({
             "date": date, "sleep_score": sleep_score,
             "readiness_score": max(55, min(95, round(RNG.gauss(81, 9)))),
             "readiness_temperature_deviation": temp,
             "readiness_hrv_balance": max(20, min(95, round(RNG.gauss(70, 12)))),
+            "hrv": max(12, round(RNG.gauss(34, 6) + hrv_night)),
+            "breathing_rate": round(RNG.gauss(14.2, 0.7), 1),
+            "sleep_total_seconds": sleep_seconds,
+            "sleep_deep_seconds": round(sleep_seconds * RNG.uniform(0.12, 0.22)),
+            "sleep_rem_seconds": round(sleep_seconds * RNG.uniform(0.18, 0.27)),
+            "sleep_efficiency": max(70, min(99, round(RNG.gauss(90, 5)))),
             "lowest_heart_rate": round(RNG.gauss(56, 3)),
             "average_heart_rate": round(RNG.gauss(68, 4)),
             "spo2_average": round(RNG.gauss(96.5, 0.8), 1),
@@ -147,6 +159,7 @@ def _seed_oura_and_fitbit() -> None:
             "date": date, "steps": max(1500, round(RNG.gauss(8200, 2600))),
             "resting_heart_rate": round(RNG.gauss(58, 3)),
             "sleep_minutes": round(RNG.gauss(430, 45)),
+            "hrv": max(10, round(RNG.gauss(24, 5) + hrv_night, 1)),
             "spo2_avg": round(RNG.gauss(96, 1), 1),
             "owner_email": OWNER_EMAIL,
         })

@@ -137,7 +137,31 @@ async def _fetch(client: httpx.AsyncClient, endpoint: str, token: str, start: st
     return items
 
 
-def _process_daily(sleep, readiness, activity, hr, spo2) -> dict[str, dict]:
+def _main_sleep_by_day(periods: list[dict]) -> dict[str, dict]:
+    """Pick the one sleep period per day that represents "the night".
+
+    Oura returns a row per sleep period and naps carry their own HRV — a 28
+    minute afternoon nap reported hrv=21 on a night that measured 34. Folding
+    the two together would drag the nightly value around, so keep the
+    `long_sleep` period (the longest, if the night was split) and drop naps.
+    """
+    best: dict[str, dict] = {}
+    for period in periods:
+        day_key = period.get("day")
+        if not day_key:
+            continue
+        # long_sleep always beats a nap; between two of a kind, longest wins.
+        rank = (period.get("type") == "long_sleep", period.get("total_sleep_duration") or 0)
+        current = best.get(day_key)
+        if current is None or rank > (
+            current.get("type") == "long_sleep",
+            current.get("total_sleep_duration") or 0,
+        ):
+            best[day_key] = period
+    return best
+
+
+def _process_daily(sleep, sleep_periods, readiness, activity, hr, spo2) -> dict[str, dict]:
     by_day: dict[str, dict] = {}
 
     def day(d: str) -> dict:
@@ -145,14 +169,30 @@ def _process_daily(sleep, readiness, activity, hr, spo2) -> dict[str, dict]:
 
     for s in sleep:
         d = day(s["day"])
+        # `contributors` are Oura's 0-100 sub-scores, NOT durations. Measured
+        # durations come off the sleep-period endpoint below.
         contributors = s.get("contributors") or {}
         d.update(
             sleep_score=s.get("score"),
-            sleep_total_seconds=contributors.get("total_sleep"),
-            sleep_efficiency=contributors.get("efficiency"),
-            sleep_rem_seconds=contributors.get("rem_sleep"),
-            sleep_deep_seconds=contributors.get("deep_sleep"),
-            sleep_latency_seconds=contributors.get("latency"),
+            sleep_total_score=contributors.get("total_sleep"),
+            sleep_efficiency_score=contributors.get("efficiency"),
+            sleep_rem_score=contributors.get("rem_sleep"),
+            sleep_deep_score=contributors.get("deep_sleep"),
+            sleep_latency_score=contributors.get("latency"),
+        )
+    for day_key, period in _main_sleep_by_day(sleep_periods).items():
+        d = day(day_key)
+        d.update(
+            hrv=period.get("average_hrv"),
+            breathing_rate=period.get("average_breath"),
+            sleep_total_seconds=period.get("total_sleep_duration"),
+            sleep_rem_seconds=period.get("rem_sleep_duration"),
+            sleep_deep_seconds=period.get("deep_sleep_duration"),
+            sleep_light_seconds=period.get("light_sleep_duration"),
+            sleep_awake_seconds=period.get("awake_time"),
+            sleep_latency_seconds=period.get("latency"),
+            time_in_bed_seconds=period.get("time_in_bed"),
+            sleep_efficiency=period.get("efficiency"),
         )
     for r in readiness:
         d = day(r["day"])
@@ -235,13 +275,16 @@ async def handle_sync(body: dict[str, Any]) -> dict[str, Any]:
                 return {"error": "Token refresh failed", "_status": 502}
 
         now = datetime.now(timezone.utc)
-        sleep, readiness, activity, spo2, hr = [], [], [], [], []
+        sleep, sleep_periods, readiness, activity, spo2, hr = [], [], [], [], [], []
         # 90-day chunks, oldest first; pagination handles density within chunks
         cursor = now - timedelta(days=days)
         while cursor < now:
             chunk_end = min(cursor + timedelta(days=90), now)
             start_s, end_s = cursor.date().isoformat(), chunk_end.date().isoformat()
             sleep += await _fetch(client, "daily_sleep", token, start_s, end_s)
+            # Per-period sleep: the only endpoint carrying measured HRV and real
+            # stage durations. daily_sleep is scores only.
+            sleep_periods += await _fetch(client, "sleep", token, start_s, end_s)
             readiness += await _fetch(client, "daily_readiness", token, start_s, end_s)
             activity += await _fetch(client, "daily_activity", token, start_s, end_s)
             spo2 += await _fetch(client, "daily_spo2", token, start_s, end_s)
@@ -252,7 +295,7 @@ async def handle_sync(body: dict[str, Any]) -> dict[str, Any]:
             hr += await _fetch(client, "heartrate", token, cursor.date().isoformat(), chunk_end.date().isoformat())
             cursor = chunk_end
 
-    by_day = _process_daily(sleep, readiness, activity, hr, spo2)
+    by_day = _process_daily(sleep, sleep_periods, readiness, activity, hr, spo2)
 
     repository = get_repositories().oura_daily
     existing = repository.query({"owner_email": OWNER_EMAIL})
@@ -274,6 +317,7 @@ async def handle_sync(body: dict[str, Any]) -> dict[str, Any]:
         "created": created,
         "updated": updated,
         "days_synced": len(by_day),
+        "hrv_days": sum(1 for d in by_day.values() if d.get("hrv") is not None),
         "hr_samples": hr_created,
         "hr_samples_skipped": hr_skipped,
     }

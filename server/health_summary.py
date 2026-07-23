@@ -109,6 +109,15 @@ def _wearable_trends() -> dict[str, Any]:
         r = avg(f, recent)
         if r is not None:
             out[f] = {"recent": r, "prior": avg(f, prior)}
+
+    # Oura measures HRV overnight as well, on a different baseline than Google
+    # Health. Reported as its own metric so the model compares each ring against
+    # its own history rather than against the other ring.
+    oura_rows = get_repositories().oura_daily.query({"owner_email": OWNER_EMAIL}, "-date", 60)
+    oura_recent = avg("hrv", oura_rows[:14])
+    if oura_recent is not None:
+        out["hrv_oura"] = {"recent": oura_recent, "prior": avg("hrv", oura_rows[14:42])}
+
     tz = ZoneInfo(config_value("app_timezone", APP_TIMEZONE))
     as_of = datetime.now(tz).date()
     return {
