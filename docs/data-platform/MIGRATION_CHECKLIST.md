@@ -39,6 +39,8 @@ change in the Epic. Each checkbox is a release gate.
 - [ ] Shadow-compare nulls, units, ordering, pagination, and timezone edges.
 - [ ] Quarantine mismatches instead of silently choosing one value.
 - [ ] Benchmark API and browser behavior against the F0 baseline.
+- [ ] Produce private checksum-protected domain reports and verify detached
+      operator signatures; publish no production-derived report contents.
 
 ## Cutover and retirement
 

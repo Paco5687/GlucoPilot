@@ -1,6 +1,6 @@
 # Typed treatments, basal segments, and pump daily totals
 
-Status: additive migration; production reads and writes default off
+Status: additive dual-write and shadow-read pilot; legacy reads remain default
 
 Implementations: `server/typed_treatments.py`, migration 6 in
 `server/migrations.py`, and `tests/test_typed_treatments.py`
@@ -19,6 +19,10 @@ SQLite transaction as each legacy create or update. Deletes cascade from the
 legacy entity. A row that cannot satisfy the strict contract remains available
 through the legacy API, while any stale typed projection for it is removed.
 This preserves compatibility without inventing a clinical time or value.
+
+`TYPED_TREATMENT_SHADOW_READS_ENABLED=true` runs supported legacy and typed
+queries, logs value-free parity and latency, and still returns legacy results.
+It is independent from the typed-read flag and defaults to false.
 
 ## Tables and ownership
 
@@ -73,10 +77,14 @@ python -m server.typed_treatments compare --database /data/app.sqlite3
 
 Backfill is bounded by `--batch-size`, ordered by legacy row ID, committed per
 batch, and safe to repeat. The comparison recomputes every expected projection
-and reports only counts for matched, missing, mismatched, extra, and unmappable
-rows plus child-table totals. A read rollout is not permitted while any
+and reports only counts for matched, missing, mismatched, extra, categorized
+unmappable rows, child-table totals, provider-identity duplicates, and query
+checksum/order/aggregate parity. A read rollout is not permitted while any
 unexpected mismatch remains.
 
-Rollback for this release is switching both flags off. Legacy data continues
-to serve all existing paths. Restoring a pre-migration verified backup remains
-the database rollback procedure; the migration does not remove or rewrite JSON.
+H2's private per-domain approval and signing procedure is defined in
+[Production dual-write validation](DUAL_WRITE_VALIDATION.md). Rollback for this
+release is switching shadow reads and writes off while leaving typed reads off.
+Legacy data continues to serve all existing paths. Restoring a pre-migration
+verified backup remains the database rollback procedure; the migration does not
+remove or rewrite JSON.

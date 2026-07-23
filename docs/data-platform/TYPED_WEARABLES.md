@@ -80,5 +80,7 @@ stops projection maintenance but deletes neither typed nor legacy rows.
 
 Before production backfill or shadowing, create and verify an off-volume
 backup, enable writes first, run backfill and comparison, inspect every
-mismatch, and retain legacy rows. H2 owns production parity approval and H3
-owns selective typed-read cutover; I10 enables neither during deployment.
+mismatch, and retain legacy rows. H2's private per-domain approval, latency,
+and signing gates are defined in
+[Production dual-write validation](DUAL_WRITE_VALIDATION.md). H3 owns selective
+typed-read cutover; I10 enables neither during deployment.

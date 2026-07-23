@@ -94,5 +94,7 @@ does not delete typed or legacy rows.
 
 Before a production backfill or read cutover, create and verify an off-volume
 backup, enable writes first, run backfill and comparison, review every mismatch,
-and retain legacy rows. H2 owns production parity approval and H3 owns default
+and retain legacy rows. H2's categorized exception tolerance, private report,
+latency, and signing gates are defined in
+[Production dual-write validation](DUAL_WRITE_VALIDATION.md). H3 owns default
 read cutover; I9 does not enable either in production.

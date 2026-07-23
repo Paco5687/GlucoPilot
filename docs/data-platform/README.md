@@ -39,6 +39,9 @@ typed repositories are introduced.
   repository-owned dedup, restartable backfill, shadow parity, and read rollback.
 - [Typed wearables](TYPED_WEARABLES.md) — strict daily/sample projections,
   explicit provider overlap, bounded backfill, indexed reads, and rollback.
+- [Production dual-write validation](DUAL_WRITE_VALIDATION.md) — private,
+  checksum-protected per-domain parity, latency tolerances, signatures, staged
+  observation, and reversible rollout.
 - [Governed relationship projection](RELATIONSHIP_GRAPH.md) — typed predicates,
   assertion/evidence/algorithm registries, owner validation, temporal/confidence
   indexes, deterministic full/scoped rebuild jobs, atomic publication,
