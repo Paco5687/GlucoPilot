@@ -439,6 +439,20 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
         insulin_for_ai = dict(insulin_payload)
         if not insulin_payload.get("nutrition_quality", {}).get("ai_eligible"):
             insulin_for_ai.pop("avg_daily_carbs", None)
+    response_payload = payload.get("insulin_response") or {}
+    response_for_ai = None
+    if (
+        response_payload.get("available")
+        and response_payload.get("quality", {}).get("ai_eligible")
+    ):
+        response_for_ai = {
+            "algorithm_version": response_payload.get("algorithm_version"),
+            "counts": response_payload.get("counts"),
+            "analysis": response_payload.get("analysis"),
+            "confidence": response_payload.get("confidence"),
+            "semantics": response_payload.get("semantics"),
+            "assumptions": response_payload.get("assumptions"),
+        }
     wellness_for_ai = {
         provider: payload["wellness"].get(provider)
         for provider in ("oura", "fitbit")
@@ -449,6 +463,7 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
         "glucose": g.get("quality"),
         "pump_tdd": insulin_payload.get("quality"),
         "nutrition": insulin_payload.get("nutrition_quality"),
+        "insulin_response": response_payload.get("quality"),
         "cycle": payload["cycle"].get("quality"),
         "wearables": payload["wellness"].get("quality"),
     }
@@ -460,6 +475,7 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
         }
         if g.get("available") and g.get("quality", {}).get("ai_eligible") else None,
         "insulin": insulin_for_ai,
+        "insulin_response": response_for_ai,
         "cycle": {
             "cycles": payload["cycle"].get("cycles_detected"),
             "avg_length": payload["cycle"].get("avg_cycle_length"),
@@ -542,6 +558,7 @@ def _evidence_quality(payload: dict[str, Any]) -> dict[str, Any]:
         "cgm": payload["glucose"].get("quality"),
         "pump_tdd": payload["insulin"].get("quality"),
         "nutrition": payload["insulin"].get("nutrition_quality"),
+        "insulin_response": (payload.get("insulin_response") or {}).get("quality"),
         "cycle": payload["cycle"].get("quality"),
         "oura": wellness_quality.get("oura"),
         "fitbit": wellness_quality.get("fitbit"),
@@ -564,7 +581,18 @@ async def visit_report(body: ReportBody):
     wellness = _wellness(days)
     labs = _labs()
 
-    from . import conditions, episodes, history, hypotheses, insurance, meds, symptoms
+    from . import (
+        conditions,
+        episodes,
+        history,
+        hypotheses,
+        insulin as insulin_analytics,
+        insurance,
+        meds,
+        symptoms,
+    )
+    insulin_response = insulin_analytics.absorption()
+    insulin_response.pop("events", None)
 
     payload = {
         "conditions": conditions.report_block(),
@@ -580,6 +608,7 @@ async def visit_report(body: ReportBody):
         "end_date": datetime.now(timezone.utc).date().isoformat(),
         "glucose": glucose,
         "insulin": insulin,
+        "insulin_response": insulin_response,
         "cycle": cycle,
         "wellness": wellness,
         "labs": labs,

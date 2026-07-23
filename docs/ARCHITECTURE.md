@@ -141,6 +141,14 @@ Temporal relationships are database-enforced as non-causal. Symptoms, Settings,
 Visit Report, and clinical Evidence Bundles expose the ledger without making it
 a graph source of truth.
 
+P3 adds no schema. `insulin-response/1.0.0` deterministically derives
+observational response windows from canonical treatments and glucose, retaining
+invalid, under-covered, and confounded events with explicit reasons. Only clean
+events enter time/cycle/activity/position strata. Shared analytics confidence,
+the Insulin page, Visit Report, and Evidence Bundle 2.2 preserve the boundary
+between source facts, calculations, associations, and resistance/absorption
+interpretations. The events are rebuilt on demand and add no backup surface.
+
 ## Frontend (`frontend/`)
 
 React + Vite + Tailwind + shadcn/ui, charts via Recharts, canvas Explorer chart.

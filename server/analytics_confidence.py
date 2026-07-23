@@ -359,6 +359,75 @@ def comparison_confidence(
     )
 
 
+def mean_confidence(
+    values: Sequence[float],
+    *,
+    valid_days: int,
+    expected_days: int,
+    temporal_direction: str = "repeated-observation",
+    unit: str | None = None,
+) -> dict[str, Any]:
+    """Describe an observational sample mean with a normal 95% interval."""
+    samples = _finite(values)
+    sample_count = len(samples)
+    valid = sample_count >= 2
+    average = _mean(samples) if samples else None
+    standard_error = (
+        math.sqrt(_sample_variance(samples) / sample_count) if valid else None
+    )
+    interval = (
+        (
+            average - Z_95 * standard_error,
+            average + Z_95 * standard_error,
+        )
+        if average is not None and standard_error is not None
+        else None
+    )
+    if not valid:
+        status = "invalid"
+    elif valid_days <= 7 or sample_count < 14:
+        status = "exploratory"
+    else:
+        status = "emerging"
+    width = interval[1] - interval[0] if interval else None
+    scale = max(abs(average or 0), (width or 0), 1)
+    precision = max(0.0, 1 - (width or scale) / scale) if valid else 0.0
+    return _base_envelope(
+        sample_count=sample_count,
+        valid_days=valid_days,
+        expected_days=expected_days,
+        effect_size={
+            "metric": "observed_mean",
+            "value": round(average, 4) if average is not None else None,
+            "magnitude": "not_clinically_classified",
+            "direction": "observed",
+            "unit": unit,
+        },
+        confidence_interval={
+            "level": 0.95,
+            "lower": round(interval[0], 4),
+            "upper": round(interval[1], 4),
+            "metric": "observed_mean",
+            "method": "normal_mean",
+            "unit": unit,
+        }
+        if interval
+        else None,
+        temporal_direction=temporal_direction,
+        status=status,
+        replication={
+            "attempted": False,
+            "kind": None,
+            "discovery_sample_count": sample_count,
+            "replication_sample_count": 0,
+            "discovery_effect": round(average, 4) if average is not None else None,
+            "replication_effect": None,
+            "status": "not-attempted",
+        },
+        precision=precision,
+    )
+
+
 def proportion_confidence(
     successes: int,
     trials: int,

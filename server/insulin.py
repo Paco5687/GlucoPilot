@@ -14,30 +14,27 @@ with complete pump data (Glooko-only stretches have no basal) — so we surface
 `data_through` prominently.
 """
 
-import bisect
 import logging
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
-from statistics import mean, median, pstdev
+from statistics import mean
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from . import profile
+from .analytics_confidence import mean_confidence
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value
-from .data_quality import assess_cgm, assess_pump_tdd, build_envelope, cgm_points
+from .data_quality import assess_cgm, assess_pump_tdd, build_envelope
 from .insulin_reconciliation import reconcile_treatments
+from .insulin_response import ASSUMPTIONS as RESPONSE_ASSUMPTIONS
+from .insulin_response import IOB_ACTION_MINUTES
+from .insulin_response import build_response_events
 from .repositories import get_repositories
 
 log = logging.getLogger("glucopilot.insulin")
 
-# Absorption analysis tunables
 ABS_WINDOW_DAYS = 120
-RESPONSE_MIN = 120        # look for the post-dose low within this many minutes
-CARB_GUARD_MIN = 20       # exclude boluses with carbs within ±this (meal-related)
-STACK_GUARD_PRE_MIN = 30  # exclude if another dose sits in [-this, +RESPONSE_MIN]
-MIN_UNITS = 0.5
-MIN_START_GLUCOSE = 100   # need room to fall to see a correction's effect
 
 WINDOW_DAYS = 90
 CURRENT_DATA_DAYS = 14
@@ -223,26 +220,18 @@ def estimate() -> dict[str, Any]:
     }
 
 
-def _epoch(ts: str) -> float | None:
-    try:
-        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
-    except (ValueError, TypeError):
-        return None
-
-
 def absorption() -> dict[str, Any]:
-    """How consistently insulin lowers glucose. Isolates CLEAN correction boluses
-    (no carbs nearby, no dose stacking, glucose elevated so there's room to fall),
-    measures the drop over the next RESPONSE_MIN minutes, and reports drop-per-unit
-    and — the key signal — its variability (CV). High CV = the same dose can do
-    very different things ('sometimes a lot does little, a little does a lot')."""
+    """Build observational response events and analyze clean events by default."""
     now = datetime.now(timezone.utc)
     since_at = now - timedelta(days=ABS_WINDOW_DAYS)
     since = since_at.isoformat(timespec="seconds").replace("+00:00", "Z")
+    source_since = (
+        since_at - timedelta(minutes=IOB_ACTION_MINUTES)
+    ).isoformat(timespec="seconds").replace("+00:00", "Z")
 
     repositories = get_repositories()
     glucose_rows = repositories.glucose.query(
-        {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}},
+        {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": source_since}},
         "timestamp",
         300000,
     )
@@ -250,106 +239,111 @@ def absorption() -> dict[str, Any]:
     cgm_quality = assess_cgm(
         glucose_rows, tz, start=since_at, end=now, as_of=now.astimezone(tz).date()
     )
-    pts = [(instant.timestamp(), value) for instant, value in cgm_points(
-        glucose_rows, tz, start=since_at, end=now
-    )]
-    times = [p[0] for p in pts]
-    vals = [p[1] for p in pts]
 
-    def response_quality(samples: list[tuple[float, float]]) -> dict[str, Any]:
-        latest = max((sample[0] for sample in samples), default=None)
-        blockers = () if cgm_quality["ai_eligible"] else ("CGM input did not meet the reliability threshold",)
-        return build_envelope(
-            "insulin_response", observed=len(samples), expected=8, unit="clean_correction_boluses",
-            data_through=datetime.fromtimestamp(latest, tz).date() if latest is not None else None,
-            as_of=now.astimezone(tz).date(), blocking_reasons=blockers,
-            limitations=("Response estimates exclude meal-related and stacked doses.",),
-            input_values=(f"{timestamp}:{value:g}" for timestamp, value in samples),
-        )
-
-    if len(times) < 100:
-        quality = response_quality([])
-        return {
-            "available": False, "reason": "Not enough CGM data in range.", "quality": quality,
-            "data_quality": {"cgm": cgm_quality, "insulin_response": quality},
-        }
-
-    boluses, carbs, ins_times = [], [], []
-    for t in repositories.treatments.query(
-        {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}},
+    treatments = repositories.treatments.query(
+        {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": source_since}},
         "timestamp",
         100000,
-    ):
-        e = _epoch(t.get("timestamp"))
-        if e is None:
-            continue
-        if t.get("type") == "insulin" and t.get("event_type") != "Daily Total" and t.get("amount"):
-            boluses.append((e, float(t["amount"])))
-            ins_times.append(e)
-        elif t.get("type") == "carb" and t.get("amount"):
-            carbs.append(e)
-    boluses.sort()
-    carbs.sort()
-    ins_times.sort()
+    )
 
-    def any_in(sorted_list, lo, hi):
-        return bisect.bisect_right(sorted_list, hi) > bisect.bisect_left(sorted_list, lo)
+    def entity_rows(entity_type: str, field: str, lower: str) -> list[dict[str, Any]]:
+        return repositories.entity(entity_type).query(
+            {"owner_email": OWNER_EMAIL, field: {"$gte": lower}},
+            field,
+            100000,
+        )
 
-    def cgm_at(e, tol=600):
-        i = bisect.bisect_left(times, e)
-        best, bd = None, None
-        for j in (i - 1, i):
-            if 0 <= j < len(times):
-                d = abs(times[j] - e)
-                if d <= tol and (bd is None or d < bd):
-                    bd, best = d, vals[j]
-        return best
-
-    dpus: list[tuple[float, float]] = []
-    for e, units in boluses:
-        if units < MIN_UNITS:
-            continue
-        if any_in(carbs, e - CARB_GUARD_MIN * 60, e + CARB_GUARD_MIN * 60):
-            continue  # meal-related
-        lo = bisect.bisect_left(ins_times, e - STACK_GUARD_PRE_MIN * 60)
-        hi = bisect.bisect_right(ins_times, e + RESPONSE_MIN * 60)
-        if hi - lo > 1:
-            continue  # dose stacking in the response window
-        g0 = cgm_at(e)
-        if g0 is None or g0 < MIN_START_GLUCOSE:
-            continue
-        a = bisect.bisect_left(times, e)
-        b = bisect.bisect_right(times, e + RESPONSE_MIN * 60)
-        seg = vals[a:b]
-        if not seg:
-            continue
-        dpus.append((e, (g0 - min(seg)) / units))
-
-    quality = response_quality(dpus)
-    if len(dpus) < 8:
-        return {
-            "available": False,
-            "reason": f"Only {len(dpus)} clean correction boluses in {ABS_WINDOW_DAYS}d — need more.",
-            "quality": quality,
-            "data_quality": {"cgm": cgm_quality, "insulin_response": quality},
-        }
-
-    values = [value for _, value in dpus]
-    m = mean(values)
-    cv = round(pstdev(values) / m * 100) if m else None
-    consistency = "highly variable" if (cv or 0) >= 50 else "variable" if (cv or 0) >= 30 else "consistent"
-    est = estimate()
+    response = build_response_events(
+        treatments,
+        glucose_rows,
+        period_logs=entity_rows("PeriodLog", "date", since[:10]),
+        wearable_days=[
+            *entity_rows("OuraDaily", "date", since[:10]),
+            *entity_rows("FitbitDaily", "date", since[:10]),
+        ],
+        fingersticks=entity_rows("FingerstickReading", "timestamp", source_since),
+        timezone_name=str(tz),
+        event_start=since_at,
+        event_end=now,
+    )
+    clean = [event for event in response["events"] if event["included_by_default"]]
+    samples = [
+        (
+            event["observed"]["bolus"].get("timestamp"),
+            event["calculations"]["nadir_drop_per_unit_mg_dl"],
+        )
+        for event in clean
+        if event["calculations"]["nadir_drop_per_unit_mg_dl"] is not None
+    ]
+    sample_dates = {
+        event["context"]["local_date"]
+        for event in clean
+        if event["calculations"]["nadir_drop_per_unit_mg_dl"] is not None
+    }
+    data_through = (
+        date.fromisoformat(max(sample_dates)) if sample_dates else None
+    )
+    blockers = (
+        ()
+        if cgm_quality["ai_eligible"]
+        else ("CGM input did not meet the reliability threshold",)
+    )
+    quality = build_envelope(
+        "insulin_response",
+        observed=len(samples),
+        expected=8,
+        unit="clean_correction_boluses",
+        data_through=data_through,
+        as_of=now.astimezone(tz).date(),
+        blocking_reasons=blockers,
+        limitations=(
+            "Confounded and under-covered events are retained but excluded from default analysis.",
+            RESPONSE_ASSUMPTIONS["iob"]["limitations"],
+        ),
+        input_values=(
+            f"{timestamp}:{value:g}" for timestamp, value in samples
+        ),
+    )
+    values = [float(value) for _, value in samples]
+    confidence = mean_confidence(
+        values,
+        valid_days=len(sample_dates),
+        expected_days=ABS_WINDOW_DAYS,
+        unit="mg/dL/U",
+    )
+    available = len(values) >= 8
+    cv = response["analysis"]["cv_pct"]
+    consistency = (
+        "highly variable"
+        if (cv or 0) >= 50
+        else "variable"
+        if (cv or 0) >= 30
+        else "consistent"
+    )
+    estimate_result = estimate() if available else {}
     return {
-        "available": True,
+        **response,
+        "available": available,
+        "reason": (
+            None
+            if available
+            else f"Only {len(values)} clean correction boluses in {ABS_WINDOW_DAYS}d — need 8."
+        ),
         "n": len(values),
-        "mean_drop_per_unit": round(m, 1),
-        "median_drop_per_unit": round(median(values), 1),
+        "mean_drop_per_unit": response["analysis"]["mean_nadir_drop_per_unit_mg_dl"],
+        "median_drop_per_unit": response["analysis"]["median_nadir_drop_per_unit_mg_dl"],
         "cv_pct": cv,
-        "min_drop_per_unit": round(min(values)),
-        "max_drop_per_unit": round(max(values)),
-        "consistency": consistency,
-        "expected_isf": est.get("est_isf_mgdl_per_u") if est.get("available") else None,
+        "min_drop_per_unit": round(min(values)) if values else None,
+        "max_drop_per_unit": round(max(values)) if values else None,
+        "consistency": consistency if values else None,
+        "expected_isf": (
+            estimate_result.get("est_isf_mgdl_per_u")
+            if estimate_result.get("available")
+            else None
+        ),
         "window_days": ABS_WINDOW_DAYS,
+        "response_window_minutes": RESPONSE_ASSUMPTIONS["response_window_minutes"],
+        "confidence": confidence,
         "quality": quality,
         "data_quality": {"cgm": cgm_quality, "insulin_response": quality},
     }
@@ -360,5 +354,8 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
     if action == "resistance":
         return estimate()
     if action == "absorption":
-        return absorption()
+        result = absorption()
+        if body.get("include_events") is False:
+            result.pop("events", None)
+        return result
     return {"error": "Unknown action", "_status": 400}

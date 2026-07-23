@@ -9,7 +9,7 @@ import re
 import sqlite3
 import threading
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any, Literal
 from urllib.parse import quote
@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from . import db
 from .auth import require_login
-from .config import OWNER_EMAIL
+from .config import APP_TIMEZONE, OWNER_EMAIL
 from .contradictions import SqliteContradictionRepository
 from .claims import CLAIM_CONTRACT_VERSION, SqliteClaimVersionRepository
 from .data_contracts import DEPLOYMENT_OWNER_ID
@@ -29,13 +29,14 @@ from .evidence_sets import (
     evidence_set_reads_enabled,
 )
 from .lab_audit import qualification as lab_qualification
+from .insulin_response import build_response_events
 from .relationship_api import _public_edge
 from .relationships import SqliteRelationshipRepository, relationship_reads_enabled
 from .repositories import LegacyRepositoryCatalog
 
 
 BUNDLE_GENERATOR = "evidence-bundle"
-BUNDLE_VERSION = "2.1.0"
+BUNDLE_VERSION = "2.2.0"
 MAX_ITEM_BUDGET = 250
 MAX_SOURCE_ROWS = 100_000
 MAX_CONTRADICTIONS = 1_000
@@ -454,6 +455,169 @@ def _load_entity_candidates(
                 "_relevance": _relevance(intent_tokens, entity_type, data),
             })
     return candidates, counts
+
+
+def _response_source_rows(
+    connection: sqlite3.Connection,
+    entity_type: str,
+    field: str,
+    lower: str,
+    upper: str,
+) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        f"""
+        SELECT id, data
+        FROM entities
+        WHERE type=? AND json_extract(data, '$.owner_email')=?
+          AND json_extract(data, '$.{field}')>=?
+          AND json_extract(data, '$.{field}')<=?
+        ORDER BY id
+        LIMIT ?
+        """,
+        (entity_type, OWNER_EMAIL, lower, upper, MAX_SOURCE_ROWS + 1),
+    ).fetchall()
+    if len(rows) > MAX_SOURCE_ROWS:
+        raise EvidenceBundleError(
+            "insulin response source rows exceed the bounded safety limit"
+        )
+    output = []
+    for row in rows:
+        try:
+            data = json.loads(row["data"])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(data, dict):
+            output.append({"id": row["id"], **data})
+    return output
+
+
+def _response_source_links(event: dict[str, Any]) -> list[dict[str, Any]]:
+    identities: set[tuple[str, str]] = set()
+
+    def add(entity_type: str, source: dict[str, Any] | None) -> None:
+        entity_id = str((source or {}).get("id") or "")
+        if entity_id:
+            identities.add((entity_type, entity_id))
+
+    observed = event["observed"]
+    add("Treatment", observed.get("bolus"))
+    add("GlucoseReading", observed.get("start_glucose"))
+    add("GlucoseReading", observed.get("end_glucose"))
+    add("GlucoseReading", observed.get("nadir_glucose"))
+    add("FingerstickReading", observed.get("context_source"))
+    for source in observed.get("carbohydrates", []):
+        add("Treatment", source)
+    for source in observed.get("subsequent_boluses", []):
+        add("Treatment", source)
+    for source in event["calculations"].get("iob_contributors", []):
+        entity_id = str(source.get("entity_id") or "")
+        if entity_id:
+            identities.add(("Treatment", entity_id))
+    return [
+        {
+            "kind": "normalized_entity",
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "href": _source_href(entity_type, entity_id),
+        }
+        for entity_type, entity_id in sorted(identities)
+    ]
+
+
+def _load_insulin_response_candidates(
+    connection: sqlite3.Connection,
+    query: EvidenceBundleQuery,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    if EvidenceDomain.INSULIN not in query.domains:
+        return [], {}
+    source_start = query.start - timedelta(minutes=240)
+    source_end = query.end + timedelta(minutes=130)
+    lower = _instant(source_start)
+    upper = _instant(source_end)
+    start_date = (query.start.date() - timedelta(days=1)).isoformat()
+    end_date = (query.end.date() + timedelta(days=1)).isoformat()
+    treatments = _response_source_rows(
+        connection, "Treatment", "timestamp", lower, upper
+    )
+    glucose = _response_source_rows(
+        connection, "GlucoseReading", "timestamp", lower, upper
+    )
+    periods = _response_source_rows(
+        connection, "PeriodLog", "date", start_date, end_date
+    )
+    oura_days = _response_source_rows(
+        connection, "OuraDaily", "date", start_date, end_date
+    )
+    fitbit_days = _response_source_rows(
+        connection, "FitbitDaily", "date", start_date, end_date
+    )
+    fingersticks = _response_source_rows(
+        connection, "FingerstickReading", "timestamp", lower, upper
+    )
+    if sum(
+        len(rows)
+        for rows in (
+            treatments,
+            glucose,
+            periods,
+            oura_days,
+            fitbit_days,
+            fingersticks,
+        )
+    ) > MAX_SOURCE_ROWS:
+        raise EvidenceBundleError(
+            f"insulin response query matches more than {MAX_SOURCE_ROWS} source rows; "
+            "narrow the time range"
+        )
+    response = build_response_events(
+        treatments,
+        glucose,
+        period_logs=periods,
+        wearable_days=[*oura_days, *fitbit_days],
+        fingersticks=fingersticks,
+        timezone_name=db.config_value("app_timezone", APP_TIMEZONE),
+        event_start=query.start,
+        event_end=query.end,
+    )
+    intent_tokens = set(_TOKEN.findall(query.question_intent.lower()))
+    candidates = []
+    for event in response["events"]:
+        observed_at = str(event["observed"]["bolus"].get("timestamp") or "")
+        try:
+            event_time = datetime.fromisoformat(
+                observed_at.replace("Z", "+00:00")
+            ).astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        if not query.start <= event_time <= query.end:
+            continue
+        data = _sanitize(event)
+        candidates.append(
+            {
+                "id": f"derived:InsulinResponseEvent:{event['id']}",
+                "category": "derived_metric",
+                "domain": EvidenceDomain.INSULIN.value,
+                "entity_type": "InsulinResponseEvent",
+                "entity_id": event["id"],
+                "observed_at": observed_at,
+                "recorded_at": None,
+                "data": data,
+                "confidence": {
+                    "label": "not_assessed",
+                    "score": None,
+                    "method": event["algorithm_version"],
+                    "limitations": [
+                        "This is an observational response window; causation, resistance, and absorption are not inferred.",
+                        event["assumptions"]["iob"]["limitations"],
+                    ],
+                },
+                "source_links": _response_source_links(event),
+                "_relevance": _relevance(
+                    intent_tokens, "InsulinResponseEvent", data
+                ),
+            }
+        )
+    return candidates, {"InsulinResponseEvent": len(candidates)}
 
 
 def _interval_bounds(start: str, end: str | None) -> tuple[datetime, datetime | None]:
@@ -879,6 +1043,11 @@ def build_bundle(query: EvidenceBundleQuery) -> dict[str, Any]:
     with db.connect() as connection:
         connection.execute("BEGIN")
         entity_candidates, counts = _load_entity_candidates(connection, query)
+        response_candidates, response_counts = _load_insulin_response_candidates(
+            connection, query
+        )
+        entity_candidates.extend(response_candidates)
+        counts.update(response_counts)
         episode_candidates, episode_counts = _load_episode_candidates(connection, query)
         counts.update(episode_counts)
         anchors = sorted(entity_candidates, key=_candidate_key)[:query.item_budget]

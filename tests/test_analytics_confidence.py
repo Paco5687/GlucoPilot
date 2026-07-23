@@ -11,6 +11,7 @@ from server.analytics_confidence import (
     DISCOVERY_STATUSES,
     comparison_confidence,
     correlation_confidence,
+    mean_confidence,
     phase_provenance,
     proportion_confidence,
     safe_analytics_text,
@@ -127,6 +128,27 @@ def test_small_comparison_and_recurrence_cannot_claim_definitive_strength(golden
     assert "definitive" not in safe_analytics_text(
         "This definitive result proves causality.", envelope, "Five recurrences were observed."
     ).lower()
+
+
+def test_observational_mean_uses_shared_noncausal_confidence_contract():
+    envelope = mean_confidence(
+        [20, 22, 24, 26],
+        valid_days=4,
+        expected_days=120,
+        unit="mg/dL/U",
+    )
+
+    assert envelope["effect_size"] == {
+        "metric": "observed_mean",
+        "value": 23.0,
+        "magnitude": "not_clinically_classified",
+        "direction": "observed",
+        "unit": "mg/dL/U",
+    }
+    assert envelope["confidence_interval"]["lower"] < 23
+    assert envelope["confidence_interval"]["upper"] > 23
+    assert envelope["discovery_status"] == "exploratory"
+    assert envelope["language"]["causal_allowed"] is False
 
 
 def test_cycle_phase_provenance_and_evidence_confidence_are_preserved(golden):

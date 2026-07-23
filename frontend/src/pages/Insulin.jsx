@@ -36,6 +36,78 @@ const CONSISTENCY = {
   consistent: { cls: "text-emerald-600", bg: "bg-emerald-500/10" },
 };
 
+function ResponseEvents({ absn }) {
+  if (!absn) return null;
+  if (!absn.counts?.total) {
+    return (
+      <div className="space-y-2">
+        <p className="text-xs text-muted-foreground">Insulin response events: {absn.reason}</p>
+        <DataQualityNote label="Insulin response" quality={absn.quality} />
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <h2 className="font-semibold text-base">Observed insulin response events</h2>
+      <DataQualityNote label="Insulin response" quality={absn.quality} />
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Stat label="Response windows" value={absn.counts.total} sub={`${absn.window_days}-day source window`} />
+        <Stat label="Clean by default" value={absn.counts.clean} sub="used in summaries" />
+        <Stat label="Confounded" value={absn.counts.confounded} sub="retained, not summarized" />
+        <Stat label="Excluded" value={absn.counts.excluded} sub="invalid or insufficient input" />
+      </div>
+      {absn.available ? (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className={`rounded-xl border border-border p-5 ${(CONSISTENCY[absn.consistency] || {}).bg}`}>
+            <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Observed response variability</div>
+            <div className={`text-2xl font-bold mt-1 capitalize ${(CONSISTENCY[absn.consistency] || {}).cls}`}>{absn.consistency}</div>
+            <div className="text-sm text-muted-foreground mt-1">variability (CV) <b className="tabular-nums">{absn.cv_pct}%</b></div>
+            <div className="text-[11px] text-muted-foreground mt-2">
+              Across {absn.n} clean response windows · {absn.confidence?.discovery_status || "not assessed"} · {absn.confidence?.confidence_label || "low"} confidence.
+            </div>
+          </div>
+          <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <Stat label="Median observed drop" value={absn.median_drop_per_unit} unit="mg/dL/U" />
+            <Stat label="Mean observed drop" value={absn.mean_drop_per_unit} unit="mg/dL/U" />
+            <Stat label="Observed range" value={`${absn.min_drop_per_unit}–${absn.max_drop_per_unit}`} sub="mg/dL per unit" />
+            <Stat label="Expected (ISF)" value={absn.expected_isf} unit="mg/dL/U" sub="1800 rule" />
+          </div>
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">{absn.reason}</p>
+      )}
+      {Object.keys(absn.reason_counts || {}).length > 0 && (
+        <div className="bg-muted/40 rounded-xl border border-border p-3">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Explicit exclusion and confounder reasons</div>
+          <div className="text-xs text-muted-foreground">
+            {Object.entries(absn.reason_counts).map(([reason, count]) => `${reason.replaceAll("_", " ")} (${count})`).join(" · ")}
+          </div>
+        </div>
+      )}
+      {absn.available && Object.entries(absn.analysis?.strata || {}).some(([, rows]) => rows.length > 0) && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {Object.entries(absn.analysis.strata).map(([dimension, rows]) => rows.length > 0 && (
+            <div key={dimension} className="bg-card rounded-xl border border-border p-3">
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">{dimension.replaceAll("_", " ")}</div>
+              <div className="space-y-1">
+                {rows.map((row) => (
+                  <div key={row.value} className="flex justify-between gap-3 text-xs">
+                    <span className="capitalize">{row.value}</span>
+                    <span className="tabular-nums text-muted-foreground">{row.median_nadir_drop_per_unit_mg_dl} mg/dL/U · n={row.sample_count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      <p className="text-[11px] text-muted-foreground">
+        Each event records a {absn.response_window_minutes}-minute glucose window under algorithm {absn.algorithm_version}. Confounded events remain visible but are excluded from summaries by default. The observed glucose change does not establish insulin causation, resistance, or absorption. Estimated IOB is a comparison assumption, not pump-reported IOB, and does not model basal insulin, insulin type, personal action curves, or dose absorption.
+      </p>
+    </div>
+  );
+}
+
 export default function Insulin() {
   const [r, setR] = useState(null);
   const [absn, setAbsn] = useState(null);
@@ -46,7 +118,7 @@ export default function Insulin() {
     try {
       const [res, ab] = await Promise.all([
         base44.functions.invoke("insulin", { action: "resistance" }),
-        base44.functions.invoke("insulin", { action: "absorption" }),
+        base44.functions.invoke("insulin", { action: "absorption", include_events: false }),
       ]);
       setR(res.data);
       setAbsn(ab.data);
@@ -63,7 +135,7 @@ export default function Insulin() {
       <SafetyBanner />
       <div>
         <h1 className="text-xl font-bold flex items-center gap-2"><Syringe className="w-5 h-5 text-primary" /> Insulin</h1>
-        <p className="text-sm text-muted-foreground mt-1">Resistance / sensitivity estimates from your dosing, glucose, cycle, and body profile. Estimates, not clinical settings.</p>
+        <p className="text-sm text-muted-foreground mt-1">Resistance / sensitivity proxies from your dosing, glucose, cycle, and body profile. Observational estimates, not diagnoses or clinical settings.</p>
       </div>
 
       <ContradictionPanel domains={["pump_tdd"]} title="Pump total contradictions" />
@@ -119,6 +191,9 @@ export default function Insulin() {
               sub={`${r.reconciliation?.calculated_days || 0} full delivered-basal day${r.reconciliation?.calculated_days === 1 ? "" : "s"}`}
             />
           </div>
+          <p className="text-[11px] text-muted-foreground">
+            The TDD/kg category is a screening proxy that assumes complete daily insulin and a current body weight. It does not diagnose biologic insulin resistance or distinguish absorption, meals, illness, stress, activity, or dosing strategy.
+          </p>
 
           {r.reconciliation?.limitations?.length > 0 && (
             <div className="bg-muted/40 rounded-xl border border-border p-3 text-xs text-muted-foreground space-y-1">
@@ -138,7 +213,7 @@ export default function Insulin() {
               <div className="text-sm">
                 <span className="font-medium">TDD trend:</span> {r.trend.recent_tdd} U recently vs {r.trend.prior_tdd} U earlier
                 <span className="text-muted-foreground"> ({r.trend.pct_change > 0 ? "+" : ""}{r.trend.pct_change}%)</span>
-                {Math.abs(r.trend.pct_change) >= 10 && <span className="text-muted-foreground"> — {r.trend.pct_change > 0 ? "rising insulin need suggests increasing resistance" : "falling insulin need suggests improving sensitivity"}</span>}
+                {Math.abs(r.trend.pct_change) >= 10 && <span className="text-muted-foreground"> — an observed dosing change; resistance, absorption, illness, meals, and activity are not distinguishable from TDD alone</span>}
               </div>
             </div>
           )}
@@ -158,40 +233,9 @@ export default function Insulin() {
             </div>
           )}
 
-          {absn?.available && (
-            <div className="space-y-3">
-              <h2 className="font-semibold text-base">Insulin absorption &amp; response</h2>
-              <DataQualityNote label="Insulin response" quality={absn.quality} />
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                <div className={`rounded-xl border border-border p-5 ${(CONSISTENCY[absn.consistency] || {}).bg}`}>
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Response consistency</div>
-                  <div className={`text-2xl font-bold mt-1 capitalize ${(CONSISTENCY[absn.consistency] || {}).cls}`}>{absn.consistency}</div>
-                  <div className="text-sm text-muted-foreground mt-1">variability (CV) <b className="tabular-nums">{absn.cv_pct}%</b></div>
-                  <div className="text-[11px] text-muted-foreground mt-2">
-                    Across {absn.n} clean correction boluses (no carbs/stacking). High variability = the same dose can act very differently.
-                  </div>
-                </div>
-                <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <Stat label="Typical drop" value={absn.median_drop_per_unit} unit="mg/dL/U" sub="median" />
-                  <Stat label="Average drop" value={absn.mean_drop_per_unit} unit="mg/dL/U" sub="mean" />
-                  <Stat label="Range" value={`${absn.min_drop_per_unit}–${absn.max_drop_per_unit}`} sub="mg/dL per unit" />
-                  <Stat label="Expected (ISF)" value={absn.expected_isf} unit="mg/dL/U" sub="1800 rule" />
-                </div>
-              </div>
-              <p className="text-[11px] text-muted-foreground">
-                Measured as the glucose fall over {absn.window_days === 120 ? "the ~2 hours" : "2 hours"} after each correction, per unit.
-                A wide range / high CV points to inconsistent absorption or timing — worth watching for site issues, activity, or stress around those doses.
-              </p>
-            </div>
-          )}
-          {absn && !absn.available && r?.available && (
-            <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">Absorption analysis: {absn.reason}</p>
-              <DataQualityNote label="Insulin response" quality={absn.quality} />
-            </div>
-          )}
         </>
       )}
+      {!loading && <ResponseEvents absn={absn} />}
     </div>
   );
 }

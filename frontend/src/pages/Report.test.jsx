@@ -38,6 +38,15 @@ const report = {
     },
   },
   insulin: { available: false, quality: {}, nutrition_quality: {} },
+  insulin_response: {
+    available: false,
+    reason: "Only 2 clean correction boluses in 120d — need 8.",
+    algorithm_version: "insulin-response/1.0.0",
+    window_days: 120,
+    counts: { total: 4, clean: 2, confounded: 1, excluded: 1 },
+    reason_counts: { carbohydrate_in_response_window: 1 },
+    quality: {},
+  },
   cycle: { available: false, quality: {} },
   wellness: { oura: null, fitbit: null, quality: {} },
   labs: { available: false, categories: {}, flagged: [], verification: {} },
@@ -128,6 +137,9 @@ describe("visit report contradictions", () => {
 
     expect(await screen.findByText("Unresolved data contradictions")).toBeTruthy();
     expect(screen.getByText("Synthetic pump totals disagree.")).toBeTruthy();
+    expect(screen.getByText("Observed insulin response events")).toBeTruthy();
+    expect(screen.getByText(/carbohydrate in response window \(1\)/i)).toBeTruthy();
+    expect(screen.getByText(/does not establish insulin causation, resistance, or absorption/i)).toBeTruthy();
     expect(screen.getByText("30 units/day")).toBeTruthy();
     expect(screen.getByText("24 units/day")).toBeTruthy();
     expect(screen.getByText(/No conflicting value has been selected silently/)).toBeTruthy();
