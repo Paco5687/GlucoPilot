@@ -75,6 +75,13 @@ The assistant `ChatMessage` stores a compact `evidence` block containing:
 No new schema or migration is required. Existing messages remain readable and
 simply lack the new evidence controls.
 
+`ActivityPositionEffect` is additionally fail-closed at portfolio selection.
+Companion receives only effects marked `qualifies_for_companion` by
+`activity-position-analysis/1.0.0` (at least 14 samples, emerging/reproduced
+status, and numerical confidence of at least 0.50). Exploratory and invalid
+position/activity comparisons remain visible in direct user/report surfaces
+but cannot be cited by Companion.
+
 ## Evidence commands
 
 Every newly grounded assistant message exposes three owner-checked commands:

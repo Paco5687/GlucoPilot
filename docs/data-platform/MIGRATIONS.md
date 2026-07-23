@@ -42,6 +42,7 @@ the other waits, rechecks the ledger, and applies nothing.
 | 16 | `canonical_health_episodes` | Adds canonical health and medication-exposure intervals, proposed/confirmed/dismissed lifecycle, append-only membership and audit events, owner/source validation support, and a database-enforced non-causal temporal-membership constraint. |
 | 17 | `oura_sleep_score_relabel` | Relabels legacy Oura contributor scores that were stored under duration names without overwriting real durations or existing score fields. |
 | 18 | `fingerstick_reconciliation_context` | Extends the rebuildable strict fingerstick projection with fixed pair timing/trend, absolute and relative differences, low semantic classes, bounded context JSON, and reconciliation algorithm version. |
+| 19 | `activity_position_intervals` | Adds immutable owner-scoped manual/wearable activity-position intervals and append-only correction/inference events; manual precedence is resolved in application reads without deleting source inference. |
 
 ## Adding a migration
 

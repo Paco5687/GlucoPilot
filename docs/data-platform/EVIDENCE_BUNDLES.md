@@ -121,6 +121,13 @@ explicit reasons, and exact normalized source links. These items are ranked
 within the existing shared budget, do not persist a second copy of source
 facts, and do not infer causation, resistance, or absorption.
 
+Evidence Bundle 2.3 adds source-linked `ActivityPositionEffect` items for
+bounded wearable/analytics queries. Effects retain sample size, measured and
+missing intervals, the shared confidence envelope, and explicit replication
+status. Daily wearable totals never become event-time position evidence.
+Companion filters this type to qualifying effects only; exploratory and invalid
+effects remain visible to direct bundle, Wearables, and Visit Report consumers.
+
 ## Shared Overview and Visit Report consumer
 
 `server/clinical_evidence.py` is the common G8 adapter over this API. Overview

@@ -149,6 +149,14 @@ the Insulin page, Visit Report, and Evidence Bundle 2.2 preserve the boundary
 between source facts, calculations, associations, and resistance/absorption
 interpretations. The events are rebuilt on demand and add no backup surface.
 
+P4 adds immutable activity/position intervals and correction events in SQLite.
+Manual observations take precedence over overlapping wearable inference while
+both remain auditable. Timestamped intervals support glucose, morning,
+bolus-response, and fingerstick discrepancy comparisons under the shared
+confidence contract. Evidence Bundle 2.3 exposes quantified effects, and
+Companion receives only effects that pass the explicit sample/status/confidence
+gate.
+
 ## Frontend (`frontend/`)
 
 React + Vite + Tailwind + shadcn/ui, charts via Recharts, canvas Explorer chart.

@@ -47,6 +47,21 @@ const report = {
     reason_counts: { carbohydrate_in_response_window: 1 },
     quality: {},
   },
+  activity_position: {
+    effects: [{
+      id: "activity-effect-report",
+      dimension: "position",
+      state: "standing",
+      metric: "glucose_slope_mg_dl_per_hour",
+      observed_mean: 3.2,
+      unit: "mg/dL/hour",
+      sample_count: 14,
+      measured_interval_count: 14,
+      interval_count: 16,
+      replication_status: "not-attempted",
+      analytics_confidence: { discovery_status: "emerging" },
+    }],
+  },
   cycle: { available: false, quality: {} },
   wellness: { oura: null, fitbit: null, quality: {} },
   labs: { available: false, categories: {}, flagged: [], verification: {} },
@@ -158,5 +173,8 @@ describe("visit report contradictions", () => {
     expect(screen.getByText("CGM and meter reconciliation")).toBeTruthy();
     expect(screen.getByText(/persistent CGM-high direction observed/)).toBeTruthy();
     expect(screen.getByText(/do not correct CGM time-below-range/)).toBeTruthy();
+    expect(screen.getByText("Activity & position associations")).toBeTruthy();
+    expect(screen.getByText(/14\/16 intervals measured/)).toBeTruthy();
+    expect(screen.getByText(/do not establish that activity or position caused/i)).toBeTruthy();
   });
 });

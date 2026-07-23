@@ -117,6 +117,13 @@ membership and correction history, and database-enforced temporal-only
 semantics. They do not use generic entity CRUD and do not replace the source
 symptom, glucose, cycle, treatment, history, or medication rows they reference.
 
+Migration 19 adds strict, append-only `activity_position_intervals` and
+`activity_position_events`. Dedicated owner-scoped APIs record manual
+activity/position ranges and corrections; timestamped wearable step intervals
+may add low-confidence walking inference. Manual rows take query-time
+precedence without updating or deleting inferred rows. Daily wearable totals
+remain separate context rather than event-time position evidence.
+
 ## Operational records
 
 | Entity | Schema | Identity / notes |
