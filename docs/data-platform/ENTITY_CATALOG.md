@@ -63,7 +63,7 @@ storage and are reported as unmappable.
 | Entity | Schema | Identity / mutation | Missing-data behavior |
 |---|---|---|---|
 | `HealthProfile` | Owner singleton; height, weight, date of birth, sex, units. | First owner row patched. | BMI/age null when inputs are absent/invalid. |
-| `Diagnosis` | Owner; name, diagnosed date, status, notes. | Random ID; append/delete. | Empty optional values retained. |
+| `Diagnosis` | Owner; name, diagnosed date, active/resolved status, notes. | Random ID; append/delete. | Confirmed conditions only. Legacy `suspected` rows remain readable but are excluded from diagnosis evidence and surfaced through the hypothesis ledger. |
 | `Medication` | Owner; name, medication/supplement kind, dose, frequency, active/stopped status, notes. | Random ID; append/delete. | No exposure start/stop interval. |
 | `Allergy` | Owner; allergen, reaction, severity, notes. | Random ID; append/delete. | Empty optional values retained. |
 | `InsuranceInfo` | Owner singleton; carrier/plan/member/Rx/contact/effective-date fields and notes. | First owner row patched; card extraction is preview-only until save. | Unread fields empty; confidence/source location not stored. |
@@ -101,6 +101,13 @@ Migration 14 also adds strict `claim_algorithm_registry` and `claim_versions`
 tables plus evidence roles/rationales. They are not generic API entities; JSON
 Pattern/Insight rows remain the compatibility surface and source observations
 remain authoritative.
+
+Migration 15 adds strict `health_hypotheses`, append-only
+`hypothesis_evidence`, and append-only `hypothesis_events`. These rows are
+owner-scoped and use a dedicated guarded API rather than generic entity CRUD.
+They keep patient/algorithm/clinician proposals distinct from `Diagnosis`,
+retain supporting/opposing/missing evidence revisions, and require an
+attributable clinician decision for confirmed or ruled-against status.
 
 ## Operational records
 

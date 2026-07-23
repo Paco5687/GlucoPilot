@@ -38,6 +38,7 @@ the other waits, rechecks the ledger, and applies nothing.
 | 12 | `evidence_sets_and_observation_windows` | Adds bounded checksum-addressed time-series windows and claim evidence sets without per-sample graph edges or legacy-read changes. |
 | 13 | `relationship_projection_runs` | Adds strict graph build runs, historical run-edge membership, active generated edges, checksums, watermarks, and freshness state for atomic full/scoped rebuilds. |
 | 14 | `versioned_evidence_backed_claims` | Adds the governed Pattern/Insight algorithm registry, immutable claim-version lineage, EvidenceSet links, evidence roles/rationales, and structured limitations. |
+| 15 | `guarded_health_hypothesis_ledger` | Adds hypothesis origin/status, append-only supporting/opposing/missing evidence revisions, attributable confidence and lifecycle events, and clinician-gated terminal decisions. |
 
 ## Adding a migration
 

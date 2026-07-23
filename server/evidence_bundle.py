@@ -333,6 +333,10 @@ def _item_domain(
 def _entity_where(entity_type: str, query: EvidenceBundleQuery) -> tuple[str, list[Any]]:
     where = ["type=?", "json_extract(data, '$.owner_email')=?"]
     parameters: list[Any] = [entity_type, OWNER_EMAIL]
+    if entity_type == "Diagnosis":
+        # Legacy suspected entries are tentative and must never be presented as
+        # confirmed clinical facts. G10 exposes them through the hypothesis ledger.
+        where.append("COALESCE(json_extract(data, '$.status'), 'active')!='suspected'")
     time_contract = _TIME_FIELDS.get(entity_type)
     if time_contract:
         field, precision, include_undated = time_contract

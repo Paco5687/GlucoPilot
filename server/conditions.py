@@ -20,7 +20,7 @@ log = logging.getLogger("glucopilot.conditions")
 
 router = APIRouter()
 
-STATUSES = ("active", "resolved", "suspected")
+STATUSES = ("active", "resolved")
 
 
 def _list() -> list[dict[str, Any]]:
@@ -31,11 +31,12 @@ def _list() -> list[dict[str, Any]]:
 
 
 def get_conditions() -> list[dict[str, Any]]:
-    """Compact list for LLM context / report."""
+    """Confirmed diagnoses only; tentative entries live in the hypothesis ledger."""
     return [
         {"name": d.get("name"), "status": d.get("status") or "active",
          "diagnosed": d.get("diagnosed_date") or "", "notes": d.get("notes") or ""}
         for d in _list()
+        if d.get("status") != "suspected"
     ]
 
 
@@ -61,6 +62,11 @@ def add_condition(body: DiagnosisBody):
     if not name:
         raise HTTPException(status_code=400, detail="A condition name is required.")
     status = (body.status or "active").strip().lower()
+    if status == "suspected":
+        raise HTTPException(
+            status_code=400,
+            detail="Tentative conditions must be recorded in the hypothesis ledger.",
+        )
     db.create_entity("Diagnosis", {
         "name": name,
         "diagnosed_date": (body.diagnosed_date or "").strip(),

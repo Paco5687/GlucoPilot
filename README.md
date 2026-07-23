@@ -49,6 +49,10 @@ no health data ever leaves the machine.
 - **Contradiction review** — deterministic checks keep conflicting glucose,
   pump, lab, timing, and revised-source evidence side by side, with attributed
   resolution history and no silent winner.
+- **Health hypotheses** — tentative patient, algorithm, or clinician ideas stay
+  visibly separate from diagnoses, retain supporting, opposing, and missing
+  evidence plus attributable confidence changes, and require clinician review
+  before they can be marked confirmed or ruled against.
 
 **Track & analyze**
 

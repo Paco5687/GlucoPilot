@@ -28,6 +28,8 @@ registry counts also participate in manifest and clean-restore equality.
 Observation-window, Evidence Set, and set/window-link counts receive the same
 verification when migration 12 is present. Claim-algorithm registry and
 claim-version counts are also verified when migration 14 is present.
+Hypothesis, evidence-revision, immutable-event, and terminal-status counts are
+verified when migration 15 is present.
 
 Application startup performs this verified backup automatically before pending
 migrations touch an existing database. The default destination is

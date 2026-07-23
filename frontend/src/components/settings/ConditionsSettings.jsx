@@ -49,24 +49,44 @@ export default function ConditionsSettings() {
   }
 
   if (loading) return null;
+  const confirmedItems = items.filter((item) => item.status !== "suspected");
+  const legacySuspected = items.filter((item) => item.status === "suspected");
 
   return (
     <div className="bg-card rounded-xl border border-border p-5 space-y-4">
       <div className="flex items-center gap-2">
         <Stethoscope className="w-5 h-5 text-primary" />
         <div>
-          <h3 className="font-semibold text-sm">Conditions &amp; diagnoses</h3>
-          <p className="text-xs text-muted-foreground">e.g. Type 1 Diabetes, Hashimoto's. Feeds the Companion, Overview, and Visit Report.</p>
+          <h3 className="font-semibold text-sm">Confirmed conditions &amp; diagnoses</h3>
+          <p className="text-xs text-muted-foreground">Only established diagnoses belong here. Tentative ideas belong in the separate hypothesis ledger below.</p>
         </div>
       </div>
 
-      {items.length > 0 && (
+      {confirmedItems.length > 0 && (
         <div className="space-y-1.5">
-          {items.map((c) => (
+          {confirmedItems.map((c) => (
             <div key={c.id} className="group flex items-center gap-2 text-sm bg-muted/40 rounded-lg px-3 py-1.5">
               <span className="font-medium">{c.name}</span>
               <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${STATUS_TONE[c.status] || "bg-muted text-muted-foreground"}`}>{c.status}</span>
               {c.diagnosed_date && <span className="text-xs text-muted-foreground">dx {c.diagnosed_date}</span>}
+              {c.notes && <span className="text-xs text-muted-foreground truncate">· {c.notes}</span>}
+              <button onClick={() => remove(c.id)} className="ml-auto opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"><X className="w-3.5 h-3.5" /></button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {legacySuspected.length > 0 && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-1.5">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-amber-900">
+            Legacy suspected entries · hypotheses, not diagnoses
+          </p>
+          <p className="text-xs text-amber-800">
+            Re-enter these in the governed hypothesis ledger below to add evidence and review history.
+          </p>
+          {legacySuspected.map((c) => (
+            <div key={c.id} className="group flex items-center gap-2 text-sm">
+              <span className="font-medium">{c.name}</span>
               {c.notes && <span className="text-xs text-muted-foreground truncate">· {c.notes}</span>}
               <button onClick={() => remove(c.id)} className="ml-auto opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive"><X className="w-3.5 h-3.5" /></button>
             </div>
@@ -88,7 +108,6 @@ export default function ConditionsSettings() {
           <select value={status} onChange={(e) => setStatus(e.target.value)} className="mt-1 w-full h-9 rounded-md border border-border bg-background px-2 text-sm">
             <option value="active">active</option>
             <option value="resolved">resolved</option>
-            <option value="suspected">suspected</option>
           </select>
         </div>
         <div className="sm:col-span-2">

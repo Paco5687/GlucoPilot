@@ -26,6 +26,22 @@ const report = {
   cycle: { available: false, quality: {} },
   wellness: { oura: null, fitbit: null, quality: {} },
   labs: { available: false, categories: {}, flagged: [], verification: {} },
+  conditions: [{ name: "Synthetic confirmed diagnosis", status: "active", diagnosed: "2020-01-01" }],
+  hypotheses: [{
+    id: "hyp_report_synthetic",
+    title: "Synthetic report hypothesis",
+    description: "Tentative and under review.",
+    origin_kind: "algorithm",
+    origin_label: "synthetic-rule/1.0",
+    status: "under_review",
+    confidence_score: 0.5,
+    evidence_by_role: {
+      supporting: [{ summary: "Synthetic supporting evidence." }],
+      opposing: [{ summary: "Synthetic opposing evidence." }],
+      missing: [{ summary: "Synthetic missing evidence." }],
+    },
+    suggested_verification: "Synthetic clinician review.",
+  }],
   contradictions: {
     unresolved: [{
       id: "contr_report_synthetic",
@@ -80,5 +96,11 @@ describe("visit report contradictions", () => {
     expect(screen.getByText(/No conflicting value has been selected silently/)).toBeTruthy();
     expect(screen.getByText("Shared evidence context")).toBeTruthy();
     expect(screen.getByText("2026-05-01")).toBeTruthy();
+    expect(screen.getByText("Confirmed conditions & diagnoses")).toBeTruthy();
+    expect(screen.getByText(/Synthetic confirmed diagnosis/)).toBeTruthy();
+    expect(screen.getByText("Health hypotheses — not diagnoses")).toBeTruthy();
+    expect(screen.getByText("Synthetic supporting evidence.")).toBeTruthy();
+    expect(screen.getByText("Synthetic opposing evidence.")).toBeTruthy();
+    expect(screen.getByText("Synthetic missing evidence.")).toBeTruthy();
   });
 });

@@ -1576,6 +1576,200 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        15,
+        "guarded_health_hypothesis_ledger",
+        (
+            Statement(
+                """
+                CREATE TABLE health_hypotheses (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    owner_email TEXT NOT NULL CHECK(owner_email != ''),
+                    title TEXT NOT NULL CHECK(title != '' AND length(title) <= 240),
+                    description TEXT NOT NULL DEFAULT '' CHECK(length(description) <= 4000),
+                    origin_kind TEXT NOT NULL CHECK(
+                        origin_kind IN ('patient', 'algorithm', 'clinician')
+                    ),
+                    origin_label TEXT NOT NULL CHECK(origin_label != '' AND length(origin_label) <= 240),
+                    status TEXT NOT NULL CHECK(
+                        status IN (
+                            'proposed', 'under_review', 'confirmed',
+                            'ruled_against', 'archived'
+                        )
+                    ),
+                    confidence_score REAL NOT NULL CHECK(
+                        confidence_score >= 0 AND confidence_score <= 1
+                    ),
+                    confidence_method TEXT NOT NULL CHECK(
+                        confidence_method = 'weighted-evidence-v1'
+                    ),
+                    confidence_rationale TEXT NOT NULL DEFAULT ''
+                        CHECK(length(confidence_rationale) <= 2000),
+                    evidence_revision INTEGER NOT NULL CHECK(evidence_revision >= 0),
+                    evidence_input_version TEXT NOT NULL CHECK(
+                        length(evidence_input_version) = 71
+                        AND evidence_input_version LIKE 'sha256:%'
+                    ),
+                    suggested_verification TEXT NOT NULL DEFAULT ''
+                        CHECK(length(suggested_verification) <= 2000),
+                    review_at TEXT CHECK(
+                        review_at IS NULL OR review_at LIKE '____-__-__%'
+                    ),
+                    decided_by TEXT CHECK(
+                        decided_by IS NULL OR (decided_by != '' AND length(decided_by) <= 240)
+                    ),
+                    decided_at TEXT CHECK(decided_at IS NULL OR decided_at LIKE '%Z'),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    updated_at TEXT NOT NULL CHECK(updated_at LIKE '%Z'),
+                    CHECK(
+                        (status IN ('confirmed', 'ruled_against')
+                            AND decided_by IS NOT NULL AND decided_at IS NOT NULL)
+                        OR
+                        (status NOT IN ('confirmed', 'ruled_against')
+                            AND decided_by IS NULL AND decided_at IS NULL)
+                    )
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE hypothesis_evidence (
+                    id TEXT PRIMARY KEY,
+                    hypothesis_id TEXT NOT NULL REFERENCES health_hypotheses(id)
+                        ON DELETE RESTRICT,
+                    evidence_revision INTEGER NOT NULL CHECK(evidence_revision > 0),
+                    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                    evidence_role TEXT NOT NULL CHECK(
+                        evidence_role IN ('supporting', 'opposing', 'missing')
+                    ),
+                    source_kind TEXT NOT NULL CHECK(
+                        source_kind IN (
+                            'entity', 'evidence_item', 'evidence_set',
+                            'clinical_reference', 'patient_report', 'missing'
+                        )
+                    ),
+                    source_type TEXT NOT NULL DEFAULT '' CHECK(length(source_type) <= 120),
+                    source_id TEXT CHECK(
+                        source_id IS NULL OR (source_id != '' AND length(source_id) <= 500)
+                    ),
+                    source_version TEXT NOT NULL DEFAULT ''
+                        CHECK(length(source_version) <= 500),
+                    summary TEXT NOT NULL CHECK(summary != '' AND length(summary) <= 2000),
+                    weight REAL NOT NULL CHECK(weight > 0 AND weight <= 1),
+                    source_link_json TEXT NOT NULL DEFAULT '{}' CHECK(
+                        json_valid(source_link_json)
+                        AND json_type(source_link_json) = 'object'
+                    ),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    UNIQUE(hypothesis_id, evidence_revision, ordinal),
+                    CHECK(
+                        (evidence_role = 'missing' AND source_kind = 'missing'
+                            AND source_id IS NULL)
+                        OR
+                        (evidence_role != 'missing' AND source_kind != 'missing'
+                            AND source_id IS NOT NULL)
+                    )
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE hypothesis_events (
+                    id TEXT PRIMARY KEY,
+                    hypothesis_id TEXT NOT NULL REFERENCES health_hypotheses(id)
+                        ON DELETE RESTRICT,
+                    action TEXT NOT NULL CHECK(
+                        action IN (
+                            'created', 'evidence_revised', 'status_changed',
+                            'review_recorded', 'archived'
+                        )
+                    ),
+                    actor_kind TEXT NOT NULL CHECK(
+                        actor_kind IN ('patient', 'algorithm', 'clinician', 'system')
+                    ),
+                    actor_role TEXT NOT NULL CHECK(
+                        actor_role IN ('admin', 'provider', 'algorithm', 'system')
+                    ),
+                    actor_label TEXT NOT NULL CHECK(actor_label != '' AND length(actor_label) <= 240),
+                    reason TEXT NOT NULL CHECK(length(reason) <= 2000),
+                    before_json TEXT NOT NULL CHECK(
+                        json_valid(before_json) AND json_type(before_json) = 'object'
+                    ),
+                    after_json TEXT NOT NULL CHECK(
+                        json_valid(after_json) AND json_type(after_json) = 'object'
+                    ),
+                    evidence_input_version TEXT NOT NULL CHECK(
+                        length(evidence_input_version) = 71
+                        AND evidence_input_version LIKE 'sha256:%'
+                    ),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z')
+                ) STRICT
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_health_hypotheses_owner_status "
+                "ON health_hypotheses(owner_id, status, updated_at DESC)"
+            ),
+            Statement(
+                "CREATE INDEX idx_health_hypotheses_review "
+                "ON health_hypotheses(owner_id, review_at, status)"
+            ),
+            Statement(
+                "CREATE INDEX idx_hypothesis_evidence_current "
+                "ON hypothesis_evidence(hypothesis_id, evidence_revision, evidence_role, ordinal)"
+            ),
+            Statement(
+                "CREATE INDEX idx_hypothesis_events_record "
+                "ON hypothesis_events(hypothesis_id, created_at, id)"
+            ),
+            Statement(
+                """
+                CREATE TRIGGER health_hypotheses_immutable_delete
+                BEFORE DELETE ON health_hypotheses
+                BEGIN
+                    SELECT RAISE(ABORT, 'health hypotheses cannot be deleted');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER hypothesis_evidence_immutable_update
+                BEFORE UPDATE ON hypothesis_evidence
+                BEGIN
+                    SELECT RAISE(ABORT, 'hypothesis evidence is immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER hypothesis_evidence_immutable_delete
+                BEFORE DELETE ON hypothesis_evidence
+                BEGIN
+                    SELECT RAISE(ABORT, 'hypothesis evidence is immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER hypothesis_events_immutable_update
+                BEFORE UPDATE ON hypothesis_events
+                BEGIN
+                    SELECT RAISE(ABORT, 'hypothesis events are immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER hypothesis_events_immutable_delete
+                BEFORE DELETE ON hypothesis_events
+                BEGIN
+                    SELECT RAISE(ABORT, 'hypothesis events are immutable');
+                END
+                """
+            ),
+        ),
+    ),
 )
 
 

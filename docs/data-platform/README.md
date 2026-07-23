@@ -64,6 +64,9 @@ typed repositories are introduced.
 - [Evidence-grounded Companion](COMPANION_EVIDENCE.md) — question-ranked bounded
   retrieval, validated statement/source links, unverified-lab safeguards,
   local-model prompt limits, and evidence/opposition/change commands.
+- [Guarded health-hypothesis ledger](HYPOTHESIS_LEDGER.md) — patient,
+  algorithm, and clinician origins; append-only evidence revisions and events;
+  attributable confidence changes; and clinician-gated terminal decisions.
 
 ## Reproduce the structural audit
 
