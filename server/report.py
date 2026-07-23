@@ -440,6 +440,7 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
         if not insulin_payload.get("nutrition_quality", {}).get("ai_eligible"):
             insulin_for_ai.pop("avg_daily_carbs", None)
     response_payload = payload.get("insulin_response") or {}
+    activity_position_payload = payload.get("activity_position") or {}
     response_for_ai = None
     if (
         response_payload.get("available")
@@ -476,6 +477,13 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
         if g.get("available") and g.get("quality", {}).get("ai_eligible") else None,
         "insulin": insulin_for_ai,
         "insulin_response": response_for_ai,
+        "activity_position": {
+            "algorithm_version": activity_position_payload.get("algorithm_version"),
+            "semantics": activity_position_payload.get("semantics"),
+            "qualifying_effects": activity_position_payload.get("qualifying_effects"),
+        }
+        if activity_position_payload.get("qualifying_effects")
+        else None,
         "cycle": {
             "cycles": payload["cycle"].get("cycles_detected"),
             "avg_length": payload["cycle"].get("avg_cycle_length"),
@@ -583,6 +591,7 @@ async def visit_report(body: ReportBody):
 
     from . import (
         conditions,
+        activity_position,
         episodes,
         history,
         hypotheses,
@@ -598,6 +607,7 @@ async def visit_report(body: ReportBody):
         "conditions": conditions.report_block(),
         "hypotheses": hypotheses.report_block(),
         "health_episodes": episodes.report_block(),
+        "activity_position": activity_position.report_block(days),
         "medications": meds.get_medications(),
         "allergies": meds.get_allergies(),
         "history": history.report_block(),

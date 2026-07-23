@@ -203,6 +203,7 @@ export default function Report() {
   const g = report.glucose;
   const i = report.insulin;
   const ir = report.insulin_response;
+  const ap = report.activity_position;
   const c = report.cycle;
   const w = report.wellness;
   const labs = report.labs;
@@ -652,6 +653,36 @@ export default function Report() {
             {w.oura?.avg_spo2 != null && <Metric label="SpO₂ (Oura)" value={`${w.oura.avg_spo2}%`} />}
             {w.fitbit?.avg_steps != null && <Metric label="Steps (Fitbit)" value={w.fitbit.avg_steps.toLocaleString()} sub="avg/day" />}
             {w.fitbit?.avg_sleep_hours != null && <Metric label="Sleep (Fitbit)" value={`${w.fitbit.avg_sleep_hours}h`} sub="avg/night" />}
+          </div>
+        </div>
+      )}
+
+      {ap?.effects?.length > 0 && (
+        <div className="report-section report-card rounded-xl border border-border p-4 space-y-3">
+          <div>
+            <h2 className="font-semibold text-base">Activity &amp; position associations</h2>
+            <p className="text-[11px] text-muted-foreground">
+              Timestamped interval comparisons only. They do not establish that activity or
+              position caused a glucose, bolus-response, or meter/CGM difference.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+            {ap.effects.map((effect) => (
+              <div key={effect.id} className="rounded border border-border p-2">
+                <p className="font-semibold capitalize">
+                  {effect.dimension}: {effect.state}
+                </p>
+                <p>
+                  {effect.metric.replaceAll("_", " ")}:{" "}
+                  <b>{effect.observed_mean} {effect.unit}</b>
+                </p>
+                <p className="text-muted-foreground">
+                  n={effect.sample_count}; {effect.measured_interval_count}/{effect.interval_count} intervals
+                  measured · {effect.analytics_confidence.discovery_status.replaceAll("_", " ")}
+                  {" · "}replication {effect.replication_status.replaceAll("_", " ")}
+                </p>
+              </div>
+            ))}
           </div>
         </div>
       )}

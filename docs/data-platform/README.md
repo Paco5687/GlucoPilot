@@ -67,6 +67,9 @@ typed repositories are introduced.
 - [Versioned insulin response events](INSULIN_RESPONSE_EVENTS.md) —
   reproducible response windows, explicit exclusions/confounders, clean-only
   strata, shared confidence, and source-linked Evidence Bundle derivations.
+- [Activity and position analysis](ACTIVITY_POSITION_ANALYSIS.md) — immutable
+  manual/wearable intervals, manual-first corrections, event-time response
+  comparisons, reproducibility metadata, and Companion qualification gates.
 - [Evidence-grounded Companion](COMPANION_EVIDENCE.md) — question-ranked bounded
   retrieval, validated statement/source links, unverified-lab safeguards,
   local-model prompt limits, and evidence/opposition/change commands.

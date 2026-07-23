@@ -243,7 +243,93 @@ async def _list_interval(
 async def _fetch_steps(client, token, by_day, day, s, e, tz):
     for d, v in await _list_interval(client, token, "steps", "steps", s):
         if _in_window(d, s, e) and v.get("count") is not None:
-            day(d)["steps"] = day(d).get("steps", 0) + int(v["count"])
+            count = int(v["count"])
+            day(d)["steps"] = day(d).get("steps", 0) + count
+            interval = v.get("interval") or {}
+            start_time = interval.get("startTime")
+            end_time = interval.get("endTime")
+            try:
+                start_dt = datetime.fromisoformat(
+                    str(start_time).replace("Z", "+00:00")
+                )
+                end_dt = datetime.fromisoformat(
+                    str(end_time).replace("Z", "+00:00")
+                )
+            except (TypeError, ValueError):
+                continue
+            if (
+                start_dt.tzinfo is None
+                or start_dt.utcoffset() is None
+                or end_dt.tzinfo is None
+                or end_dt.utcoffset() is None
+            ):
+                continue
+            duration = (end_dt - start_dt).total_seconds()
+            # A short step-bearing interval can support a low-confidence
+            # walking inference. Longer aggregates do not identify when the
+            # steps occurred and therefore remain daily context only.
+            if count > 0 and 60 <= duration <= 15 * 60:
+                day(d).setdefault("_activity_intervals", []).append(
+                    {
+                        "start_time": start_time,
+                        "end_time": end_time,
+                        "step_count": count,
+                        "raw_interval": interval,
+                    }
+                )
+
+
+def _coalesce_step_intervals(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Combine adjacent minute points into bounded walking bouts."""
+    parsed = []
+    for value in values:
+        try:
+            start = datetime.fromisoformat(
+                str(value.get("start_time")).replace("Z", "+00:00")
+            )
+            end = datetime.fromisoformat(
+                str(value.get("end_time")).replace("Z", "+00:00")
+            )
+        except (TypeError, ValueError):
+            continue
+        if (
+            start.tzinfo is None
+            or start.utcoffset() is None
+            or end.tzinfo is None
+            or end.utcoffset() is None
+            or end <= start
+        ):
+            continue
+        parsed.append((start, end, int(value.get("step_count") or 0)))
+    parsed.sort()
+    bouts = []
+    for start, end, steps in parsed:
+        if bouts and start <= bouts[-1]["_end"] + timedelta(seconds=60):
+            bouts[-1]["_end"] = max(bouts[-1]["_end"], end)
+            bouts[-1]["step_count"] += steps
+            bouts[-1]["component_intervals"] += 1
+            continue
+        bouts.append(
+            {
+                "_start": start,
+                "_end": end,
+                "step_count": steps,
+                "component_intervals": 1,
+            }
+        )
+    return [
+        {
+            "start_time": item["_start"].astimezone(timezone.utc).isoformat(
+                timespec="seconds"
+            ).replace("+00:00", "Z"),
+            "end_time": item["_end"].astimezone(timezone.utc).isoformat(
+                timespec="seconds"
+            ).replace("+00:00", "Z"),
+            "step_count": item["step_count"],
+            "component_intervals": item["component_intervals"],
+        }
+        for item in bouts
+    ]
 
 
 async def _fetch_active_minutes(client, token, by_day, day, s, e, tz):
@@ -534,16 +620,60 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
             )
             existing_by_date = {e.get("date"): e for e in existing}
             created = updated = 0
+            pending_activity_intervals = []
             for day_key, data in by_day.items():
                 if not data:
                     continue
-                record = {**data, "date": day_key, "source": "google_health", "owner_email": OWNER_EMAIL}
+                inferred_intervals = list(data.get("_activity_intervals") or [])
+                daily_data = {
+                    key: value
+                    for key, value in data.items()
+                    if key != "_activity_intervals"
+                }
+                record = {**daily_data, "date": day_key, "source": "google_health", "owner_email": OWNER_EMAIL}
                 if day_key in existing_by_date:
-                    repository.update(existing_by_date[day_key]["id"], record)
+                    saved = repository.update(existing_by_date[day_key]["id"], record)
                     updated += 1
                 else:
-                    repository.create(record)
+                    saved = repository.create(record)
                     created += 1
+                for interval in _coalesce_step_intervals(inferred_intervals):
+                    pending_activity_intervals.append(
+                        {
+                            "interval": interval,
+                            "source_entity_id": saved["id"],
+                        }
+                    )
+            if pending_activity_intervals:
+                from .activity_position import SqliteActivityPositionRepository
+
+                connection = db.connect()
+                try:
+                    interval_repository = SqliteActivityPositionRepository(connection)
+                    for pending in pending_activity_intervals:
+                        interval = pending["interval"]
+                        interval_repository.upsert_wearable(
+                            start_time=interval["start_time"],
+                            end_time=interval["end_time"],
+                            activity="walking",
+                            position="unknown",
+                            source_label="Google Health step interval",
+                            source_entity_type="FitbitDaily",
+                            source_entity_id=pending["source_entity_id"],
+                            source_payload=interval,
+                            confidence_score=0.55,
+                            limitations=[
+                                "A short step-bearing interval was classified as walking; it may include running or other step-based movement.",
+                                "The wearable interval does not establish body position.",
+                            ],
+                        )
+                    connection.commit()
+                except Exception as error:
+                    connection.rollback()
+                    log.exception("google health activity interval persistence failed")
+                    source_failure(error)
+                finally:
+                    connection.close()
         if can_advance_freshness():
             set_config_value("google_health_last_sync", _iso_now())
         return {"success": True, "created": created, "updated": updated, "days_synced": len([d for d in by_day.values() if d])}

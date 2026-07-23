@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import db
+from .activity_position import analysis_for_range
 from .auth import require_login
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .contradictions import SqliteContradictionRepository
@@ -36,7 +37,7 @@ from .repositories import LegacyRepositoryCatalog
 
 
 BUNDLE_GENERATOR = "evidence-bundle"
-BUNDLE_VERSION = "2.2.0"
+BUNDLE_VERSION = "2.3.0"
 MAX_ITEM_BUDGET = 250
 MAX_SOURCE_ROWS = 100_000
 MAX_CONTRADICTIONS = 1_000
@@ -109,6 +110,7 @@ _ENTITY_DOMAIN: dict[str, EvidenceDomain] = {
     "OuraHeartRate": EvidenceDomain.WEARABLES,
     "FitbitDaily": EvidenceDomain.WEARABLES,
     "FitbitHeartRate": EvidenceDomain.WEARABLES,
+    "ActivityPositionInterval": EvidenceDomain.WEARABLES,
     "PeriodLog": EvidenceDomain.CYCLE,
     "LabResult": EvidenceDomain.LABS,
     "MedicalRecord": EvidenceDomain.RECORDS,
@@ -125,6 +127,7 @@ _ENTITY_DOMAIN: dict[str, EvidenceDomain] = {
     "DailySummary": EvidenceDomain.ANALYTICS,
     "WeeklySummary": EvidenceDomain.ANALYTICS,
     "HealthSummary": EvidenceDomain.ANALYTICS,
+    "ActivityPositionEffect": EvidenceDomain.ANALYTICS,
 }
 
 _DOMAIN_TYPES: dict[EvidenceDomain, tuple[str, ...]] = {
@@ -620,6 +623,95 @@ def _load_insulin_response_candidates(
     return candidates, {"InsulinResponseEvent": len(candidates)}
 
 
+def _activity_position_source_links(effect: dict[str, Any]) -> list[dict[str, Any]]:
+    links = []
+    seen = set()
+    for source in effect.get("source_refs") or []:
+        entity_type = str(source.get("entity_type") or "")
+        entity_id = str(source.get("entity_id") or "")
+        if not entity_type or not entity_id:
+            continue
+        identity = (entity_type, entity_id)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if entity_type == "ActivityPositionInterval":
+            href = f"/api/activity-position/intervals/{quote(entity_id, safe='')}"
+            kind = "canonical_interval"
+        elif entity_type in _ENTITY_DOMAIN:
+            href = _source_href(entity_type, entity_id)
+            kind = "normalized_entity"
+        else:
+            continue
+        links.append(
+            {
+                "kind": kind,
+                "entity_type": entity_type,
+                "entity_id": entity_id,
+                "href": href,
+            }
+        )
+    return links
+
+
+def _load_activity_position_candidates(
+    connection: sqlite3.Connection,
+    query: EvidenceBundleQuery,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    if not {
+        EvidenceDomain.WEARABLES,
+        EvidenceDomain.ANALYTICS,
+    }.intersection(query.domains):
+        return [], {}
+    if not connection.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type='table' AND name='activity_position_intervals'"
+    ).fetchone():
+        return [], {}
+    analysis = analysis_for_range(query.start, query.end, connection=connection)
+    intent_tokens = set(_TOKEN.findall(query.question_intent.lower()))
+    candidates = []
+    candidate_domain = (
+        EvidenceDomain.WEARABLES
+        if EvidenceDomain.WEARABLES in query.domains
+        else EvidenceDomain.ANALYTICS
+    )
+    for effect in analysis["effects"]:
+        confidence = effect["analytics_confidence"]
+        data = _sanitize(effect)
+        candidates.append(
+            {
+                "id": f"derived:ActivityPositionEffect:{effect['id']}",
+                "category": "derived_metric",
+                "domain": candidate_domain.value,
+                "entity_type": "ActivityPositionEffect",
+                "entity_id": effect["id"],
+                "observed_at": query.end.isoformat().replace("+00:00", "Z"),
+                "recorded_at": None,
+                "data": data,
+                "confidence": {
+                    "label": confidence["confidence_label"],
+                    "score": confidence["confidence_score"],
+                    "method": effect["algorithm_version"],
+                    "discovery_status": confidence["discovery_status"],
+                    "replication_status": effect["replication_status"],
+                    "limitations": [
+                        "Activity/position comparisons are temporal associations and do not establish causation.",
+                        "Only timestamped intervals contribute event-time state; daily wearable totals are not position evidence.",
+                    ],
+                },
+                "source_links": _activity_position_source_links(effect),
+                "_relevance": _relevance(
+                    intent_tokens, "ActivityPositionEffect", data
+                ),
+            }
+        )
+    return candidates, {
+        "ActivityPositionInterval": analysis["counts"]["intervals"],
+        "ActivityPositionEffect": len(candidates),
+    }
+
+
 def _interval_bounds(start: str, end: str | None) -> tuple[datetime, datetime | None]:
     if len(start) == 10:
         lower = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
@@ -1048,6 +1140,11 @@ def build_bundle(query: EvidenceBundleQuery) -> dict[str, Any]:
         )
         entity_candidates.extend(response_candidates)
         counts.update(response_counts)
+        activity_candidates, activity_counts = _load_activity_position_candidates(
+            connection, query
+        )
+        entity_candidates.extend(activity_candidates)
+        counts.update(activity_counts)
         episode_candidates, episode_counts = _load_episode_candidates(connection, query)
         counts.update(episode_counts)
         anchors = sorted(entity_candidates, key=_candidate_key)[:query.item_budget]

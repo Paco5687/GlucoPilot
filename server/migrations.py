@@ -2106,6 +2106,133 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        19,
+        "activity_position_intervals",
+        (
+            Statement(
+                """
+                CREATE TABLE activity_position_intervals (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    owner_email TEXT NOT NULL CHECK(owner_email != ''),
+                    start_time TEXT NOT NULL CHECK(start_time LIKE '%Z'),
+                    end_time TEXT NOT NULL CHECK(end_time LIKE '%Z'),
+                    activity TEXT NOT NULL CHECK(
+                        activity IN ('resting','walking','other','unknown')
+                    ),
+                    position TEXT NOT NULL CHECK(
+                        position IN ('sitting','standing','lying','upright','unknown')
+                    ),
+                    origin_kind TEXT NOT NULL CHECK(origin_kind IN ('manual','wearable')),
+                    origin_label TEXT NOT NULL CHECK(
+                        origin_label != '' AND length(origin_label) <= 240
+                    ),
+                    source_entity_type TEXT CHECK(
+                        source_entity_type IS NULL OR
+                        (source_entity_type != '' AND length(source_entity_type) <= 120)
+                    ),
+                    source_entity_id TEXT CHECK(
+                        source_entity_id IS NULL OR
+                        (source_entity_id != '' AND length(source_entity_id) <= 500)
+                    ),
+                    source_input_hash TEXT NOT NULL CHECK(
+                        length(source_input_hash) = 71 AND
+                        source_input_hash LIKE 'sha256:%'
+                    ),
+                    confidence_json TEXT NOT NULL CHECK(
+                        json_valid(confidence_json) AND
+                        json_type(confidence_json) = 'object'
+                    ),
+                    correction_of_id TEXT REFERENCES activity_position_intervals(id)
+                        ON DELETE RESTRICT,
+                    notes TEXT NOT NULL DEFAULT '' CHECK(length(notes) <= 1000),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    updated_at TEXT NOT NULL CHECK(updated_at LIKE '%Z'),
+                    CHECK(start_time < end_time),
+                    CHECK(
+                        (origin_kind = 'manual')
+                        OR
+                        (source_entity_type IS NOT NULL AND source_entity_id IS NOT NULL)
+                    ),
+                    CHECK(correction_of_id IS NULL OR origin_kind = 'manual'),
+                    UNIQUE(owner_id, origin_kind, source_input_hash)
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE activity_position_events (
+                    id TEXT PRIMARY KEY,
+                    interval_id TEXT NOT NULL
+                        REFERENCES activity_position_intervals(id) ON DELETE RESTRICT,
+                    action TEXT NOT NULL CHECK(
+                        action IN ('created','inferred','corrected')
+                    ),
+                    actor_role TEXT NOT NULL CHECK(actor_role IN ('admin','system')),
+                    actor_label TEXT NOT NULL CHECK(
+                        actor_label != '' AND length(actor_label) <= 240
+                    ),
+                    reason TEXT NOT NULL CHECK(reason != '' AND length(reason) <= 2000),
+                    before_json TEXT NOT NULL CHECK(
+                        json_valid(before_json) AND json_type(before_json) = 'object'
+                    ),
+                    after_json TEXT NOT NULL CHECK(
+                        json_valid(after_json) AND json_type(after_json) = 'object'
+                    ),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z')
+                ) STRICT
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_activity_position_owner_time "
+                "ON activity_position_intervals(owner_id,start_time,end_time,origin_kind)"
+            ),
+            Statement(
+                "CREATE INDEX idx_activity_position_correction "
+                "ON activity_position_intervals(correction_of_id,created_at,id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_activity_position_events_interval "
+                "ON activity_position_events(interval_id,created_at,id)"
+            ),
+            Statement(
+                """
+                CREATE TRIGGER activity_position_intervals_immutable_update
+                BEFORE UPDATE ON activity_position_intervals BEGIN
+                    SELECT RAISE(
+                        ABORT,
+                        'activity/position intervals are corrected by appending a new row'
+                    );
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER activity_position_intervals_immutable_delete
+                BEFORE DELETE ON activity_position_intervals BEGIN
+                    SELECT RAISE(ABORT, 'activity/position intervals cannot be deleted');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER activity_position_events_immutable_update
+                BEFORE UPDATE ON activity_position_events BEGIN
+                    SELECT RAISE(ABORT, 'activity/position events are immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER activity_position_events_immutable_delete
+                BEFORE DELETE ON activity_position_events BEGIN
+                    SELECT RAISE(ABORT, 'activity/position events are immutable');
+                END
+                """
+            ),
+        ),
+    ),
 )
 
 

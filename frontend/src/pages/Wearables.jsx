@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from "recharts";
 import LiveHeartRate from "../components/dashboard/LiveHeartRate";
 import GlucoseHeartRateOverlay from "../components/dashboard/GlucoseHeartRateOverlay";
+import ActivityPositionAnalysis from "../components/wearables/ActivityPositionAnalysis";
 
 const RANGES = [
   { key: 30, label: "30d" },
@@ -227,6 +228,8 @@ export default function Wearables() {
           )}
         </div>
       </div>
+
+      <ActivityPositionAnalysis days={range} readOnly={isViewingShared} />
 
       {loading ? (
         <div className="flex items-center justify-center h-40">

@@ -390,6 +390,36 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                         ).fetchone()
                     ),
                 }
+            activity_position_ledger = None
+            activity_position_tables = (
+                "activity_position_intervals",
+                "activity_position_events",
+            )
+            if all(
+                _table_exists(connection, table)
+                for table in activity_position_tables
+            ):
+                activity_position_ledger = {
+                    "intervals": dict(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*) AS count,
+                                   COALESCE(SUM(CASE WHEN origin_kind='manual' THEN 1 ELSE 0 END), 0)
+                                       AS manual_count,
+                                   COALESCE(SUM(CASE WHEN origin_kind='wearable' THEN 1 ELSE 0 END), 0)
+                                       AS wearable_count,
+                                   COALESCE(SUM(CASE WHEN correction_of_id IS NOT NULL THEN 1 ELSE 0 END), 0)
+                                       AS correction_count
+                            FROM activity_position_intervals
+                            """
+                        ).fetchone()
+                    ),
+                    "events": dict(
+                        connection.execute(
+                            "SELECT COUNT(*) AS count FROM activity_position_events"
+                        ).fetchone()
+                    ),
+                }
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:
@@ -428,6 +458,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
         metadata["hypothesis_ledger"] = hypothesis_ledger
     if episode_ledger is not None:
         metadata["episode_ledger"] = episode_ledger
+    if activity_position_ledger is not None:
+        metadata["activity_position_ledger"] = activity_position_ledger
     if include_references:
         metadata["record_references"] = references
     return metadata
@@ -669,6 +701,26 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
             {
                 "source_record_count": metadata["source_archive"]["source_records"]["count"],
                 "source_file_reference_count": metadata["source_archive"]["source_files"]["count"],
+            }
+        )
+    if "activity_position_ledger" in expected_database:
+        verification.update(
+            {
+                "activity_position_interval_count": metadata[
+                    "activity_position_ledger"
+                ]["intervals"]["count"],
+                "manual_activity_position_interval_count": metadata[
+                    "activity_position_ledger"
+                ]["intervals"]["manual_count"],
+                "wearable_activity_position_interval_count": metadata[
+                    "activity_position_ledger"
+                ]["intervals"]["wearable_count"],
+                "activity_position_correction_count": metadata[
+                    "activity_position_ledger"
+                ]["intervals"]["correction_count"],
+                "activity_position_event_count": metadata[
+                    "activity_position_ledger"
+                ]["events"]["count"],
             }
         )
     if "canonical_time" in expected_database:

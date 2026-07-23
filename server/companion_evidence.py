@@ -34,6 +34,8 @@ _REASONING_FIELDS = {
     "flag",
     "frequency",
     "kind",
+    "language",
+    "metric",
     "name",
     "narrative",
     "notes",
@@ -44,6 +46,8 @@ _REASONING_FIELDS = {
     "severity",
     "source_page",
     "status",
+    "state",
+    "sample_count",
     "summary",
     "supporting_data",
     "symptom",
@@ -88,7 +92,8 @@ SCOPES = (
         12,
         frozenset({
             "activity", "cycle", "energy", "exercise", "fitbit", "heart", "hormone",
-            "hrv", "menstrual", "oura", "period", "sleep", "spo2", "steps", "workout",
+            "hrv", "menstrual", "oura", "period", "position", "sitting", "sleep",
+            "spo2", "standing", "steps", "walking", "workout",
         }),
     ),
     Scope(
@@ -208,6 +213,10 @@ def _scope_items(
     items = [
         item for item in _bundle_items(bundle)
         if item.get("entity_type") not in _EXCLUDED_TYPES
+        and (
+            item.get("entity_type") != "ActivityPositionEffect"
+            or bool((item.get("data") or {}).get("qualifies_for_companion"))
+        )
     ]
     if scope.name != "labs_records":
         return items[:scope.budget]
