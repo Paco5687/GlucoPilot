@@ -46,6 +46,7 @@ uploaded records, and config. One owner per deployment.
 | `entities.py` | generic entity REST API (writes gated to admin) |
 | `settings_api.py` | in-app settings & secrets (DB-stored, override env) |
 | `llm.py` | provider-agnostic `invoke_llm(...)`; Anthropic + local; vision + `tier="quality"` routing |
+| `companion_evidence.py` | bounded question-ranked Evidence Bundle retrieval, statement classification, citation validation, and change comparison |
 | `scheduler.py` | background sync loop, per-source intervals |
 | `readings.py` | shared cross-source glucose dedup |
 | **Sources** | `dexcom.py`, `dexcom_share.py`, `nightscout.py`, `tandem.py`, `glooko.py`, `oura.py`, `fitbit.py` |
@@ -111,6 +112,15 @@ and successor claims, and cite role-preserving bounded EvidenceSets over the
 exact source entities. Authenticated claim and window endpoints provide paged
 source drill-down; JSON entities remain the compatibility surface and all
 rollout flags default off.
+
+G8 and G9 add no schema. Overview and Visit Report share one bounded clinical
+Evidence Bundle adapter, while Companion uses a smaller question-ranked
+portfolio with strict local-model prompt limits. Companion messages persist
+typed claim-to-evidence/source links, keep personal inference separate from
+general medical references and user memory, and expose owner-checked evidence,
+opposition, and content-hash change commands. Invented citations and uncited
+personal claims fail closed; unverified machine-extracted labs are qualified
+before display or persistence.
 
 ## Frontend (`frontend/`)
 

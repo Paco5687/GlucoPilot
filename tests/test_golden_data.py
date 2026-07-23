@@ -321,12 +321,13 @@ def test_companion_prompt_and_repository_preserve_evidence(golden, golden_databa
         fixture["sources"],
     )
 
-    assert '"avg": 123' in prompt
+    assert '"avg":123' in prompt
     assert fixture["memories"][0]["content"] in prompt
     for index, source in enumerate(fixture["sources"], 1):
-        assert f"[{index}] {source['title']} ({source['source']}) — {source['url']}" in prompt
+        assert f"[G{index}] {source['title']} ({source['source']}) — {source['url']}" in prompt
         assert source["snippet"] in prompt
-    assert "cite inline as [1], [2]" in prompt
+    assert "cite only these aliases such as [G1]" in prompt
+    assert "Never use a general source as evidence for a personal-data claim" in prompt
 
     message = db.create_entity(
         "ChatMessage",

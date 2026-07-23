@@ -42,7 +42,7 @@ no health data ever leaves the machine.
 
 **Talk to your data**
 
-- **Companion** — a health chat grounded in your *real* records (glucose, labs, cycle, wearables, medications, symptoms). It **remembers** what you tell it across conversations, keeps multiple threads, answers with rich formatting, and lets you switch between a quick local model and a deeper one. Not a doctor: it surfaces patterns and questions for your care team — never diagnoses or dosing.
+- **Companion** — a health chat grounded in bounded, source-linked Evidence Bundles across glucose, labs, cycle, wearables, medications, and symptoms. It classifies personal observations/calculations/correlations/hypotheses, keeps general medical references and user memory separate, and provides **Show evidence**, **What argues against this?**, and **What changed?** controls. It remembers what you tell it across conversations, keeps multiple threads, and lets you switch between a quick local model and a deeper one. Not a doctor: it surfaces patterns and questions for your care team — never diagnoses or dosing.
 - **Overview** — a cross-domain AI health summary that spots connections across your whole picture, not just glucose.
 - **Records** — upload lab reports and imaging (PDF/photo); a local vision model extracts values into **per-analyte trend charts**.
 - **Visit Report** — a printable 90-day clinical summary (AGP, TIR, per-phase metrics, labs, conditions, medications, symptoms) with an AI "quarter in review" narrative.
