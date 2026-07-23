@@ -124,6 +124,11 @@ may add low-confidence walking inference. Manual rows take query-time
 precedence without updating or deleting inferred rows. Daily wearable totals
 remain separate context rather than event-time position evidence.
 
+Migration 20 adds strict, append-only `management_burden_events` and
+`management_burden_audit`. Observed, inferred, manual, and correction origins
+remain distinct. Corrections supersede calculation inputs without deleting
+source rows, and the dedicated API is not exposed through generic entity CRUD.
+
 ## Operational records
 
 | Entity | Schema | Identity / notes |

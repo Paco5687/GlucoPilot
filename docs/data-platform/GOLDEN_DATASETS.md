@@ -36,6 +36,7 @@ rows, credentials, or copied health information.
 | Canonical health episodes | Date/UTC ranges, multi-source temporal membership, non-causal database constraints, append-only corrections, open medication exposures, decisions, provider access, Evidence Bundles, and restore counts remain deterministic. |
 | CGM/fingerstick reconciliation | Fixed nearest-CGM snapshots preserve both values; absolute/relative differences, pair timing, context strata, persistent-bias sample gates, and confirmed/CGM-only/meter-only low classifications remain deterministic. |
 | Activity/position analysis | Manual-first interval resolution retains inferred rows; glucose/morning slopes, clean bolus response, and fingerstick discrepancy effects preserve samples, interval missingness, confidence/replication status, noncausal language, Companion gates, and backup counts. |
+| Management burden | Visible weighted components, missing-source confidence penalties, rescue/device/overnight inference, append-only exclusions, outcome-versus-effort language, provider authorization, Evidence Bundle links, and backup counts remain deterministic. |
 
 `clinical_edge_cases.json` stores both the synthetic inputs and their expected
 outcomes. Tests must compare production parser, deduplication, analytics,

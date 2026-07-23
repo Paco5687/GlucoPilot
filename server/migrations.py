@@ -2233,6 +2233,127 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        20,
+        "management_burden_ledger",
+        (
+            Statement(
+                """
+                CREATE TABLE management_burden_events (
+                    id TEXT PRIMARY KEY,
+                    owner_id TEXT NOT NULL CHECK(owner_id = 'urn:glucopilot:owner:self'),
+                    occurred_at TEXT NOT NULL CHECK(occurred_at LIKE '%Z'),
+                    category TEXT NOT NULL CHECK(category IN (
+                        'bolus','override','temp_basal','pump_interaction',
+                        'fingerstick','ketone','rescue_carbs','awakening',
+                        'device_change','activity_for_control','other'
+                    )),
+                    origin_kind TEXT NOT NULL CHECK(origin_kind IN (
+                        'observed','inferred','manual','correction'
+                    )),
+                    source_entity_type TEXT,
+                    source_entity_id TEXT,
+                    source_input_hash TEXT NOT NULL CHECK(
+                        length(source_input_hash) = 71 AND
+                        source_input_hash LIKE 'sha256:%'
+                    ),
+                    duration_minutes REAL NOT NULL CHECK(
+                        duration_minutes >= 0 AND duration_minutes <= 1440
+                    ),
+                    interaction_count INTEGER NOT NULL CHECK(
+                        interaction_count >= 0 AND interaction_count <= 1000
+                    ),
+                    confidence_json TEXT NOT NULL CHECK(
+                        json_valid(confidence_json) AND json_type(confidence_json) = 'object'
+                    ),
+                    correction_of_id TEXT REFERENCES management_burden_events(id)
+                        ON DELETE RESTRICT,
+                    excluded INTEGER NOT NULL DEFAULT 0 CHECK(excluded IN (0,1)),
+                    notes TEXT NOT NULL DEFAULT '' CHECK(length(notes) <= 1000),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z'),
+                    CHECK(
+                        origin_kind IN ('manual','correction')
+                        OR (source_entity_type IS NOT NULL AND source_entity_id IS NOT NULL)
+                    ),
+                    CHECK(
+                        (origin_kind = 'correction' AND correction_of_id IS NOT NULL)
+                        OR (origin_kind != 'correction' AND correction_of_id IS NULL)
+                    ),
+                    UNIQUE(owner_id, origin_kind, source_input_hash)
+                ) STRICT
+                """
+            ),
+            Statement(
+                """
+                CREATE TABLE management_burden_audit (
+                    id TEXT PRIMARY KEY,
+                    burden_event_id TEXT NOT NULL
+                        REFERENCES management_burden_events(id) ON DELETE RESTRICT,
+                    action TEXT NOT NULL CHECK(action IN ('derived','created','corrected')),
+                    actor_role TEXT NOT NULL CHECK(actor_role IN ('admin','system')),
+                    actor_label TEXT NOT NULL CHECK(
+                        actor_label != '' AND length(actor_label) <= 240
+                    ),
+                    reason TEXT NOT NULL CHECK(reason != '' AND length(reason) <= 2000),
+                    before_json TEXT NOT NULL CHECK(
+                        json_valid(before_json) AND json_type(before_json) = 'object'
+                    ),
+                    after_json TEXT NOT NULL CHECK(
+                        json_valid(after_json) AND json_type(after_json) = 'object'
+                    ),
+                    created_at TEXT NOT NULL CHECK(created_at LIKE '%Z')
+                ) STRICT
+                """
+            ),
+            Statement(
+                "CREATE INDEX idx_management_burden_owner_time "
+                "ON management_burden_events(owner_id,occurred_at,category,origin_kind)"
+            ),
+            Statement(
+                "CREATE INDEX idx_management_burden_correction "
+                "ON management_burden_events(correction_of_id,created_at,id)"
+            ),
+            Statement(
+                "CREATE INDEX idx_management_burden_audit_event "
+                "ON management_burden_audit(burden_event_id,created_at,id)"
+            ),
+            Statement(
+                """
+                CREATE TRIGGER management_burden_events_immutable_update
+                BEFORE UPDATE ON management_burden_events BEGIN
+                    SELECT RAISE(
+                        ABORT,
+                        'management burden events are corrected by appending a new row'
+                    );
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER management_burden_events_immutable_delete
+                BEFORE DELETE ON management_burden_events BEGIN
+                    SELECT RAISE(ABORT, 'management burden events cannot be deleted');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER management_burden_audit_immutable_update
+                BEFORE UPDATE ON management_burden_audit BEGIN
+                    SELECT RAISE(ABORT, 'management burden audit rows are immutable');
+                END
+                """
+            ),
+            Statement(
+                """
+                CREATE TRIGGER management_burden_audit_immutable_delete
+                BEFORE DELETE ON management_burden_audit BEGIN
+                    SELECT RAISE(ABORT, 'management burden audit rows are immutable');
+                END
+                """
+            ),
+        ),
+    ),
 )
 
 

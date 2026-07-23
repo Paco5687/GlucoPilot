@@ -50,6 +50,7 @@ uploaded records, and config. One owner per deployment.
 | `companion_evidence.py` | bounded question-ranked Evidence Bundle retrieval, statement classification, citation validation, and change comparison |
 | `hypotheses.py` | guarded patient/algorithm/clinician hypothesis ledger, evidence revisions, attributable confidence, and clinician-gated decisions |
 | `episodes.py` | canonical health and medication-exposure intervals, append-only temporal membership revisions, non-causal semantics, and guarded decisions |
+| `management_burden.py` | immutable observed/inferred/manual effort ledger, append-only corrections, visible weighted components, source-coverage confidence, and outcome-versus-effort views |
 | `scheduler.py` | background sync loop, per-source intervals |
 | `readings.py` | shared cross-source glucose dedup |
 | **Sources** | `dexcom.py`, `dexcom_share.py`, `nightscout.py`, `tandem.py`, `glooko.py`, `oura.py`, `fitbit.py` |

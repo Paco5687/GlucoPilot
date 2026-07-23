@@ -43,6 +43,7 @@ the other waits, rechecks the ledger, and applies nothing.
 | 17 | `oura_sleep_score_relabel` | Relabels legacy Oura contributor scores that were stored under duration names without overwriting real durations or existing score fields. |
 | 18 | `fingerstick_reconciliation_context` | Extends the rebuildable strict fingerstick projection with fixed pair timing/trend, absolute and relative differences, low semantic classes, bounded context JSON, and reconciliation algorithm version. |
 | 19 | `activity_position_intervals` | Adds immutable owner-scoped manual/wearable activity-position intervals and append-only correction/inference events; manual precedence is resolved in application reads without deleting source inference. |
+| 20 | `management_burden_ledger` | Adds immutable observed/inferred/manual burden events, append-only correction and exclusion rows, and attributable audit history for transparent effort calculations. |
 
 ## Adding a migration
 

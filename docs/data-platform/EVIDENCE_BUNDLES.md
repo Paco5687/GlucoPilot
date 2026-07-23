@@ -128,6 +128,12 @@ status. Daily wearable totals never become event-time position evidence.
 Companion filters this type to qualifying effects only; exploratory and invalid
 effects remain visible to direct bundle, Wearables, and Visit Report consumers.
 
+Evidence Bundle 2.4 adds one bounded `ManagementBurdenSummary` derived metric
+for analytics queries. It preserves visible component weights, source coverage,
+the shared confidence envelope, outcomes as a separate dimension, noncausal
+language, and links back to the normalized source events used in the measured
+effort calculation. Missing source families remain explicit limitations.
+
 ## Shared Overview and Visit Report consumer
 
 `server/clinical_evidence.py` is the common G8 adapter over this API. Overview

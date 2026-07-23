@@ -597,6 +597,7 @@ async def visit_report(body: ReportBody):
         hypotheses,
         insulin as insulin_analytics,
         insurance,
+        management_burden,
         meds,
         symptoms,
     )
@@ -608,6 +609,7 @@ async def visit_report(body: ReportBody):
         "hypotheses": hypotheses.report_block(),
         "health_episodes": episodes.report_block(),
         "activity_position": activity_position.report_block(days),
+        "management_burden": management_burden.report_block(days),
         "medications": meds.get_medications(),
         "allergies": meds.get_allergies(),
         "history": history.report_block(),
