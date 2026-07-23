@@ -7,9 +7,10 @@ import OuraScoresChart from "./OuraScoresChart";
 
 // Oura's role on the dashboard is its unique derived scores (sleep quality,
 // readiness, activity) and cycle inference. Objective physiology — heart rate,
-// HRV, SpO₂, steps, sleep duration — comes from Fitbit / Google Health (the more
+// SpO₂, steps, sleep duration — comes from Fitbit / Google Health (the more
 // live source), so those live in WearablesPanel and the Live Heart Rate chart
-// instead of being duplicated here.
+// instead of being duplicated here. Oura measures its own nightly HRV, which is
+// charted against Google Health's on the Wearables page.
 export default function OuraPanel({ data, isViewingShared, onRefresh }) {
   const [syncing, setSyncing] = useState(false);
 

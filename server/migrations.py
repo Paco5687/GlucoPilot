@@ -2018,6 +2018,45 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        17,
+        "oura_sleep_score_relabel",
+        # The Oura sync stored `daily_sleep.contributors` — which are 0-100
+        # sub-scores — under `sleep_*_seconds` names, so a 100/100 sleep-duration
+        # score was read downstream as "100 seconds of sleep". Move those values
+        # to the `_score` names they always were. Real durations now come from
+        # the sleep-period endpoint and land on the `_seconds` names.
+        #
+        # Every guard is belt-and-braces: `<= 100` means a genuine duration in
+        # seconds is never mistaken for a score, and `_score IS NULL` keeps the
+        # relabel from overwriting a value already sitting in the target.
+        tuple(
+            Statement(
+                f"""
+                UPDATE entities
+                SET data = json_remove(
+                        json_set(
+                            data,
+                            '$.{score_key}',
+                            json_extract(data, '$.{legacy_key}')
+                        ),
+                        '$.{legacy_key}'
+                    )
+                WHERE type = 'OuraDaily'
+                  AND json_extract(data, '$.{legacy_key}') IS NOT NULL
+                  AND json_extract(data, '$.{legacy_key}') <= 100
+                  AND json_extract(data, '$.{score_key}') IS NULL
+                """
+            )
+            for legacy_key, score_key in (
+                ("sleep_total_seconds", "sleep_total_score"),
+                ("sleep_rem_seconds", "sleep_rem_score"),
+                ("sleep_deep_seconds", "sleep_deep_score"),
+                ("sleep_latency_seconds", "sleep_latency_score"),
+                ("sleep_efficiency", "sleep_efficiency_score"),
+            )
+        ),
+    ),
 )
 
 

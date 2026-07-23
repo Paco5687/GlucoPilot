@@ -107,6 +107,15 @@ def _daily_glucose_metrics(
     return metrics, quality, readings
 
 
+# Both rings measure these overnight, but not on the same baseline: across the
+# same nights Oura reads HRV around 26-45ms where Google Health reads 22-25ms.
+# Merging them into one series would turn a gap in either device's coverage into
+# a step change that correlates with nothing real, so Oura's copies get their own
+# keys and their own axes. Everything else Oura reports is unique to it and keeps
+# its name.
+DEVICE_SCOPED_FIELDS = {"hrv": "hrv_oura", "breathing_rate": "breathing_rate_oura"}
+
+
 def _correlation_candidates(glucose: dict, oura_by_day: dict) -> list[dict[str, Any]]:
     axes = [
         ("sleep_score", "Sleep score (Oura)", "tir", "time in range", "time_in_range", True),
@@ -131,6 +140,12 @@ def _correlation_candidates(glucose: dict, oura_by_day: dict) -> list[dict[str, 
         ("hrv", "Heart rate variability (Fitbit)", "tir", "time in range", "time_in_range", True),
         ("hrv", "Heart rate variability (Fitbit)", "cv", "glucose variability", "variability", False),
         ("hrv", "Heart rate variability (Fitbit)", "avg", "average glucose", "general", False),
+        # Oura measures HRV over the night too, on its own baseline — see
+        # DEVICE_SCOPED_FIELDS for why it stays a separate series.
+        ("hrv_oura", "Heart rate variability (Oura)", "tir", "time in range", "time_in_range", True),
+        ("hrv_oura", "Heart rate variability (Oura)", "cv", "glucose variability", "variability", False),
+        ("hrv_oura", "Heart rate variability (Oura)", "avg", "average glucose", "general", False),
+        ("breathing_rate_oura", "Breathing rate (Oura)", "cv", "glucose variability", "variability", False),
         ("nonrem_heart_rate", "Nightly heart rate (Fitbit)", "avg", "average glucose", "general", False),
         ("avg_heart_rate", "Average heart rate (Fitbit)", "avg", "average glucose", "general", False),
         ("avg_heart_rate", "Average heart rate (Fitbit)", "tir", "time in range", "time_in_range", True),
@@ -215,9 +230,9 @@ async def analyze() -> dict[str, Any]:
     )
     oura_by_day = {
         r.get("date"): {
-            **dict(r),
+            **{DEVICE_SCOPED_FIELDS.get(key, key): value for key, value in r.items()},
             "_field_sources": {
-                key: "OuraDaily"
+                DEVICE_SCOPED_FIELDS.get(key, key): "OuraDaily"
                 for key, value in r.items()
                 if value is not None and key not in {"id", "owner_email", "date"}
             },

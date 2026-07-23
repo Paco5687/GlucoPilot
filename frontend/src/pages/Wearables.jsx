@@ -4,7 +4,7 @@ import { useViewingData } from "@/hooks/useViewingData";
 import { Button } from "@/components/ui/button";
 import { Loader2, RefreshCw, Heart, Moon, Droplets, Wind, Footprints, Flame, Activity } from "lucide-react";
 import { toast } from "sonner";
-import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from "recharts";
 import LiveHeartRate from "../components/dashboard/LiveHeartRate";
 import GlucoseHeartRateOverlay from "../components/dashboard/GlucoseHeartRateOverlay";
 
@@ -17,7 +17,18 @@ const RANGES = [
 // One series per chart; thin marks, recessive grid, direct tooltip.
 const METRICS = [
   { key: "resting_heart_rate", label: "Resting Heart Rate", unit: "bpm", color: "#f43f5e", icon: Heart, round: 0 },
-  { key: "hrv", label: "Heart Rate Variability", unit: "ms", color: "#8b5cf6", icon: Activity, round: 1 },
+  // Both rings measure HRV overnight on the same unit but different baselines,
+  // so they share one axis as two named series rather than being averaged.
+  {
+    key: "hrv",
+    label: "Heart Rate Variability",
+    unit: "ms",
+    color: "#8b5cf6",
+    icon: Activity,
+    round: 1,
+    seriesLabel: "Google Health",
+    compare: { key: "hrv_oura", label: "Oura", color: "#0ea5e9" },
+  },
   { key: "sleep_hours", label: "Sleep", unit: "h", color: "#6366f1", icon: Moon, round: 1 },
   { key: "spo2_avg", label: "SpO₂ (overnight avg)", unit: "%", color: "#0ea5e9", icon: Droplets, round: 1, domain: [90, 100] },
   { key: "breathing_rate", label: "Respiratory Rate", unit: "br/min", color: "#14b8a6", icon: Wind, round: 1 },
@@ -31,22 +42,25 @@ function fmt(n, round) {
 }
 
 function MetricCard({ metric, rows }) {
+  const compare = metric.compare;
   const series = useMemo(
     () =>
       rows
-        .filter((d) => d[metric.key] != null)
+        .filter((d) => d[metric.key] != null || (compare && d[compare.key] != null))
         .map((d) => ({
           date: d.date,
           label: new Date(d.date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }),
-          value: d[metric.key],
+          value: d[metric.key] ?? null,
+          compare: compare ? d[compare.key] ?? null : null,
         })),
-    [rows, metric.key]
+    [rows, metric.key, compare]
   );
 
   if (series.length === 0) return null;
-  const values = series.map((s) => s.value);
+  // Headline number stays on the primary series so it means one thing.
+  const values = series.map((s) => s.value).filter((v) => v != null);
   const latest = values[values.length - 1];
-  const avg = values.reduce((a, b) => a + b, 0) / values.length;
+  const avg = values.length ? values.reduce((a, b) => a + b, 0) / values.length : null;
   const Icon = metric.icon;
 
   return (
@@ -76,9 +90,37 @@ function MetricCard({ metric, rows }) {
             />
             <Tooltip
               contentStyle={{ backgroundColor: "hsl(var(--card))", border: "1px solid hsl(var(--border))", borderRadius: "8px", fontSize: "12px" }}
-              formatter={(v) => [`${fmt(v, metric.round)} ${metric.unit}`.trim(), metric.label]}
+              formatter={(v, name) => [`${fmt(v, metric.round)} ${metric.unit}`.trim(), name]}
             />
-            <Line type="monotone" dataKey="value" stroke={metric.color} strokeWidth={2} dot={false} connectNulls name={metric.label} />
+            {compare && (
+              <Legend
+                verticalAlign="top"
+                height={20}
+                iconType="plainline"
+                iconSize={10}
+                wrapperStyle={{ fontSize: "10px", color: "hsl(var(--muted-foreground))" }}
+              />
+            )}
+            <Line
+              type="monotone"
+              dataKey="value"
+              stroke={metric.color}
+              strokeWidth={2}
+              dot={false}
+              connectNulls
+              name={metric.seriesLabel || metric.label}
+            />
+            {compare && (
+              <Line
+                type="monotone"
+                dataKey="compare"
+                stroke={compare.color}
+                strokeWidth={2}
+                dot={false}
+                connectNulls
+                name={compare.label}
+              />
+            )}
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -95,8 +137,20 @@ export default function Wearables() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const w = await fetchEntity("FitbitDaily", "-date", 400, { source: "google_health" });
-    setRows(w);
+    const [google, oura] = await Promise.all([
+      fetchEntity("FitbitDaily", "-date", 400, { source: "google_health" }),
+      fetchEntity("OuraDaily", "-date", 400),
+    ]);
+    // Oura's nightly HRV joins on date under its own key — deliberately a
+    // second series rather than a fallback, since the two rings read different
+    // baselines on the same night. Nothing else is taken from Oura here, so no
+    // other metric can be silently swapped between devices.
+    const byDate = new Map(google.map((d) => [d.date, { ...d }]));
+    for (const d of oura) {
+      if (!d.date || d.hrv == null) continue;
+      byDate.set(d.date, { ...(byDate.get(d.date) || { date: d.date }), hrv_oura: d.hrv });
+    }
+    setRows([...byDate.values()]);
     setLoading(false);
   }, [fetchEntity]);
 
@@ -144,7 +198,7 @@ export default function Wearables() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-lg font-semibold">Wearables</h1>
-          <p className="text-xs text-muted-foreground">Fitbit daily metrics via the Google Health API</p>
+          <p className="text-xs text-muted-foreground">Fitbit daily metrics via the Google Health API, with Oura HRV alongside</p>
         </div>
         <div className="flex items-center gap-2">
           <div className="flex rounded-lg border border-border overflow-hidden">
