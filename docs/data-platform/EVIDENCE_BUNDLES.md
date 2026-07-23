@@ -20,16 +20,18 @@ only operational database, and source entities remain authoritative.
   "end": "2026-05-31T23:59:59Z",
   "domains": ["glucose", "labs", "analytics"],
   "question_intent": "glucose and laboratory trends",
-  "item_budget": 50
+  "item_budget": 50,
+  "normalized_entity_types": ["DailySummary", "WeeklySummary", "Pattern"]
 }
 ```
 
 Supported domains are `glucose`, `insulin`, `wearables`, `cycle`, `labs`,
 `records`, `clinical`, and `analytics`. Instants are normalized to UTC, domains
-are deduplicated and sorted, intent whitespace is canonicalized, and the item
-budget is 1–250. A query matching more than 100,000 source rows is rejected
-with `413`; callers must narrow the range or domains rather than receive a
-silent sample.
+and the optional normalized-entity-type allowlist are deduplicated and sorted,
+intent whitespace is canonicalized, and the item budget is 1–250. Allowlisted
+types must belong to the selected domains. A query matching more than 100,000
+source rows is rejected with `413`; callers must narrow the range, domains, or
+normalized entity types rather than receive a silent sample.
 
 The deployment owner is fixed on the server. No owner field is accepted.
 Admin and read-only provider sessions may query bundles; the API exposes no

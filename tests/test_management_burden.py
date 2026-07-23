@@ -297,7 +297,7 @@ def test_evidence_bundle_exposes_source_linked_burden_summary(burden_database):
         for candidate in bundle["evidence"]["derived_metrics"]
         if candidate["entity_type"] == "ManagementBurdenSummary"
     )
-    assert bundle["bundle_version"] == "2.4.0"
+    assert bundle["bundle_version"] == "2.5.0"
     assert item["data"]["semantic_class"] == (
         "calculated_descriptive_management_effort"
     )

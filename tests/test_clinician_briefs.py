@@ -37,7 +37,7 @@ def _item(entity_type, domain, *, item_id=None, data=None, source=True, confiden
 def _bundle(items):
     return {
         "bundle_id": "urn:synthetic:bundle",
-        "bundle_version": "2.4.0",
+        "bundle_version": "2.5.0",
         "data_version": {"input_hash": "sha256:" + "a" * 64},
         "query": {},
         "evidence": {
@@ -138,6 +138,11 @@ def test_every_specialist_mode_uses_bounded_evidence_bundle_query(synthetic_sour
         assert 1 <= query.item_budget <= 150
         assert set(query.domains) == set(clinician_briefs.MODE_CONFIG[mode]["domains"])
         assert all(isinstance(domain, EvidenceDomain) for domain in query.domains)
+        assert query.normalized_entity_types
+        assert not (
+            set(query.normalized_entity_types)
+            & clinician_briefs.HIGH_FREQUENCY_RAW_TYPES
+        )
 
 
 def _session(role):
@@ -168,3 +173,21 @@ def test_provider_can_generate_read_only_brief(client, monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["mode"] == "endocrinology"
+
+
+def test_brief_reports_bounded_source_scan_failure_as_413(client, monkeypatch):
+    def rejected_brief(mode, days):
+        raise clinician_briefs.EvidenceBundleError(
+            "query matches more than the bounded source-row limit"
+        )
+
+    monkeypatch.setattr(clinician_briefs, "build_brief", rejected_brief)
+    client.cookies.set("session", _session("admin"))
+    response = client.post(
+        "/api/briefs/clinician",
+        json={"mode": "clinician", "days": 90},
+    )
+    client.cookies.clear()
+
+    assert response.status_code == 413
+    assert "bounded source-row limit" in response.json()["detail"]

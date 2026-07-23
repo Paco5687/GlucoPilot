@@ -343,7 +343,7 @@ def test_evidence_bundle_exposes_effects_and_companion_uses_only_qualifying(
         if item["entity_type"] == "ActivityPositionEffect"
     ]
 
-    assert bundle["bundle_version"] == "2.4.0"
+    assert bundle["bundle_version"] == "2.5.0"
     assert effects
     assert all(item["data"]["language"]["causal_allowed"] is False for item in effects)
     assert all(item["source_links"] for item in effects)
