@@ -16,9 +16,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from . import conditions, history, meds, profile, report, symptoms
+from . import profile, report
+from .clinical_evidence import build_context as build_clinical_evidence
+from .clinical_evidence import link_generated_narrative
 from .config import APP_TIMEZONE, OWNER_EMAIL
-from .contradictions import contradiction_context
 from .db import config_value, set_config_value
 from .data_quality import assess_daily
 from .llm import invoke_llm
@@ -44,14 +45,24 @@ SUMMARY_SCHEMA = {
                     "title": {"type": "string", "description": "Short, concrete (e.g. 'Higher HRV weeks track with steadier glucose')"},
                     "detail": {"type": "string", "description": "2-4 sentences, plain and direct, citing the actual numbers. State the fact/indicator; no hedging boilerplate."},
                     "domains": {"type": "array", "items": {"type": "string"}, "description": "e.g. ['glucose','wearables'], ['labs','cycle'], ['imaging']"},
+                    "evidence_item_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "IDs copied only from the shared evidence context items that support this observation",
+                    },
                 },
-                "required": ["title", "detail"],
+                "required": ["title", "detail", "evidence_item_ids"],
             },
         },
         "working": {"type": "array", "items": {"type": "string"}, "description": "A few things that look good / on track."},
         "watch": {"type": "array", "items": {"type": "string"}, "description": "A few things worth keeping an eye on or raising with the care team."},
+        "evidence_item_ids": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "IDs copied only from shared evidence items that support the complete generated summary",
+        },
     },
-    "required": ["headline", "observations"],
+    "required": ["headline", "observations", "evidence_item_ids"],
 }
 
 
@@ -158,13 +169,20 @@ def _build_context() -> dict[str, Any]:
     glucose = report._glucose(tz, since_iso)
     cycle = report._cycle(tz, since_iso, glucose)
     wearables = _wearable_trends()
-    flagged, trends = _labs_snapshot()
+    flagged_labs, _lab_trends = _labs_snapshot()
     prof = profile.get_profile()
+    quality = {
+        "cgm": glucose.get("quality"),
+        "cycle": cycle.get("quality"),
+        "wearables": wearables["quality"],
+    }
+    evidence_context, evidence_reasoning = build_clinical_evidence(
+        WINDOW_DAYS,
+        data_quality=quality,
+        as_of=datetime.now(timezone.utc).date(),
+    )
     return {
         "window_days": WINDOW_DAYS,
-        "conditions": conditions.get_conditions() or None,
-        "medications": meds.get_medications() or None,
-        "allergies": meds.get_allergies() or None,
         "profile": {k: prof.get(k) for k in ("age", "sex", "bmi", "weight_kg")} if prof.get("age") or prof.get("bmi") else None,
         "glucose": {k: glucose.get(k) for k in ("available", "tir", "avg", "gmi", "cv", "days")}
         if glucose.get("available") and glucose.get("quality", {}).get("ai_eligible") else None,
@@ -173,24 +191,21 @@ def _build_context() -> dict[str, Any]:
                   "phase_provenance": cycle.get("phase_provenance")}
         if cycle.get("available") and cycle.get("quality", {}).get("ai_eligible") else None,
         "wearables": wearables["metrics"] if wearables["quality"]["ai_eligible"] else {},
-        "labs_out_of_range": flagged,
-        "lab_trends": trends,
-        "lab_verification_note": "Machine-extracted labs are unverified unless explicitly marked approved or edited.",
-        "symptom_journal": symptoms.context_block(WINDOW_DAYS),
-        "health_history": history.context_block(),
-        "computed_correlations": _insights_snapshot(),
-        "imaging": _imaging_snapshot(),
-        "data_quality": {
-            "glucose": glucose.get("quality"),
-            "cycle": cycle.get("quality"),
-            "wearables": wearables["quality"],
-        },
-        "unresolved_contradictions": contradiction_context(refresh=True, limit=50),
+        "lab_metrics": {"out_of_range": len(flagged_labs)},
+        "data_quality": quality,
+        "evidence_context": evidence_context,
+        "_evidence_reasoning": evidence_reasoning,
     }
 
 
 async def generate() -> dict[str, Any]:
     context = _build_context()
+    evidence_reasoning = context["_evidence_reasoning"]
+    prompt_context = {
+        key: value for key, value in context.items()
+        if key not in {"_evidence_reasoning", "evidence_context"}
+    }
+    prompt_context["shared_evidence_context"] = evidence_reasoning
     prompt = (
         "You are a health-data analyst writing the overall picture for a person with Type 1 diabetes who "
         "tracks a great deal of data. Using the multi-domain snapshot below, write a substantive, specific "
@@ -213,11 +228,28 @@ async def generate() -> dict[str, Any]:
         "Distinguish explicitly recorded/imported cycle phases from algorithm-inferred phases.\n"
         "- Aim for 6-9 genuinely distinct observations, richest/most-actionable first. Also give a fuller "
         "'working' (on track) list and a 'watch' list.\n\n"
-        f"DATA SNAPSHOT (last {WINDOW_DAYS} days where applicable):\n{json.dumps(context, indent=2, default=str)}"
+        "- Ground every generated statement in IDs copied exactly from "
+        "`shared_evidence_context.items`; put the complete set in top-level evidence_item_ids "
+        "and the subset for each observation on that observation. Never invent an evidence ID.\n\n"
+        f"DATA SNAPSHOT (last {WINDOW_DAYS} days where applicable):\n{json.dumps(prompt_context, indent=2, default=str)}"
     )
     # Fast default model: the quality (27B) model is currently GPU-starved and
     # times out on a synthesis this size. The fast model handles it in seconds.
     result = await invoke_llm(prompt, response_json_schema=SUMMARY_SCHEMA, max_tokens=3000)
+    if result:
+        valid_evidence_ids = {item["id"] for item in evidence_reasoning["items"]}
+        evidence_ids = list(dict.fromkeys(result.get("evidence_item_ids") or []))
+        for observation in result.get("observations") or []:
+            observation["evidence_item_ids"] = [
+                item_id
+                for item_id in dict.fromkeys(observation.get("evidence_item_ids") or [])
+                if item_id in valid_evidence_ids
+            ]
+            for item_id in observation["evidence_item_ids"]:
+                if item_id not in evidence_ids:
+                    evidence_ids.append(item_id)
+        result["evidence_item_ids"] = evidence_ids
+        result = link_generated_narrative(result, evidence_reasoning)
 
     # Compact metric strip for the page header (computed, not LLM-generated).
     g = context.get("glucose") or {}
@@ -228,13 +260,14 @@ async def generate() -> dict[str, Any]:
         "hrv": (w.get("hrv") or {}).get("recent"),
         "resting_hr": (w.get("resting_heart_rate") or {}).get("recent"),
         "bmi": p.get("bmi"), "age": p.get("age"),
-        "labs_out_of_range": len(context.get("labs_out_of_range") or []),
+        "labs_out_of_range": context["lab_metrics"]["out_of_range"],
     }
     now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     generated = {
         **(result or {}),
         "metrics": metrics,
         "data_quality": context.get("data_quality"),
+        "evidence_context": context["evidence_context"],
     }
     payload = {"generated_at": now, "data": json.dumps(generated), "owner_email": OWNER_EMAIL}
     # Summary replacement and its scheduler cursor span two SQLite tables and

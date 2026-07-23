@@ -178,6 +178,7 @@ def test_bundle_is_deterministic_complete_bounded_and_source_linked(evidence_api
 
     body = first.json()
     assert body["bundle_id"].startswith("urn:glucopilot:evidence-bundle:")
+    assert body["bundle_version"] == "2.0.0"
     assert body["data_version"]["input_hash"].startswith("sha256:")
     assert body["budget"]["returned_items"] <= body["budget"]["item_limit"] == 20
     assert body["evidence"]["direct_observations"]
@@ -192,6 +193,12 @@ def test_bundle_is_deterministic_complete_bounded_and_source_linked(evidence_api
         "all", "glucose", "labs", "analytics"
     }
     assert body["source_links"]
+    lab_item = next(
+        item for item in body["evidence"]["direct_observations"]
+        if item["entity_id"] == evidence_api["lab"]["id"]
+    )
+    assert lab_item["confidence"]["label"] == "unverified"
+    assert lab_item["confidence"]["clinically_verified"] is False
     for link in body["source_links"]:
         if link["kind"] == "normalized_entity":
             assert client.get(link["href"]).status_code == 200

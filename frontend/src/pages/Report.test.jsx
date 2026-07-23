@@ -38,6 +38,16 @@ const report = {
       right: { label: "Calculated from delivery events", value: 24, unit: "units/day", observed_at: "2026-04-30" },
     }],
   },
+  evidence_context: {
+    contract_version: "clinical-evidence-context/1.0.0",
+    bundle: { id: "urn:bundle:report", version: "2.0.0" },
+    data_quality: [{ domain: "cgm", coverage_status: "complete", freshness_status: "current" }],
+    data_through: [{ domain: "cgm", through: "2026-05-01" }],
+    contradictions: [{ id: "contr_report_synthetic", severity: "blocking" }],
+    claims: [],
+    evidence_items: [],
+    sources: { links: [] },
+  },
   narrative: null,
 };
 
@@ -68,5 +78,7 @@ describe("visit report contradictions", () => {
     expect(screen.getByText("30 units/day")).toBeTruthy();
     expect(screen.getByText("24 units/day")).toBeTruthy();
     expect(screen.getByText(/No conflicting value has been selected silently/)).toBeTruthy();
+    expect(screen.getByText("Shared evidence context")).toBeTruthy();
+    expect(screen.getByText("2026-05-01")).toBeTruthy();
   });
 });

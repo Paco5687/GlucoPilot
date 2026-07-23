@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import DataQualityNote from "@/components/DataQualityNote";
+import EvidenceContextBlock from "@/components/evidence/EvidenceContextBlock";
 import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope, ScrollText } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, Line, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
@@ -360,6 +361,11 @@ export default function Report() {
           )}
         </div>
       )}
+
+      <EvidenceContextBlock
+        context={report.evidence_context}
+        narrativeEvidenceIds={n?.evidence_item_ids}
+      />
 
       {/* Glucose */}
       <div className="report-section space-y-3">

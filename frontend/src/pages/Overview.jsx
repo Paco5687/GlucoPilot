@@ -4,6 +4,7 @@ import { useAuth } from "@/lib/AuthContext";
 import { Button } from "@/components/ui/button";
 import SafetyBanner from "../components/SafetyBanner";
 import PatternCard from "../components/patterns/PatternCard";
+import EvidenceContextBlock from "../components/evidence/EvidenceContextBlock";
 import { Sparkles, Loader2, RefreshCw, Link2, CheckCircle2, AlertTriangle, Brain } from "lucide-react";
 import { toast } from "sonner";
 
@@ -139,6 +140,11 @@ export default function Overview() {
                   )}
                 </div>
               )}
+
+              <EvidenceContextBlock
+                context={summary.evidence_context}
+                narrativeEvidenceIds={summary.evidence_item_ids}
+              />
 
               {summary.observations?.length > 0 && (
                 <div className="space-y-3">

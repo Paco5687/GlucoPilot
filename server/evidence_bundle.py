@@ -28,13 +28,14 @@ from .evidence_sets import (
     StaleEvidenceError,
     evidence_set_reads_enabled,
 )
+from .lab_audit import qualification as lab_qualification
 from .relationship_api import _public_edge
 from .relationships import SqliteRelationshipRepository, relationship_reads_enabled
 from .repositories import LegacyRepositoryCatalog
 
 
 BUNDLE_GENERATOR = "evidence-bundle"
-BUNDLE_VERSION = "1.0.0"
+BUNDLE_VERSION = "2.0.0"
 MAX_ITEM_BUDGET = 250
 MAX_SOURCE_ROWS = 100_000
 MAX_CONTRADICTIONS = 1_000
@@ -233,7 +234,43 @@ def _document_link(entity_type: str, entity_id: str, data: dict[str, Any]) -> di
     return link
 
 
-def _confidence(data: dict[str, Any]) -> dict[str, Any]:
+def _confidence(
+    entity_type: str | dict[str, Any],
+    data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    # Preserve the pre-G8 internal helper form used by analytics regressions.
+    if data is None:
+        data = entity_type if isinstance(entity_type, dict) else {}
+        entity_type = ""
+    if entity_type == "LabResult":
+        qualification = lab_qualification(data)
+        verification = qualification["verification_status"]
+        clinically_verified = (
+            verification in {"approved", "edited"}
+            and qualification["validation_status"] != "invalid"
+        )
+        score = data.get("parser_confidence", data.get("confidence_score"))
+        try:
+            numeric = float(score)
+        except (TypeError, ValueError):
+            numeric = None
+        if numeric is not None and not 0 <= numeric <= 1:
+            numeric = None
+        limitations = list(qualification["limitations"])
+        if not clinically_verified:
+            limitations.insert(
+                0,
+                "Machine extraction has not been approved or edited against the source document.",
+            )
+        return {
+            "label": "high" if clinically_verified else "unverified",
+            "score": numeric,
+            "method": "human_verification_status" if clinically_verified else "machine_extraction",
+            "verification_status": verification,
+            "validation_status": qualification["validation_status"],
+            "clinically_verified": clinically_verified,
+            "limitations": limitations,
+        }
     analytics = data.get("analytics_confidence")
     if isinstance(analytics, dict):
         score = analytics.get("confidence_score")
@@ -397,7 +434,7 @@ def _load_entity_candidates(
                 "observed_at": _observed_at(entity_type, row, data),
                 "recorded_at": row["updated_date"],
                 "data": data,
-                "confidence": _confidence(data),
+                "confidence": _confidence(entity_type, data),
                 "source_links": source_links,
                 "_relevance": _relevance(intent_tokens, entity_type, data),
             })
@@ -542,6 +579,7 @@ def _attach_claim_evidence(
     selected: list[dict[str, Any]],
 ) -> None:
     catalog = LegacyRepositoryCatalog(connection)
+    claim_repository = SqliteClaimVersionRepository(connection)
     for item in selected:
         if item["entity_type"] not in _DERIVED_TYPES:
             continue
@@ -551,6 +589,35 @@ def _attach_claim_evidence(
             "locator_ref": _opaque(reference.locator),
             "value": _sanitize(reference.value),
         } for reference in references]
+        if item["entity_type"] not in {"Pattern", "Insight"}:
+            continue
+        claim = claim_repository.for_entity(
+            OWNER_EMAIL, item["entity_type"], item["entity_id"]
+        )
+        if not claim or not claim.get("evidence_set_id"):
+            continue
+        href = (
+            f"/api/evidence/claims/{quote(item['entity_type'], safe='')}/"
+            f"{quote(item['entity_id'], safe='')}"
+        )
+        item["claim"] = {
+            "claim_version_id": claim["id"],
+            "version_number": claim["version_number"],
+            "assertion_kind": claim["assertion_kind"],
+            "assertion_status": claim["assertion_status"],
+            "algorithm": {
+                "id": claim["algorithm_id"],
+                "version": claim["algorithm_version"],
+            },
+            "evidence_set_id": claim["evidence_set_id"],
+            "href": href,
+        }
+        item["source_links"].append({
+            "kind": "claim_evidence",
+            "entity_type": item["entity_type"],
+            "entity_id": item["entity_id"],
+            "href": href,
+        })
 
 
 def _caveats(
@@ -815,7 +882,7 @@ def source_detail(entity_type: str, entity_id: str) -> dict[str, Any]:
         "data": data,
         "created_at": row["created_date"],
         "updated_at": row["updated_date"],
-        "confidence": _confidence(data),
+        "confidence": _confidence(entity_type, data),
         "provenance": refs,
         "source_links": links,
     }
