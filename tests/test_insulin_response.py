@@ -233,7 +233,7 @@ def test_evidence_bundle_exposes_response_event_and_normalized_sources(
     }
     assert ("Treatment", bolus["id"]) in linked
     assert ("GlucoseReading", glucose_ids[0]) in linked
-    assert bundle["bundle_version"] == "2.4.0"
+    assert bundle["bundle_version"] == "2.5.0"
 
 
 def test_absorption_api_preserves_events_when_quality_blocks_summary(monkeypatch):

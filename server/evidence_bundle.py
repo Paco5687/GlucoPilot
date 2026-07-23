@@ -38,7 +38,7 @@ from .repositories import LegacyRepositoryCatalog
 
 
 BUNDLE_GENERATOR = "evidence-bundle"
-BUNDLE_VERSION = "2.4.0"
+BUNDLE_VERSION = "2.5.0"
 MAX_ITEM_BUDGET = 250
 MAX_SOURCE_ROWS = 100_000
 MAX_CONTRADICTIONS = 1_000
@@ -71,6 +71,7 @@ class EvidenceBundleQuery(BaseModel):
     domains: tuple[EvidenceDomain, ...]
     question_intent: str = Field(min_length=1, max_length=500)
     item_budget: int = Field(default=50, ge=1, le=MAX_ITEM_BUDGET)
+    normalized_entity_types: tuple[str, ...] | None = None
 
     @field_validator("start", "end")
     @classmethod
@@ -91,10 +92,28 @@ class EvidenceBundleQuery(BaseModel):
     def canonical_intent(cls, value: str) -> str:
         return " ".join(value.split())
 
+    @field_validator("normalized_entity_types")
+    @classmethod
+    def canonical_entity_types(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
+        if value is None:
+            return None
+        selected = tuple(sorted(set(value)))
+        if not selected:
+            raise ValueError("normalized_entity_types cannot be empty")
+        return selected
+
     @model_validator(mode="after")
     def valid_range(self) -> EvidenceBundleQuery:
         if self.end < self.start:
             raise ValueError("end cannot precede start")
+        if self.normalized_entity_types is not None:
+            available = set(_selected_types(self.domains))
+            invalid = set(self.normalized_entity_types) - available
+            if invalid:
+                raise ValueError(
+                    "normalized_entity_types must belong to the selected domains: "
+                    + ", ".join(sorted(invalid))
+                )
         return self
 
 
@@ -330,8 +349,14 @@ def _explicit_stance(data: dict[str, Any]) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _selected_types(domains: tuple[EvidenceDomain, ...]) -> tuple[str, ...]:
-    return tuple(sorted({entity_type for domain in domains for entity_type in _DOMAIN_TYPES[domain]}))
+def _selected_types(
+    domains: tuple[EvidenceDomain, ...],
+    normalized_entity_types: tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    available = {entity_type for domain in domains for entity_type in _DOMAIN_TYPES[domain]}
+    if normalized_entity_types is not None:
+        available &= set(normalized_entity_types)
+    return tuple(sorted(available))
 
 
 def _item_domain(
@@ -416,7 +441,7 @@ def _load_entity_candidates(
     candidates: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
     total = 0
-    for entity_type in _selected_types(query.domains):
+    for entity_type in _selected_types(query.domains, query.normalized_entity_types):
         where, parameters = _entity_where(entity_type, query)
         count = int(connection.execute(f"SELECT COUNT(*) FROM entities WHERE {where}", parameters).fetchone()[0])
         counts[entity_type] = count
@@ -1219,6 +1244,8 @@ def build_bundle(query: EvidenceBundleQuery) -> dict[str, Any]:
         "question_intent": query.question_intent,
         "item_budget": query.item_budget,
     }
+    if query.normalized_entity_types is not None:
+        canonical_query["normalized_entity_types"] = list(query.normalized_entity_types)
     query_checksum = _checksum(canonical_query)
     intent_tokens = set(_TOKEN.findall(query.question_intent.lower()))
     cache_key = _checksum({

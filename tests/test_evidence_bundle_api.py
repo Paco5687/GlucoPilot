@@ -178,7 +178,7 @@ def test_bundle_is_deterministic_complete_bounded_and_source_linked(evidence_api
 
     body = first.json()
     assert body["bundle_id"].startswith("urn:glucopilot:evidence-bundle:")
-    assert body["bundle_version"] == "2.4.0"
+    assert body["bundle_version"] == "2.5.0"
     assert body["data_version"]["input_hash"].startswith("sha256:")
     assert body["budget"]["returned_items"] <= body["budget"]["item_limit"] == 20
     assert body["evidence"]["direct_observations"]
@@ -267,6 +267,14 @@ def test_bundle_validation_and_openapi_bounds(evidence_api):
         "/api/evidence/bundles/query",
         json={**_query(), "start": "2026-06-01T00:00:00Z"},
     ).status_code == 422
+    assert client.post(
+        "/api/evidence/bundles/query",
+        json={**_query(), "normalized_entity_types": []},
+    ).status_code == 422
+    assert client.post(
+        "/api/evidence/bundles/query",
+        json={**_query(), "normalized_entity_types": ["FitbitDaily"]},
+    ).status_code == 422
 
     schema = client.get("/openapi.json").json()
     operation = schema["paths"]["/api/evidence/bundles/query"]["post"]
@@ -274,3 +282,28 @@ def test_bundle_validation_and_openapi_bounds(evidence_api):
     model = schema["components"]["schemas"][request_schema["$ref"].split("/")[-1]]
     assert model["properties"]["item_budget"]["maximum"] == 250
     assert set(schema["paths"]["/api/evidence/sources/{entity_type}/{entity_id}"]) == {"get"}
+
+
+def test_bundle_can_explicitly_bound_normalized_entity_types(evidence_api):
+    response = evidence_api["client"].post(
+        "/api/evidence/bundles/query",
+        json={
+            **_query(),
+            "normalized_entity_types": ["MedicalRecord", "LabResult"],
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["query"]["normalized_entity_types"] == ["LabResult", "MedicalRecord"]
+    selected_types = {
+        item["entity_type"]
+        for section in ("direct_observations", "derived_metrics", "documents")
+        for item in body["evidence"][section]
+    }
+    assert selected_types <= {
+        "LabResult",
+        "MedicalRecord",
+        # Canonical analytical candidates are loaded separately from normalized
+        # entities and remain governed by the selected analytics domain.
+        "ManagementBurdenSummary",
+    }

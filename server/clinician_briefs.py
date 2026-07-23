@@ -7,11 +7,16 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from .auth import require_login
-from .evidence_bundle import EvidenceBundleQuery, EvidenceDomain, build_bundle
+from .evidence_bundle import (
+    EvidenceBundleError,
+    EvidenceBundleQuery,
+    EvidenceDomain,
+    build_bundle,
+)
 from .hypotheses import report_block as hypothesis_report
 
 
@@ -21,8 +26,11 @@ BRIEF_VERSION = "clinician-brief/1.0.0"
 COMMON_TYPES = {
     "Diagnosis", "Medication", "Allergy", "SymptomLog", "HistoryEntry",
     "HealthProfile", "HealthEpisode", "MedicationExposure", "Pattern",
-    "Insight", "ManagementBurdenSummary",
+    "Insight", "DailySummary", "WeeklySummary", "HealthSummary",
+    "ManagementBurdenSummary",
 }
+HIGH_FREQUENCY_RAW_TYPES = {"GlucoseReading", "OuraHeartRate", "FitbitHeartRate"}
+AUXILIARY_TYPES = {"HealthEpisode", "MedicationExposure", "InsulinResponseEvent"}
 MODE_CONFIG = {
     "clinician": {
         "label": "Concise clinician",
@@ -200,6 +208,9 @@ def build_brief(mode: str, days: int) -> dict[str, Any]:
         domains=list(config["domains"]),
         question_intent=config["intent"],
         item_budget=150,
+        normalized_entity_types=tuple(
+            sorted(config["types"] - HIGH_FREQUENCY_RAW_TYPES - AUXILIARY_TYPES)
+        ),
     ))
     selected = [
         item for item in _items(bundle)
@@ -305,4 +316,7 @@ def build_brief(mode: str, days: int) -> dict[str, Any]:
 
 @router.post("/api/briefs/clinician")
 def clinician_brief(body: BriefRequest):
-    return build_brief(body.mode, body.days)
+    try:
+        return build_brief(body.mode, body.days)
+    except EvidenceBundleError as error:
+        raise HTTPException(status_code=413, detail=str(error)) from error
