@@ -32,7 +32,7 @@ Hypothesis, evidence-revision, immutable-event, and terminal-status counts are
 verified when migration 15 is present.
 Activity/position interval/event counts and management-burden
 observed/inferred/manual/correction/exclusion/audit counts are verified when
-migrations 19 and 20 are present.
+migrations 19, 20, and 21 are present.
 
 Application startup performs this verified backup automatically before pending
 migrations touch an existing database. The default destination is

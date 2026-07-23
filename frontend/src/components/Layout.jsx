@@ -11,7 +11,7 @@ import { useAuth } from "@/lib/AuthContext";
 import { pushTrail } from "@/lib/navTrail";
 import BugReportModal from "@/components/BugReportModal";
 
-// Grouped navigation. adminOnly items are hidden from read-only provider sessions.
+// Grouped navigation. adminOnly items are hidden from source-read-only provider sessions.
 const navGroups = [
   {
     label: null,
@@ -180,7 +180,7 @@ export default function Layout() {
         )}
         {isProvider && (
           <div className="bg-sky-50 border-b border-sky-200 text-sky-800 text-xs font-medium px-4 py-2 text-center flex items-center justify-center gap-1.5 print:hidden">
-            <Eye className="w-3.5 h-3.5" /> Read-only provider view — you can view and print reports, but not change data or settings.
+            <Eye className="w-3.5 h-3.5" /> Provider review view — source data and settings are read-only; attributable annotations are available in Clinician Brief.
           </div>
         )}
 

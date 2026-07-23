@@ -35,7 +35,9 @@ proposed/under_review -> archived
 Terminal rows cannot be reopened or silently revised. `confirmed` and
 `ruled_against` require an authenticated admin action that explicitly records
 `decision_authority=clinician`, a reviewer identity, and a rationale. Read-only
-provider sessions can inspect the ledger and reports but cannot mutate it.
+provider sessions can inspect the ledger but cannot mutate it. P7 provider
+confirm/reject actions live in the separate clinical-review audit and never
+rewrite this guarded hypothesis ledger.
 
 The dedicated API surface is:
 

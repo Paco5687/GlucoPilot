@@ -453,6 +453,36 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
                         ).fetchone()
                     ),
                 }
+            clinical_review_ledger = None
+            clinical_review_tables = (
+                "clinical_review_threads",
+                "clinical_review_events",
+            )
+            if all(
+                _table_exists(connection, table)
+                for table in clinical_review_tables
+            ):
+                clinical_review_ledger = {
+                    "threads": dict(
+                        connection.execute(
+                            """
+                            SELECT COUNT(*) AS count,
+                                   COALESCE(SUM(CASE WHEN owner_status='pending' THEN 1 ELSE 0 END), 0)
+                                       AS pending_count,
+                                   COALESCE(SUM(CASE WHEN owner_status='accepted' THEN 1 ELSE 0 END), 0)
+                                       AS accepted_count,
+                                   COALESCE(SUM(CASE WHEN owner_status='disputed' THEN 1 ELSE 0 END), 0)
+                                       AS disputed_count
+                            FROM clinical_review_threads
+                            """
+                        ).fetchone()
+                    ),
+                    "events": dict(
+                        connection.execute(
+                            "SELECT COUNT(*) AS count FROM clinical_review_events"
+                        ).fetchone()
+                    ),
+                }
     except BackupError:
         raise
     except (OSError, sqlite3.Error) as error:
@@ -495,6 +525,8 @@ def _database_metadata(path: Path, *, include_references: bool = False) -> dict[
         metadata["activity_position_ledger"] = activity_position_ledger
     if management_burden_ledger is not None:
         metadata["management_burden_ledger"] = management_burden_ledger
+    if clinical_review_ledger is not None:
+        metadata["clinical_review_ledger"] = clinical_review_ledger
     if include_references:
         metadata["record_references"] = references
     return metadata
@@ -717,6 +749,8 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
         keys.append("activity_position_ledger")
     if "management_burden_ledger" in expected_database:
         keys.append("management_burden_ledger")
+    if "clinical_review_ledger" in expected_database:
+        keys.append("clinical_review_ledger")
     for key in keys:
         if metadata[key] != expected_database.get(key):
             raise BackupError(f"restored database metadata mismatch: {key}")
@@ -785,6 +819,19 @@ def _verify_restored_data(restored_data_dir: Path, manifest: dict[str, Any]) -> 
                 "management_burden_audit_count": metadata[
                     "management_burden_ledger"
                 ]["audit"]["count"],
+            }
+        )
+    if "clinical_review_ledger" in expected_database:
+        review_threads = metadata["clinical_review_ledger"]["threads"]
+        verification.update(
+            {
+                "clinical_review_thread_count": review_threads["count"],
+                "pending_clinical_review_count": review_threads["pending_count"],
+                "accepted_clinical_review_count": review_threads["accepted_count"],
+                "disputed_clinical_review_count": review_threads["disputed_count"],
+                "clinical_review_event_count": metadata[
+                    "clinical_review_ledger"
+                ]["events"]["count"],
             }
         )
     if "canonical_time" in expected_database:

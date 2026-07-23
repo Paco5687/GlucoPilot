@@ -11,6 +11,7 @@ from typing import Any
 
 from .contradictions import refresh_current as refresh_contradictions
 from .evidence_bundle import EvidenceBundleQuery, EvidenceDomain, build_bundle
+from .clinical_reviews import companion_context as clinical_review_context
 
 
 CONTRACT_VERSION = "companion-evidence-context/1.0.0"
@@ -377,6 +378,16 @@ def build_context(
     ])
     retained_ids = {item["id"] for item in reasoning_items}
     retained_aliases = {item["id"]: item["alias"] for item in reasoning_items}
+    review_context = {
+        key: [
+            {
+                **item,
+                "evidence_alias": retained_aliases.get(item.get("target_id")),
+            }
+            for item in values
+        ]
+        for key, values in clinical_review_context(limit=12).items()
+    }
     public_items = [
         _public_item(item["alias"], items_by_id[item["id"]])
         for item in reasoning_items
@@ -402,10 +413,13 @@ def build_context(
         }
         for scope, bundle in bundles
     ]
-    portfolio_hash = _checksum([
-        {"scope": ref["scope"], "id": ref["id"], "input_hash": ref["input_hash"]}
-        for ref in bundle_refs
-    ])
+    portfolio_hash = _checksum({
+        "bundles": [
+            {"scope": ref["scope"], "id": ref["id"], "input_hash": ref["input_hash"]}
+            for ref in bundle_refs
+        ],
+        "clinical_reviews": review_context,
+    })
     portfolio_id = (
         "urn:glucopilot:companion-evidence-context:"
         + portfolio_hash.removeprefix("sha256:")
@@ -424,6 +438,7 @@ def build_context(
         "opposing_evidence": public_opposing,
         "contradictions": contradictions,
         "missing_data_caveats": [caveats[key] for key in sorted(caveats)],
+        "clinical_reviews": review_context,
         "budget": {
             "configured_items": sum(scope.budget for scope, _ in bundles),
             "prompt_items": len(public_items),
@@ -444,6 +459,7 @@ def build_context(
         "opposing_evidence": public_opposing,
         "contradictions": contradictions,
         "missing_data_caveats": public["missing_data_caveats"],
+        "clinical_reviews": review_context,
         "budget": public["budget"],
     }
     while (

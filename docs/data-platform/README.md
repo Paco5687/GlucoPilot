@@ -76,6 +76,8 @@ typed repositories are introduced.
 - [Evidence-linked specialist briefs](SPECIALIST_BRIEFS.md) — bounded
   specialty Evidence Bundle queries, minimum-necessary PHI selection,
   strength-aware language, tentative-hypothesis safeguards, and source links.
+- [Provider review audit](PROVIDER_REVIEWS.md) — source-read-only clinician
+  annotations, review decisions, owner accept/dispute, and immutable attribution.
 - [Evidence-grounded Companion](COMPANION_EVIDENCE.md) — question-ranked bounded
   retrieval, validated statement/source links, unverified-lab safeguards,
   local-model prompt limits, and evidence/opposition/change commands.

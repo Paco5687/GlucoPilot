@@ -1,4 +1,4 @@
-"""Session auth: one admin plus optional read-only provider logins.
+"""Session auth: one admin plus optional source-read-only provider logins.
 
 First visit creates the admin login (Argon2id hash stored in SQLite);
 afterwards /login authenticates and sets a signed session cookie. Legacy
@@ -223,7 +223,8 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
         request.session["role"] = "admin"
         return RedirectResponse("/dashboard", status_code=303)
 
-    # Provider (read-only) logins — up to 4 credentials the admin sets up.
+    # Provider logins — source data/settings remain read-only; P7 review events
+    # use a separate attributable write surface.
     providers = load_providers()
     for i, p in enumerate(providers):
         if secrets.compare_digest(username, p.get("username", "")) and verify_password(password, p.get("password_hash", "")):
