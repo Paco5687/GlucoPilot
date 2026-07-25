@@ -48,7 +48,8 @@ const brief = {
       id: "hypothesis-synthetic",
       title: "Possible synthetic iron issue",
       description: "Tentative observation.",
-      display_label: "Unconfirmed hypothesis — not a diagnosis",
+      evidence_state: "not_evaluated",
+      display_label: "Not evaluated — no supporting or opposing evidence recorded",
       definitive_allowed: false,
     }],
     reassuring_evidence: [{ evidence, reason: "Synthetic reassurance." }],
@@ -86,7 +87,8 @@ describe("ClinicianBrief", () => {
 
     expect(await screen.findByText("Hematology brief")).toBeTruthy();
     expect(screen.getByText(/other PHI is omitted/i)).toBeTruthy();
-    expect(screen.getAllByText(/Unconfirmed hypothesis/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Not evaluated — no supporting or opposing evidence recorded/i)).toBeTruthy();
+    expect(screen.getByText("Possible synthetic iron issue").className).toContain("text-muted-foreground");
     expect(screen.getAllByText(/Recorded observation/).length).toBeGreaterThan(0);
     const links = screen.getAllByRole("link", { name: "Open source evidence" });
     expect(links[0].getAttribute("href")).toBe("/api/evidence/source/LabResult/synthetic");

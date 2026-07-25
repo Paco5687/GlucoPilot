@@ -279,7 +279,12 @@ def test_reply_claims_require_valid_links_and_unverified_labs_are_qualified(
     assert "Unverified machine-extracted lab evidence:" in reply
     assert "[E999]" not in reply
     assert "definitely failing" not in reply
-    assert "I don't have bounded personal evidence" in reply
+    assert "I don't have bounded personal evidence" not in reply
+    assert reply.count("Some generated statements were omitted") == 1
+    assert evidence["omissions"] == {
+        "count": 1,
+        "reason": "missing_personal_evidence_citation",
+    }
     personal = [
         statement for statement in evidence["statements"]
         if statement["personal_data_claim"]
@@ -295,6 +300,72 @@ def test_reply_claims_require_valid_links_and_unverified_labs_are_qualified(
     assert general["classification"] == "general_information"
     assert general["evidence_item_ids"] == []
     assert general["external_source_ids"]
+
+
+def test_uncited_personal_claims_are_omitted_with_one_quiet_notice(
+    companion_database,
+):
+    public, _reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?",
+        as_of=date(2026, 7, 20),
+        refresh=False,
+    )
+    reply, evidence = companion_evidence.finalize_reply(
+        "\n".join(
+            [
+                "Your thyroid result was high.",
+                "Your sleep trend was low.",
+                "Your glucose pattern increased.",
+            ]
+        ),
+        public,
+        [],
+        [],
+    )
+
+    assert reply == (
+        "Some generated statements were omitted because they could not be "
+        "linked to your records."
+    )
+    assert evidence["omissions"]["count"] == 3
+    assert evidence["statements"] == []
+
+
+def test_companion_retries_once_and_keeps_the_better_grounded_reply(
+    companion_database,
+    monkeypatch,
+):
+    public, _reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?",
+        as_of=date(2026, 7, 20),
+        refresh=False,
+    )
+    lab = next(
+        item for item in public["evidence_items"]
+        if item["entity_id"] == companion_database["lab"]["id"]
+    )
+
+    async def repaired_reply(*_args, **_kwargs):
+        return f"Your thyroid result was high. [{lab['alias']}]"
+
+    monkeypatch.setattr(companion, "invoke_llm", repaired_reply)
+    reply, evidence = asyncio.run(
+        companion._finalize_grounded_reply(
+            "Your thyroid result was high.",
+            public,
+            [],
+            [],
+        )
+    )
+
+    assert reply.startswith("Unverified machine-extracted lab evidence:")
+    assert "statements were omitted" not in reply
+    assert evidence["grounding_retry"] == {
+        "attempted": True,
+        "improved": True,
+        "initial_omissions": 1,
+        "remaining_omissions": 0,
+    }
 
 
 def test_local_model_prompt_bounds_memories_history_and_evidence(companion_database):

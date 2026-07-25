@@ -219,9 +219,9 @@ export default function ClinicianBrief() {
           <Section title="Labs & imaging"><EvidenceList items={sections.labs_imaging} onReview={isProvider ? chooseReviewTarget : null} /></Section>
           <Section title="Hypotheses — not diagnoses">
             {!sections.hypotheses?.length ? <p className="text-xs text-muted-foreground">No specialty-relevant hypotheses selected.</p> : sections.hypotheses.map((item) => (
-              <div key={item.id} className="rounded-lg border p-3 text-xs">
-                <b>{item.title}</b>
-                <p className={item.definitive_allowed ? "" : "text-amber-700"}>{item.display_label}</p>
+              <div key={item.id} className={`rounded-lg border p-3 text-xs ${item.evidence_state === "not_evaluated" ? "border-dashed bg-muted/20" : ""}`}>
+                <p className={item.evidence_state === "not_evaluated" ? "text-muted-foreground" : "font-semibold"}>{item.title}</p>
+                <p className={item.evidence_state === "not_evaluated" ? "text-muted-foreground" : item.definitive_allowed ? "" : "text-amber-700"}>{item.display_label}</p>
                 <p>{item.description}</p>
                 {isProvider && (
                   <button type="button" onClick={() => chooseReviewTarget({

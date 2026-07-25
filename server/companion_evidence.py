@@ -617,6 +617,7 @@ def finalize_reply(
     used_evidence: dict[str, dict[str, Any]] = {}
     used_external: dict[str, dict[str, Any]] = {}
     used_memories: dict[str, dict[str, Any]] = {}
+    omitted_claims = 0
 
     for line in str(reply or "").splitlines():
         aliases = []
@@ -645,11 +646,11 @@ def finalize_reply(
         ):
             line = _qualify_unverified(line)
         if not (kinds & {"E", "M"}) and _uncited_personal_claim(line, classification):
-            line = "I don't have bounded personal evidence to support that statement."
-            aliases = [alias for alias in aliases if alias.startswith("G")]
-            kinds = {alias[0] for alias in aliases}
-            classification = "general_information"
-            evidence_items = []
+            # Fail closed without turning every unsupported sentence into a
+            # repeated, alarming chat message. The omission is represented once
+            # in the response footer and structurally in the evidence metadata.
+            omitted_claims += 1
+            continue
         for item in evidence_items:
             used_evidence[item["alias"]] = item
         for alias in aliases:
@@ -692,6 +693,12 @@ def finalize_reply(
         output_lines.append(line)
 
     sanitized = "\n".join(output_lines).strip()
+    if omitted_claims:
+        omission_note = (
+            "Some generated statements were omitted because they could not be "
+            "linked to your records."
+        )
+        sanitized = f"{sanitized}\n\n{omission_note}".strip()
     evidence = {
         "contract_version": CONTRACT_VERSION,
         "bundle": public_context.get("bundle"),
@@ -706,6 +713,10 @@ def finalize_reply(
         "contradictions": public_context.get("contradictions") or [],
         "missing_data_caveats": public_context.get("missing_data_caveats") or [],
         "budget": public_context.get("budget") or {},
+        "omissions": {
+            "count": omitted_claims,
+            "reason": "missing_personal_evidence_citation" if omitted_claims else None,
+        },
     }
     return sanitized, evidence
 

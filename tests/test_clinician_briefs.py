@@ -130,6 +130,34 @@ def test_unconfirmed_hypothesis_and_exploratory_pattern_are_not_overstated(synth
     assert pattern["evidence_strength"]["causal_allowed"] is False
 
 
+def test_unevaluated_hypothesis_is_not_presented_as_evidence_against(
+    synthetic_sources,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        clinician_briefs,
+        "hypothesis_report",
+        lambda: [{
+            "id": "legacy-suspected:synthetic",
+            "title": "Synthetic legacy question",
+            "description": "Previously recorded without governed evidence.",
+            "suggested_verification": "Discuss whether evaluation is warranted.",
+            "status": "proposed",
+            "evidence_state": "not_evaluated",
+            "evidence_state_label": "Not evaluated",
+            "legacy": True,
+        }],
+    )
+
+    hypothesis = clinician_briefs.build_brief("clinician", 90)["sections"]["hypotheses"][0]
+
+    assert hypothesis["semantic_class"] == "unevaluated_hypothesis_not_diagnosis"
+    assert hypothesis["definitive_allowed"] is False
+    assert hypothesis["display_label"] == (
+        "Not evaluated — no supporting or opposing evidence recorded"
+    )
+
+
 def test_every_specialist_mode_uses_bounded_evidence_bundle_query(synthetic_sources):
     for mode in clinician_briefs.MODE_CONFIG:
         brief = clinician_briefs.build_brief(mode, 30)

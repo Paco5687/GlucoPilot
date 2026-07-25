@@ -65,4 +65,36 @@ describe("Companion grounded messages", () => {
     expect(screen.getByRole("button", { name: "What argues against this?" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "What changed?" })).toBeTruthy();
   });
+
+  it("compacts repeated legacy grounding warnings when loading history", async () => {
+    const legacyNotice = "I don't have bounded personal evidence to support that statement.";
+    mocks.invoke.mockImplementation(async (_name, payload) => {
+      if (payload.action === "threads") {
+        return { data: { threads: [{ id: "thread_legacy", title: "Legacy" }] } };
+      }
+      if (payload.action === "history") {
+        return {
+          data: {
+            messages: [{
+              id: "message_legacy",
+              role: "assistant",
+              content: [
+                "A supported observation remains visible. [E1]",
+                legacyNotice,
+                legacyNotice,
+                legacyNotice,
+              ].join("\n"),
+            }],
+          },
+        };
+      }
+      return { data: { memories: [] } };
+    });
+
+    render(<Companion />);
+
+    expect(await screen.findByText("A supported observation remains visible. [E1]")).toBeTruthy();
+    expect(screen.queryByText(legacyNotice)).toBeNull();
+    expect(screen.getAllByText(/Some generated statements were omitted/)).toHaveLength(1);
+  });
 });

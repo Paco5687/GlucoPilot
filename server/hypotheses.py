@@ -48,6 +48,15 @@ SOURCE_KINDS = {
     "missing",
 }
 EVIDENCE_ROLES = {"supporting", "opposing", "missing"}
+EVIDENCE_STATE_LABELS = {
+    "not_evaluated": "Not evaluated",
+    "preliminary": "Preliminary",
+    "mixed": "Mixed evidence",
+    "leans_supportive": "Evidence leans supportive",
+    "leans_against": "Evidence leans against",
+    "clinician_confirmed": "Clinician confirmed",
+    "clinician_ruled_against": "Clinician ruled against",
+}
 SAFE_LINK_PREFIXES = (
     "/api/evidence/",
     "/api/records/",
@@ -196,6 +205,34 @@ def _confidence(evidence: list[dict[str, Any]]) -> tuple[float, str]:
         "This is an evidence-balance score, not a diagnostic probability."
     )
     return score, rationale
+
+
+def _evidence_state(status: str, evidence: list[dict[str, Any]]) -> tuple[str, str]:
+    """Describe recorded evidence without treating missing evidence as opposition."""
+    if status == "confirmed":
+        state = "clinician_confirmed"
+    elif status == "ruled_against":
+        state = "clinician_ruled_against"
+    else:
+        supporting = [item for item in evidence if item["role"] == "supporting"]
+        opposing = [item for item in evidence if item["role"] == "opposing"]
+        if not supporting and not opposing:
+            state = "not_evaluated"
+        elif len(supporting) + len(opposing) < 2:
+            state = "preliminary"
+        else:
+            supporting_weight = sum(item["weight"] for item in supporting)
+            opposing_weight = sum(item["weight"] for item in opposing)
+            considered = supporting_weight + opposing_weight
+            balance = supporting_weight / considered if considered else 0.5
+            state = (
+                "leans_supportive"
+                if balance >= 0.65
+                else "leans_against"
+                if balance <= 0.35
+                else "mixed"
+            )
+    return state, EVIDENCE_STATE_LABELS[state]
 
 
 def _input_version(evidence: list[dict[str, Any]]) -> str:
@@ -397,6 +434,9 @@ class SqliteHypothesisRepository:
             else "medium"
             if output["confidence_score"] >= 0.45
             else "low"
+        )
+        output["evidence_state"], output["evidence_state_label"] = _evidence_state(
+            output["status"], evidence
         )
         if include_events:
             output["events"] = cls._events(connection, output["id"])
@@ -670,6 +710,8 @@ def report_block() -> list[dict[str, Any]]:
                 "confidence_rationale": (
                     "No governed evidence revision exists for this legacy suspected entry."
                 ),
+                "evidence_state": "not_evaluated",
+                "evidence_state_label": EVIDENCE_STATE_LABELS["not_evaluated"],
                 "suggested_verification": "Review and re-enter in the hypothesis ledger.",
                 "review_at": None,
                 "evidence_by_role": {"supporting": [], "opposing": [], "missing": [{

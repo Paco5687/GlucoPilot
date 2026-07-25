@@ -49,7 +49,7 @@ The dedicated API surface is:
 | `PUT /api/hypotheses/{id}/evidence` | admin | Append a complete evidence revision and confidence event. |
 | `POST /api/hypotheses/{id}/transition` | admin | Apply a guarded lifecycle transition; terminal decisions require clinician attribution. |
 
-## Evidence balance
+## Evidence state and audit score
 
 Every evidence item has exactly one role:
 
@@ -57,30 +57,42 @@ Every evidence item has exactly one role:
 - `opposing` — evidence consistent with another explanation or against it;
 - `missing` — a named gap or verification step that remains unresolved.
 
-`weighted-evidence-v1` recalculates the displayed score for each complete
+`weighted-evidence-v1` recalculates an audit-compatible score for each complete
 evidence revision:
 
 ```text
 supporting weight / (supporting + opposing + missing weight)
 ```
 
-The score is explicitly an evidence-balance measure, not a diagnostic
-probability. Each revision stores a canonical SHA-256 input version. Event
-before/after states make score changes attributable to the exact evidence
-revision and reason.
+The score is explicitly not a diagnostic probability and is retained for
+revision replay and audit compatibility. Product surfaces do not present it as
+a percentage. Instead, they show an evidence state:
+
+- `not_evaluated` when no supporting or opposing evidence is recorded;
+- `preliminary` when only one supporting or opposing item is recorded;
+- `leans_supportive`, `mixed`, or `leans_against` when at least two supporting
+  or opposing items are available;
+- the terminal clinician states `confirmed` and `ruled_against`.
+
+Missing evidence names a gap. It does not count as opposing evidence when the
+product determines the evidence state. Each revision stores a canonical
+SHA-256 input version. Event before/after states make score changes
+attributable to the exact evidence revision and reason.
 
 ## Product surfaces
 
-- Settings shows hypotheses in an amber, “not a diagnosis” ledger separate
-  from confirmed conditions.
+- Settings shows hypotheses in a “not a diagnosis” ledger separate from
+  confirmed conditions, with a qualitative evidence state and all three
+  evidence roles.
 - Each entry shows supporting, opposing, and missing evidence, origin,
   evidence revision, review time, verification suggestion, and terminal
   reviewer when present.
-- The Visit Report prints the same three evidence sides and guardrail in a
-  section separate from confirmed diagnoses.
+- The Visit Report keeps evidence-bearing questions separate from confirmed
+  diagnoses. Supporting, opposing, and missing details are expandable.
 - Legacy `Diagnosis` rows with `status=suspected` are excluded from confirmed
-  condition context and Evidence Bundles. They appear as low-confidence legacy
-  hypotheses until re-entered in the governed ledger.
+  condition context and Evidence Bundles. With no governed supporting or
+  opposing evidence, they appear collapsed as “previously recorded” and are
+  excluded from print by default until re-entered in the governed ledger.
 
 ## Backup and graph boundaries
 
