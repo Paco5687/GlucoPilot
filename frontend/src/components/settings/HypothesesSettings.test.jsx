@@ -73,7 +73,9 @@ describe("guarded hypothesis settings", () => {
     expect(screen.getByText("Synthetic marker supports review.")).toBeTruthy();
     expect(screen.getByText("Synthetic reference supports an alternative.")).toBeTruthy();
     expect(screen.getByText("Confirmatory testing is missing.")).toBeTruthy();
-    expect(screen.getAllByText(/evidence balance/i).length).toBeGreaterThan(0);
+    expect(screen.getByText("Mixed evidence")).toBeTruthy();
+    expect(screen.queryByText(/evidence balance/i)).toBeNull();
+    expect(screen.getByText(/Missing evidence is not counted as evidence against/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Record clinician confirmation" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Record clinician ruling" })).toBeTruthy();
   });

@@ -37,6 +37,27 @@ const ROLE = {
   missing: ["Missing / needed", "border-amber-200 bg-amber-50 text-amber-900"],
 };
 
+const EVIDENCE_STATE = {
+  not_evaluated: "Not evaluated",
+  preliminary: "Preliminary",
+  mixed: "Mixed evidence",
+  leans_supportive: "Evidence leans supportive",
+  leans_against: "Evidence leans against",
+  clinician_confirmed: "Clinician confirmed",
+  clinician_ruled_against: "Clinician ruled against",
+};
+
+function evidenceState(item) {
+  if (item.evidence_state && EVIDENCE_STATE[item.evidence_state]) return item.evidence_state;
+  if (item.status === "confirmed") return "clinician_confirmed";
+  if (item.status === "ruled_against") return "clinician_ruled_against";
+  const supporting = item.evidence_by_role?.supporting || [];
+  const opposing = item.evidence_by_role?.opposing || [];
+  if (!supporting.length && !opposing.length) return "not_evaluated";
+  if (supporting.length + opposing.length < 2) return "preliminary";
+  return "mixed";
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     credentials: "same-origin",
@@ -308,8 +329,8 @@ export default function HypothesesSettings() {
         <div>
           <h3 className="font-semibold text-sm">Health hypotheses</h3>
           <p className="text-xs text-muted-foreground">
-            Tentative ideas to investigate—not diagnoses. Confidence shows the recorded evidence balance,
-            not the probability that a condition is present.
+            Tentative ideas to investigate—not diagnoses. Evidence states distinguish
+            missing information from evidence that actually supports or opposes an idea.
           </p>
         </div>
       </div>
@@ -318,6 +339,9 @@ export default function HypothesesSettings() {
         <div className="space-y-3">
           {items.map((item) => {
             const [statusLabel, statusTone] = STATUS[item.status] || [item.status, "bg-muted"];
+            const supporting = item.evidence_by_role?.supporting?.length || 0;
+            const opposing = item.evidence_by_role?.opposing?.length || 0;
+            const missing = item.evidence_by_role?.missing?.length || 0;
             return (
               <article key={item.id} className="rounded-xl border border-amber-200 bg-amber-50/30 p-4 space-y-3">
                 <div className="flex flex-wrap items-start gap-2">
@@ -335,15 +359,18 @@ export default function HypothesesSettings() {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
                   <div><span className="text-muted-foreground">Origin</span><br />{item.origin_kind} · {item.origin_label}</div>
                   <div>
-                    <span className="text-muted-foreground">Evidence balance</span><br />
-                    {Math.round(Number(item.confidence_score) * 100)}% · {item.confidence_label}
+                    <span className="text-muted-foreground">Evidence state</span><br />
+                    {EVIDENCE_STATE[evidenceState(item)]}
                   </div>
                   <div>
                     <span className="text-muted-foreground">Evidence version</span><br />
                     revision {item.evidence_revision}
                   </div>
                 </div>
-                <p className="text-[11px] text-muted-foreground">{item.confidence_rationale}</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Recorded evidence: {supporting} supporting · {opposing} opposing · {missing} missing/needed.
+                  Missing evidence is not counted as evidence against.
+                </p>
                 <EvidenceColumns hypothesis={item} />
                 {(item.suggested_verification || item.review_at) && (
                   <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-900">

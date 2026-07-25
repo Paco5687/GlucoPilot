@@ -20,6 +20,21 @@ const MEM_TONE = {
   goal: "text-emerald-600", observation: "text-amber-600", preference: "text-teal-600", note: "text-muted-foreground",
 };
 
+const LEGACY_GROUNDING_NOTICE = "I don't have bounded personal evidence to support that statement.";
+const COMPACT_GROUNDING_NOTICE = "Some generated statements were omitted because they could not be linked to your records.";
+
+function compactLegacyGroundingNotices(content) {
+  const text = String(content || "");
+  if (!text.includes(LEGACY_GROUNDING_NOTICE)) return text;
+  const compacted = text
+    .split(LEGACY_GROUNDING_NOTICE)
+    .join("")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (compacted.includes(COMPACT_GROUNDING_NOTICE)) return compacted;
+  return `${compacted}\n\n${COMPACT_GROUNDING_NOTICE}`.trim();
+}
+
 export default function Companion() {
   const [threads, setThreads] = useState([]);
   const [activeThread, setActiveThread] = useState(null); // thread id, or null for a fresh chat
@@ -253,7 +268,7 @@ export default function Companion() {
                     <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm leading-relaxed ${m.role === "user" ? "bg-primary text-primary-foreground whitespace-pre-wrap" : "bg-muted"}`}>
                       {m.role === "user" ? m.content : (
                         <div className="prose prose-sm max-w-none dark:prose-invert [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_p]:my-1.5 [&_ul]:my-1.5 [&_ol]:my-1.5 [&_table]:text-xs">
-                          <ReactMarkdown>{m.content}</ReactMarkdown>
+                          <ReactMarkdown>{compactLegacyGroundingNotices(m.content)}</ReactMarkdown>
                           {streaming && <span className="inline-block w-[3px] h-[1.05em] ml-0.5 -mb-[0.15em] rounded-sm bg-primary animate-pulse" aria-label="responding" />}
                         </div>
                       )}

@@ -187,10 +187,20 @@ def _relevant_hypotheses(config: dict[str, Any]) -> list[dict[str, Any]]:
         if keywords and not any(keyword in text for keyword in keywords):
             continue
         confirmed = hypothesis.get("status") == "confirmed"
+        evidence_state = hypothesis.get("evidence_state") or "preliminary"
+        if confirmed:
+            semantic_class = "clinician_confirmed_hypothesis"
+            display_label = "Clinician-confirmed hypothesis"
+        elif evidence_state == "not_evaluated":
+            semantic_class = "unevaluated_hypothesis_not_diagnosis"
+            display_label = "Not evaluated — no supporting or opposing evidence recorded"
+        else:
+            semantic_class = "unconfirmed_hypothesis_not_diagnosis"
+            display_label = hypothesis.get("evidence_state_label") or "Unconfirmed hypothesis — not a diagnosis"
         output.append({
             **hypothesis,
-            "semantic_class": "clinician_confirmed_hypothesis" if confirmed else "unconfirmed_hypothesis_not_diagnosis",
-            "display_label": "Clinician-confirmed hypothesis" if confirmed else "Unconfirmed hypothesis — not a diagnosis",
+            "semantic_class": semantic_class,
+            "display_label": display_label,
             "definitive_allowed": confirmed,
         })
     return output

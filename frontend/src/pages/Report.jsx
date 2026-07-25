@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import DataQualityNote from "@/components/DataQualityNote";
 import EvidenceContextBlock from "@/components/evidence/EvidenceContextBlock";
-import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope, ScrollText, Beaker, CalendarRange } from "lucide-react";
+import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope, ScrollText, Beaker, CalendarRange, ChevronDown, ChevronRight } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, Line, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
 } from "recharts";
@@ -167,10 +167,69 @@ function ContradictionSide({ side }) {
   );
 }
 
+const HYPOTHESIS_STATE = {
+  not_evaluated: { label: "Not evaluated", tone: "border-slate-200 bg-slate-50 text-slate-700" },
+  preliminary: { label: "Preliminary", tone: "border-amber-200 bg-amber-50 text-amber-800" },
+  mixed: { label: "Mixed evidence", tone: "border-blue-200 bg-blue-50 text-blue-800" },
+  leans_supportive: { label: "Evidence leans supportive", tone: "border-emerald-200 bg-emerald-50 text-emerald-800" },
+  leans_against: { label: "Evidence leans against", tone: "border-slate-300 bg-slate-100 text-slate-800" },
+  clinician_confirmed: { label: "Clinician confirmed", tone: "border-emerald-300 bg-emerald-50 text-emerald-900" },
+  clinician_ruled_against: { label: "Clinician ruled against", tone: "border-slate-300 bg-slate-100 text-slate-800" },
+};
+
+function hypothesisState(hypothesis) {
+  if (hypothesis.evidence_state && HYPOTHESIS_STATE[hypothesis.evidence_state]) {
+    return hypothesis.evidence_state;
+  }
+  if (hypothesis.status === "confirmed") return "clinician_confirmed";
+  if (hypothesis.status === "ruled_against") return "clinician_ruled_against";
+  const supporting = hypothesis.evidence_by_role?.supporting || [];
+  const opposing = hypothesis.evidence_by_role?.opposing || [];
+  if (!supporting.length && !opposing.length) return "not_evaluated";
+  if (supporting.length + opposing.length < 2) return "preliminary";
+  const supportingWeight = supporting.reduce((sum, item) => sum + Number(item.weight || 1), 0);
+  const opposingWeight = opposing.reduce((sum, item) => sum + Number(item.weight || 1), 0);
+  const balance = supportingWeight / (supportingWeight + opposingWeight);
+  return balance >= 0.65 ? "leans_supportive" : balance <= 0.35 ? "leans_against" : "mixed";
+}
+
+function EvidenceDetails({ hypothesis }) {
+  return (
+    <details className="rounded border border-border bg-background/60 print:hidden">
+      <summary className="cursor-pointer px-3 py-2 text-xs font-medium">
+        Review recorded evidence
+      </summary>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 px-3 pb-3 text-xs">
+        {[
+          ["Supporting", "supporting", "border-emerald-200 bg-emerald-50"],
+          ["Opposing", "opposing", "border-rose-200 bg-rose-50"],
+          ["Missing / needed", "missing", "border-amber-200 bg-amber-50"],
+        ].map(([label, role, tone]) => {
+          const evidence = hypothesis.evidence_by_role?.[role] || [];
+          return (
+            <div key={role} className={`rounded border p-2 ${tone}`}>
+              <p className="font-medium">{label}</p>
+              {evidence.length ? (
+                <ul className="mt-1 list-disc pl-4 space-y-0.5">
+                  {evidence.map((item, index) => <li key={index}>{item.summary}</li>)}
+                </ul>
+              ) : (
+                <p className="mt-1 text-muted-foreground">None recorded.</p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
+
 export default function Report() {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(90);
+  const [showUnevaluated, setShowUnevaluated] = useState(false);
+  const [includeUnevaluatedInPrint, setIncludeUnevaluatedInPrint] = useState(false);
 
   const generate = useCallback(async (d) => {
     setLoading(true);
@@ -209,6 +268,13 @@ export default function Report() {
   const w = report.wellness;
   const labs = report.labs;
   const n = report.narrative;
+  const hypotheses = report.hypotheses || [];
+  const unevaluatedHypotheses = hypotheses.filter((item) => (
+    item.legacy || hypothesisState(item) === "not_evaluated"
+  ));
+  const reviewedHypotheses = hypotheses.filter((item) => (
+    !item.legacy && hypothesisState(item) !== "not_evaluated"
+  ));
 
   return (
     <div className="space-y-5 max-w-4xl mx-auto">
@@ -297,64 +363,94 @@ export default function Report() {
         </div>
       )}
 
-      {/* Guarded hypotheses — deliberately separate from diagnoses */}
-      {report.hypotheses?.length > 0 && (
+      {/* Evidence-bearing hypotheses remain separate from diagnoses. */}
+      {reviewedHypotheses.length > 0 && (
         <div className="report-section space-y-2">
-          <h2 className="font-semibold text-sm flex items-center gap-2 text-amber-900">
-            <Beaker className="w-4 h-4" /> Health hypotheses — not diagnoses
+          <h2 className="font-semibold text-sm flex items-center gap-2">
+            <Beaker className="w-4 h-4 text-primary" /> Questions under review
           </h2>
           <p className="text-[11px] text-muted-foreground">
-            Tentative questions for review. Evidence balance is not a diagnostic probability.
+            Tentative interpretations with recorded evidence. They remain separate from confirmed diagnoses.
           </p>
-          {report.hypotheses.map((hypothesis) => (
-            <div key={hypothesis.id} className="report-card rounded-lg border border-amber-300 bg-amber-50 p-3 space-y-2">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div>
-                  <p className="font-semibold text-sm">{hypothesis.title}</p>
-                  {hypothesis.description && <p className="text-xs text-muted-foreground">{hypothesis.description}</p>}
+          {reviewedHypotheses.map((hypothesis) => {
+            const state = HYPOTHESIS_STATE[hypothesisState(hypothesis)];
+            const supporting = hypothesis.evidence_by_role?.supporting?.length || 0;
+            const opposing = hypothesis.evidence_by_role?.opposing?.length || 0;
+            const missing = hypothesis.evidence_by_role?.missing?.length || 0;
+            return (
+              <div key={hypothesis.id} className="report-card rounded-lg border border-border bg-card p-3 space-y-2">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p className="font-medium text-sm">{hypothesis.title}</p>
+                    {hypothesis.description && <p className="text-xs text-muted-foreground">{hypothesis.description}</p>}
+                  </div>
+                  <span className={`text-[10px] rounded-full border px-2 py-1 font-medium ${state.tone}`}>
+                    {state.label}
+                  </span>
                 </div>
-                <span className="text-[10px] rounded-full border border-amber-300 bg-white px-2 py-1 font-semibold uppercase">
-                  {hypothesis.status?.replace("_", " ")}
-                </span>
+                <p className="text-[11px] text-muted-foreground">
+                  Recorded evidence: {supporting} supporting · {opposing} opposing · {missing} missing/needed
+                </p>
+                <EvidenceDetails hypothesis={hypothesis} />
+                {hypothesis.suggested_verification && (
+                  <p className="text-xs">
+                    <span className="font-semibold">Suggested verification:</span>{" "}
+                    {hypothesis.suggested_verification}
+                  </p>
+                )}
+                {hypothesis.decided_by && (
+                  <p className="text-xs font-semibold">
+                    Decision recorded by {hypothesis.decided_by} at {hypothesis.decided_at}
+                  </p>
+                )}
               </div>
-              <p className="text-[11px]">
-                Origin: {hypothesis.origin_kind} · {hypothesis.origin_label} · evidence balance{" "}
-                {Math.round(Number(hypothesis.confidence_score || 0) * 100)}%
+            );
+          })}
+        </div>
+      )}
+
+      {/* Unsupported legacy suspicions are optional discussion reminders, not findings. */}
+      {unevaluatedHypotheses.length > 0 && (
+        <div className={`report-section rounded-lg border border-dashed border-border bg-muted/20 p-3 ${includeUnevaluatedInPrint ? "" : "print:hidden"}`}>
+          <div className="print:hidden flex flex-wrap items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => setShowUnevaluated((value) => !value)}
+              className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+            >
+              {showUnevaluated ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+              Questions previously recorded ({unevaluatedHypotheses.length})
+            </button>
+            <label className="inline-flex items-center gap-2 text-[11px] text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={includeUnevaluatedInPrint}
+                onChange={(event) => setIncludeUnevaluatedInPrint(event.target.checked)}
+              />
+              Include in print
+            </label>
+          </div>
+          <h2 className="hidden print:block text-sm font-medium">Questions previously recorded</h2>
+          {(showUnevaluated || includeUnevaluatedInPrint) && (
+            <div className="mt-3 print:mt-2 space-y-2">
+              <p className="text-[11px] text-muted-foreground">
+                These entries have no recorded supporting or opposing evidence. They are reminders for discussion, not findings.
               </p>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
-                {[
-                  ["Supporting evidence", "supporting", "border-emerald-200 bg-emerald-50"],
-                  ["Opposing evidence", "opposing", "border-rose-200 bg-rose-50"],
-                  ["Missing evidence", "missing", "border-amber-200 bg-white"],
-                ].map(([label, role, tone]) => {
-                  const evidence = hypothesis.evidence_by_role?.[role] || [];
-                  return (
-                    <div key={role} className={`rounded border p-2 ${tone}`}>
-                      <p className="font-semibold">{label}</p>
-                      {evidence.length ? (
-                        <ul className="mt-1 list-disc pl-4 space-y-0.5">
-                          {evidence.map((item, index) => <li key={index}>{item.summary}</li>)}
-                        </ul>
-                      ) : (
-                        <p className="mt-1 text-muted-foreground">None recorded.</p>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              {hypothesis.suggested_verification && (
-                <p className="text-xs">
-                  <span className="font-semibold">Suggested verification:</span>{" "}
-                  {hypothesis.suggested_verification}
-                </p>
-              )}
-              {hypothesis.decided_by && (
-                <p className="text-xs font-semibold">
-                  Decision recorded by {hypothesis.decided_by} at {hypothesis.decided_at}
-                </p>
-              )}
+              {unevaluatedHypotheses.map((hypothesis) => (
+                <div key={hypothesis.id} className="rounded border border-border bg-background/70 px-3 py-2">
+                  <p className="text-sm text-foreground">{hypothesis.title}</p>
+                  <p className="text-[11px] text-muted-foreground">
+                    Not evaluated · no supporting or opposing evidence recorded.
+                  </p>
+                  {hypothesis.suggested_verification && (
+                    <p className="text-[11px] text-muted-foreground mt-1">
+                      Possible next step: {hypothesis.suggested_verification}
+                    </p>
+                  )}
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
       )}
 

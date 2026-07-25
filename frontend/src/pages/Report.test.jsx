@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Report from "./Report";
 
@@ -182,7 +182,9 @@ describe("visit report contradictions", () => {
     expect(screen.getByText("2026-05-01")).toBeTruthy();
     expect(screen.getByText("Confirmed conditions & diagnoses")).toBeTruthy();
     expect(screen.getByText(/Synthetic confirmed diagnosis/)).toBeTruthy();
-    expect(screen.getByText("Health hypotheses — not diagnoses")).toBeTruthy();
+    expect(screen.getByText("Questions under review")).toBeTruthy();
+    expect(screen.getByText("Mixed evidence")).toBeTruthy();
+    expect(screen.queryByText(/evidence balance/i)).toBeNull();
     expect(screen.getByText("Synthetic supporting evidence.")).toBeTruthy();
     expect(screen.getByText("Synthetic opposing evidence.")).toBeTruthy();
     expect(screen.getByText("Synthetic missing evidence.")).toBeTruthy();
@@ -199,5 +201,43 @@ describe("visit report contradictions", () => {
     expect(screen.getByText("Outcomes & management effort")).toBeTruthy();
     expect(screen.getByText(/missing event sources reduce confidence/i)).toBeTruthy();
     expect(screen.getByText(/sustainability may deserve review/i)).toBeTruthy();
+  });
+
+  it("keeps unsupported legacy suspicions collapsed and out of print by default", async () => {
+    const reportWithLegacyQuestion = {
+      ...report,
+      hypotheses: [{
+        id: "legacy_synthetic",
+        title: "Synthetic legacy question",
+        legacy: true,
+        status: "proposed",
+        evidence_state: "not_evaluated",
+        evidence_by_role: {
+          supporting: [],
+          opposing: [],
+          missing: [{ summary: "Clinician review needed." }],
+        },
+        suggested_verification: "Discuss whether this should be evaluated.",
+      }],
+    };
+    vi.mocked(fetch).mockResolvedValueOnce(/** @type {Response} */ ({
+      ok: true,
+      json: async () => reportWithLegacyQuestion,
+    }));
+
+    render(<Report />);
+
+    const toggle = await screen.findByRole("button", {
+      name: "Questions previously recorded (1)",
+    });
+    expect(screen.queryByText("Synthetic legacy question")).toBeNull();
+    expect(screen.getByLabelText("Include in print")).toHaveProperty("checked", false);
+    expect(screen.queryByText(/evidence balance/i)).toBeNull();
+
+    fireEvent.click(toggle);
+
+    expect(screen.getByText("Synthetic legacy question")).toBeTruthy();
+    expect(screen.getByText(/reminders for discussion, not findings/i)).toBeTruthy();
+    expect(screen.getByText(/not evaluated · no supporting or opposing evidence recorded/i)).toBeTruthy();
   });
 });

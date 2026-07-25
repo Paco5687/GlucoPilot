@@ -92,6 +92,8 @@ def test_hypothesis_origin_evidence_confidence_and_events_are_attributable(
     assert created["origin_kind"] == "algorithm"
     assert created["confidence_score"] == 0.5
     assert created["confidence_method"] == "weighted-evidence-v1"
+    assert created["evidence_state"] == "leans_supportive"
+    assert created["evidence_state_label"] == "Evidence leans supportive"
     assert len(created["evidence_by_role"]["supporting"]) == 1
     assert len(created["evidence_by_role"]["opposing"]) == 1
     assert len(created["evidence_by_role"]["missing"]) == 1
@@ -105,6 +107,34 @@ def test_hypothesis_origin_evidence_confidence_and_events_are_attributable(
         assert connection.execute("SELECT COUNT(*) FROM health_hypotheses").fetchone() == (1,)
         assert connection.execute("SELECT COUNT(*) FROM hypothesis_evidence").fetchone() == (3,)
         assert connection.execute("SELECT COUNT(*) FROM hypothesis_events").fetchone() == (1,)
+
+
+def test_missing_only_hypothesis_is_not_evaluated_not_evidence_against(
+    hypothesis_database,
+):
+    created = hypotheses.SqliteHypothesisRepository().create(
+        hypotheses.CreateHypothesisBody(
+            title="Synthetic question awaiting evidence",
+            origin_kind="patient",
+            origin_label="Synthetic Owner",
+            suggested_verification="Record supporting or opposing observations.",
+            evidence=[
+                hypotheses.EvidenceBody(
+                    role="missing",
+                    source_kind="missing",
+                    summary="Supporting and opposing observations have not been recorded.",
+                    weight=1,
+                ),
+            ],
+        ),
+        _actor(),
+    )
+
+    # The v1 score remains replayable, but product state must not turn an
+    # information gap into evidence against the question.
+    assert created["confidence_score"] == 0
+    assert created["evidence_state"] == "not_evaluated"
+    assert created["evidence_state_label"] == "Not evaluated"
 
 
 def test_evidence_version_change_recalculates_confidence_and_records_why(
@@ -126,6 +156,7 @@ def test_evidence_version_change_recalculates_confidence_and_records_why(
     assert revised["evidence_revision"] == 2
     assert revised["evidence_input_version"] != previous_version
     assert revised["confidence_score"] == 0.4
+    assert revised["evidence_state"] == "mixed"
     assert revised["events"][-1]["action"] == "evidence_revised"
     assert revised["events"][-1]["reason"] == "Synthetic source version changed after review."
     assert revised["events"][-1]["before"]["confidence_score"] == 0.5
@@ -280,6 +311,7 @@ def test_legacy_suspected_condition_is_not_a_confirmed_diagnosis(
     report_hypotheses = hypotheses.report_block()
     assert report_hypotheses[0]["title"] == "Synthetic legacy suspicion"
     assert report_hypotheses[0]["legacy"] is True
+    assert report_hypotheses[0]["evidence_state"] == "not_evaluated"
     assert report_hypotheses[0]["status"] == "proposed"
 
     bundle = build_bundle(

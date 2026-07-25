@@ -338,6 +338,66 @@ async def _reply(
     ))
 
 
+async def _finalize_grounded_reply(
+    raw_reply: str,
+    public_evidence: dict[str, Any],
+    memories: list[dict[str, Any]],
+    sources: list[dict[str, Any]],
+    *,
+    tier: str = "default",
+) -> tuple[str, dict[str, Any]]:
+    """Validate a reply and make one bounded repair attempt when citations fail."""
+    reply, evidence = companion_evidence.finalize_reply(
+        raw_reply, public_evidence, memories, sources
+    )
+    initial_omissions = int((evidence.get("omissions") or {}).get("count") or 0)
+    if not initial_omissions:
+        evidence["grounding_retry"] = {"attempted": False}
+        return reply, evidence
+
+    repair_prompt = (
+        "Rewrite the draft below as a concise natural chat response. Remove every "
+        "personal-health statement that does not already have a valid [E#] or [M#] "
+        "citation on the same line. Preserve valid citation aliases exactly; never "
+        "invent, renumber, or add one. General information may retain an existing "
+        "[G#] citation. Do not mention citation validation, unsupported claims, or "
+        "that text was removed. Return only the repaired response.\n\n"
+        f"DRAFT:\n{str(raw_reply)[:12_000]}"
+    )
+    try:
+        repaired_raw = _strip_signoff(
+            await invoke_llm(
+                repair_prompt,
+                max_tokens=REPLY_MAX_TOKENS,
+                tier=tier,
+            )
+        )
+        repaired_reply, repaired_evidence = companion_evidence.finalize_reply(
+            repaired_raw, public_evidence, memories, sources
+        )
+        repaired_omissions = int(
+            (repaired_evidence.get("omissions") or {}).get("count") or 0
+        )
+        if repaired_reply.strip() and repaired_omissions < initial_omissions:
+            repaired_evidence["grounding_retry"] = {
+                "attempted": True,
+                "improved": True,
+                "initial_omissions": initial_omissions,
+                "remaining_omissions": repaired_omissions,
+            }
+            return repaired_reply, repaired_evidence
+    except Exception:
+        log.warning("companion grounding repair failed", exc_info=True)
+
+    evidence["grounding_retry"] = {
+        "attempted": True,
+        "improved": False,
+        "initial_omissions": initial_omissions,
+        "remaining_omissions": initial_omissions,
+    }
+    return reply, evidence
+
+
 def _grounding(
     user_msg: str,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -536,11 +596,12 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
                 history[:-1],
                 metrics=metrics,
             )
-            reply, evidence = companion_evidence.finalize_reply(
+            reply, evidence = await _finalize_grounded_reply(
                 raw_reply,
                 public_evidence,
                 prompt_memories,
                 [],
+                tier=body.get("tier", "default"),
             )
         except Exception as err:
             log.exception("companion reply failed")
@@ -668,11 +729,12 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
     if not reply:
         yield json.dumps({"error": "Companion returned an empty response."}) + "\n"
         return
-    reply, evidence = companion_evidence.finalize_reply(
+    reply, evidence = await _finalize_grounded_reply(
         reply,
         public_evidence,
         prompt_memories,
         sources,
+        tier=tier,
     )
     if not reply:
         yield json.dumps({"error": "Companion returned no supported response."}) + "\n"
