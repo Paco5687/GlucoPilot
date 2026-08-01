@@ -18,7 +18,8 @@ from zoneinfo import ZoneInfo
 
 from . import profile, report
 from .clinical_evidence import build_context as build_clinical_evidence
-from .clinical_evidence import link_generated_narrative
+from .clinical_evidence import link_generated_narrative, resolve_prompt_aliases
+from .clinical_evidence import prompt_view as prompt_evidence_view
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value, set_config_value
 from .data_quality import assess_daily
@@ -255,11 +256,15 @@ async def generate() -> dict[str, Any]:
         key: value for key, value in context.items()
         if key not in {"_evidence_reasoning", "evidence_context"}
     }
-    prompt_context["shared_evidence_context"] = evidence_reasoning
+    # The model sees short echoable ids and no identity plumbing; the full
+    # dossier stays server-side and the echoed ids translate back afterwards.
+    slim_evidence, alias_to_id = prompt_evidence_view(evidence_reasoning)
+    prompt_context["shared_evidence_context"] = slim_evidence
     prompt = await _fitted_prompt(prompt_context)
     # Fast default model: the quality (27B) model is currently GPU-starved and
     # times out on a synthesis this size. The fast model handles it in seconds.
     result = await invoke_llm(prompt, response_json_schema=SUMMARY_SCHEMA, max_tokens=SUMMARY_MAX_TOKENS)
+    result = resolve_prompt_aliases(result, alias_to_id)
     return await _finish_summary(result, context, evidence_reasoning)
 
 

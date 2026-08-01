@@ -471,11 +471,9 @@ def build_context(
         "clinical_reviews": review_context,
         "budget": public["budget"],
     }
-    while (
-        len(json.dumps(reasoning, separators=(",", ":"), default=str))
-        > MAX_PROMPT_CONTEXT_CHARS
-        and reasoning["items"]
-    ):
+    # Bound what the model actually receives — the slimmed prompt serialization —
+    # not the fuller server-side record, so the cap sheds no item needlessly.
+    while len(prompt_context(reasoning)) > MAX_PROMPT_CONTEXT_CHARS and reasoning["items"]:
         removed = reasoning["items"].pop()
         public["evidence_items"] = [
             item for item in public["evidence_items"]
@@ -491,7 +489,7 @@ def build_context(
         ]
         public["budget"]["prompt_items"] = len(reasoning["items"])
         public["budget"]["truncated"] = True
-    if len(json.dumps(reasoning, separators=(",", ":"), default=str)) > MAX_PROMPT_CONTEXT_CHARS:
+    if len(prompt_context(reasoning)) > MAX_PROMPT_CONTEXT_CHARS:
         raise CompanionEvidenceError(
             "protected contradiction and limitation context exceeds the Companion prompt bound"
         )
@@ -529,8 +527,70 @@ def external_aliases(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _confidence_assessed(confidence: Any) -> bool:
+    return bool(
+        isinstance(confidence, dict)
+        and (confidence.get("label") or "not_assessed") != "not_assessed"
+    )
+
+
+def _prompt_timestamp(value: Any) -> Any:
+    # Millisecond precision is provenance detail; recency judgements need minutes.
+    text = str(value or "")
+    return text[:16] + "Z" if len(text) > 17 and text.endswith("Z") else value
+
+
+def _prompt_item(item: dict[str, Any]) -> dict[str, Any]:
+    """The model reads this; it cites [E#] aliases and never echoes an id.
+
+    Identity plumbing — `id`, `entity_id`, `source_ids`, `source_links` — repeats
+    one 32-char hash four times per item and stays server-side, where citation
+    validation and the UI resolve aliases from the public context. Measured on a
+    live 48-item bundle this halves the evidence payload.
+    """
+    slim: dict[str, Any] = {
+        "alias": item.get("alias"),
+        "domain": item.get("domain"),
+        "entity_type": item.get("entity_type"),
+        "observed_at": _prompt_timestamp(item.get("observed_at")),
+        "data": item.get("data"),
+    }
+    title = item.get("title")
+    if title and title != item.get("entity_type"):
+        slim["title"] = title
+    if _confidence_assessed(item.get("confidence")):
+        slim["confidence"] = item["confidence"]
+    if item.get("claim"):
+        slim["claim"] = item["claim"]
+    return slim
+
+
+_PROMPT_TOP_LEVEL_SKIP = {"contract_version", "bundle_id", "input_hash"}
+
+
+def _prompt_reasoning(reasoning: dict[str, Any]) -> dict[str, Any]:
+    slim = {
+        key: value
+        for key, value in reasoning.items()
+        if key not in _PROMPT_TOP_LEVEL_SKIP
+    }
+    slim["items"] = [_prompt_item(item) for item in reasoning.get("items") or []]
+    slim["opposing_evidence"] = [
+        {key: value for key, value in item.items() if key != "evidence_item_id"}
+        for item in reasoning.get("opposing_evidence") or []
+    ]
+    slim["clinical_reviews"] = {
+        key: [
+            {k: v for k, v in item.items() if k != "target_id"}
+            for item in values
+        ]
+        for key, values in (reasoning.get("clinical_reviews") or {}).items()
+    }
+    return slim
+
+
 def prompt_context(reasoning: dict[str, Any]) -> str:
-    return json.dumps(reasoning, separators=(",", ":"), default=str)
+    return json.dumps(_prompt_reasoning(reasoning), separators=(",", ":"), default=str)
 
 
 def _classification(text: str, kinds: set[str]) -> str:

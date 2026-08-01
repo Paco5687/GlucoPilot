@@ -335,6 +335,70 @@ def build_context(
     return public, reasoning
 
 
+def prompt_view(reasoning: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    """A slimmed copy of the dossier for the prompt, with ids the model can echo.
+
+    The real evidence ids are 40+ character URNs, and the summary schema makes
+    the model copy them back — every cited id was costing ~25 output tokens and
+    re-appearing across observations. Short ids (`N1`, `N2`, …) carry the same
+    grounding for a few tokens; `resolve_prompt_aliases` translates them back
+    before narrative linking, so invented ids still drop exactly as before.
+    Identity plumbing (`entity_id`, `source_links`, unassessed confidence) stays
+    server-side with the full record.
+    """
+    alias_to_id: dict[str, str] = {}
+    slim_items: list[dict[str, Any]] = []
+    for index, item in enumerate(reasoning.get("items") or [], 1):
+        alias = f"N{index}"
+        alias_to_id[alias] = item["id"]
+        slim: dict[str, Any] = {
+            "id": alias,
+            "domain": item.get("domain"),
+            "entity_type": item.get("entity_type"),
+            "observed_at": item.get("observed_at"),
+            "data": item.get("data"),
+        }
+        confidence = item.get("confidence")
+        if isinstance(confidence, dict) and (confidence.get("label") or "not_assessed") != "not_assessed":
+            slim["confidence"] = confidence
+        if item.get("claim"):
+            slim["claim"] = item["claim"]
+        slim_items.append(slim)
+    slim_reasoning = {
+        key: value
+        for key, value in reasoning.items()
+        if key not in {"contract_version", "bundle_id", "data_version"}
+    }
+    slim_reasoning["items"] = slim_items
+    return slim_reasoning, alias_to_id
+
+
+def resolve_prompt_aliases(
+    narrative: dict[str, Any] | None,
+    alias_to_id: dict[str, str],
+) -> dict[str, Any] | None:
+    """Translate echoed prompt ids back to real evidence ids, dropping unknowns."""
+    if not narrative:
+        return narrative
+
+    def translate(values: Any) -> list[str]:
+        if not isinstance(values, list):
+            return []
+        resolved = []
+        for value in values:
+            real = alias_to_id.get(str(value))
+            if real and real not in resolved:
+                resolved.append(real)
+        return resolved
+
+    translated = {**narrative, "evidence_item_ids": translate(narrative.get("evidence_item_ids"))}
+    translated["observations"] = [
+        {**observation, "evidence_item_ids": translate(observation.get("evidence_item_ids"))}
+        for observation in narrative.get("observations") or []
+    ]
+    return translated
+
+
 def link_generated_narrative(
     narrative: dict[str, Any] | None,
     reasoning: dict[str, Any],
