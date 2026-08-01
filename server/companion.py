@@ -25,7 +25,13 @@ from .auth import require_admin
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value
 from .data_quality import assess_cgm, cgm_points
-from .llm import invoke_llm, invoke_llm_stream
+from .llm import (
+    CONTEXT_SAFETY_MARGIN,
+    context_limit,
+    count_tokens,
+    invoke_llm,
+    invoke_llm_stream,
+)
 from .repositories import EntityRepository, get_repositories
 from .unit_of_work import unit_of_work
 
@@ -37,7 +43,6 @@ MAX_MEMORIES = 150
 PROMPT_MEMORY_LIMIT = 40
 HISTORY_TURNS = 8  # exchanges of prior context sent each turn
 REPLY_MAX_TOKENS = 1200  # enough for a substantive answer without truncating mid-thought
-MAX_REPLY_PROMPT_CHARS = 96_000
 
 # The small model likes to sign replies like a letter ("— Emily's Health Companion").
 # Stop generation before a dash-led sign-off line (em/en dash only — hyphens are
@@ -272,19 +277,26 @@ def _reply_prompt(
     history: list,
     sources: list | None = None,
     metrics: dict | None = None,
+    *,
+    memory_limit: int | None = None,
+    history_turns: int | None = None,
+    keep_sources: bool = True,
 ) -> str:
-    memory_items = companion_evidence.memory_aliases(memories[:PROMPT_MEMORY_LIMIT])
+    memory_items = companion_evidence.memory_aliases(
+        memories[: memory_limit if memory_limit is not None else PROMPT_MEMORY_LIMIT]
+    )
     mem_txt = "\n".join(
         f"[{item['alias']}] [{item['category']}] {item['content'][:300]}"
         for item in memory_items
     ) or "(nothing remembered yet)"
+    turns = history_turns if history_turns is not None else HISTORY_TURNS
     hist_txt = "\n".join(
         f"{'Emily' if message['role'] == 'user' else 'Companion'}: "
         f"{str(message.get('content') or '')[:800]}"
-        for message in history[-HISTORY_TURNS * 2:]
+        for message in (history[-turns * 2:] if turns else [])
     ) or "(start of conversation)"
     src_txt = ""
-    if sources:
+    if sources and keep_sources:
         blocks = [
             f"[{item['alias']}] {item['title']} ({item['source']}) — {item['url']}\n"
             f"{item['snippet']}"
@@ -296,7 +308,7 @@ def _reply_prompt(
             + "\n\nFor general medical facts, cite only these aliases such as [G1]. If they do not answer something, "
               "say so rather than guessing. Never use a general source as evidence for a personal-data claim."
         )
-    prompt = (
+    return (
         f"{SYSTEM}\n\n"
         "=== BOUNDED PERSONAL EVIDENCE ===\n"
         f"{companion_evidence.prompt_context(evidence_context)}\n\n"
@@ -307,11 +319,79 @@ def _reply_prompt(
         f"{src_txt}\n\n"
         f"Emily: {user_msg}\nCompanion:"
     )
-    if len(prompt) > MAX_REPLY_PROMPT_CHARS:
-        raise companion_evidence.CompanionEvidenceError(
-            "bounded Companion prompt exceeds the local-model context limit"
+
+
+# Ordered least-to-most costly to lose. Web sources go first because they are
+# general reference the model can say it lacks; conversation history and
+# memories degrade gradually; the evidence bundle is never dropped here because
+# every personal claim must cite it, so a reply without it cannot be grounded.
+_PROMPT_BUDGET_STEPS: tuple[dict[str, Any], ...] = (
+    {"history_turns": HISTORY_TURNS, "memory_limit": PROMPT_MEMORY_LIMIT, "keep_sources": True},
+    {"history_turns": HISTORY_TURNS, "memory_limit": PROMPT_MEMORY_LIMIT, "keep_sources": False},
+    {"history_turns": 4, "memory_limit": 24, "keep_sources": False},
+    {"history_turns": 2, "memory_limit": 12, "keep_sources": False},
+    {"history_turns": 1, "memory_limit": 6, "keep_sources": False},
+    {"history_turns": 0, "memory_limit": 0, "keep_sources": False},
+)
+
+
+async def _fitted_reply_prompt(
+    user_msg: str,
+    evidence_context: dict,
+    memories: list,
+    history: list,
+    sources: list | None = None,
+    metrics: dict | None = None,
+    *,
+    tier: str = "default",
+) -> str:
+    """Build the reply prompt, shedding optional context until it fits the window.
+
+    The model counts the tokens — see llm.count_tokens for why a character
+    estimate is not good enough here. When the server exposes neither a limit
+    nor a tokenizer (Ollama), the prompt is returned unbudgeted, which is the
+    behaviour that held before this guard existed.
+    """
+    url_override = model_override = None
+    if tier == "quality":
+        quality_url = config_value("quality_llm_url")
+        quality_model = config_value("quality_llm_model")
+        if quality_url and quality_model:
+            url_override, model_override = quality_url, quality_model
+
+    def build(step: dict[str, Any]) -> str:
+        return _reply_prompt(
+            user_msg, evidence_context, memories, history, sources, metrics,
+            memory_limit=step["memory_limit"],
+            history_turns=step["history_turns"],
+            keep_sources=step["keep_sources"],
         )
-    return prompt
+
+    limit = await context_limit(url_override, model_override)
+    if not limit:
+        return build(_PROMPT_BUDGET_STEPS[0])
+    budget = limit - REPLY_MAX_TOKENS - CONTEXT_SAFETY_MARGIN
+
+    prompt = build(_PROMPT_BUDGET_STEPS[0])
+    for index, step in enumerate(_PROMPT_BUDGET_STEPS):
+        candidate = prompt if index == 0 else build(step)
+        used = await count_tokens(candidate, url_override, model_override)
+        if used is None:
+            return candidate  # no tokenizer: cannot budget, so do not pretend to
+        if used <= budget:
+            if index:
+                log.info(
+                    "companion prompt trimmed to fit context: %s tokens (budget %s, step %s)",
+                    used, budget, index,
+                )
+            return candidate
+        prompt = candidate
+
+    # Even with nothing optional left the evidence bundle overflows. Surfacing
+    # this beats sending a request the model will reject with a 502.
+    raise companion_evidence.CompanionEvidenceError(
+        "the bounded evidence for this question exceeds the local model's context window"
+    )
 
 
 async def _reply(
@@ -325,13 +405,14 @@ async def _reply(
     tier: str = "default",
 ) -> str:
     return _strip_signoff(await invoke_llm(
-        _reply_prompt(
+        await _fitted_reply_prompt(
             user_msg,
             evidence_context,
             memories,
             history,
             sources,
             metrics,
+            tier=tier,
         ),
         max_tokens=REPLY_MAX_TOKENS,
         tier=tier,
@@ -702,13 +783,14 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
     yield json.dumps({"grounding": True}) + "\n"
     try:
         public_evidence, reasoning, metrics = _grounding(text)
-        prompt = _reply_prompt(
+        prompt = await _fitted_reply_prompt(
             text,
             reasoning,
             prompt_memories,
             history[:-1],
             sources,
             metrics,
+            tier=tier,
         )
     except Exception as err:
         log.exception("companion evidence grounding failed")

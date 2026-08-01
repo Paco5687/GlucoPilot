@@ -22,7 +22,7 @@ from .clinical_evidence import link_generated_narrative
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value, set_config_value
 from .data_quality import assess_daily
-from .llm import invoke_llm
+from .llm import CONTEXT_SAFETY_MARGIN, context_limit, count_tokens, invoke_llm
 from .lab_audit import qualification as lab_qualification
 from .lab_audit import summary_eligible as lab_summary_eligible
 from .repositories import get_repositories
@@ -207,6 +207,47 @@ def _build_context() -> dict[str, Any]:
     }
 
 
+SUMMARY_MAX_TOKENS = 3000
+
+
+async def _fitted_prompt(prompt_context: dict[str, Any]) -> str:
+    """Shed the least-recent evidence items until the snapshot fits the window.
+
+    `shared_evidence_context` is ~99% of this prompt, so it is the only section
+    worth trimming. Items arrive most-relevant-first, so truncating the tail
+    keeps what the summary is most likely to cite. When the server exposes no
+    limit or tokenizer the prompt goes out unbudgeted, as it did before.
+    """
+    limit = await context_limit()
+    if not limit:
+        return _summary_prompt(prompt_context)
+    budget = limit - SUMMARY_MAX_TOKENS - CONTEXT_SAFETY_MARGIN
+    evidence = prompt_context.get("shared_evidence_context") or {}
+    items = list(evidence.get("items") or [])
+
+    for keep in (len(items), 96, 64, 40, 24, 12, 6):
+        if keep > len(items):
+            continue
+        trimmed = dict(prompt_context)
+        if keep < len(items):
+            scoped = dict(evidence)
+            scoped["items"] = items[:keep]
+            scoped["items_truncated"] = {"kept": keep, "available": len(items)}
+            trimmed["shared_evidence_context"] = scoped
+        candidate = _summary_prompt(trimmed)
+        used = await count_tokens(candidate)
+        if used is None:
+            return candidate
+        if used <= budget:
+            if keep < len(items):
+                log.info(
+                    "health summary evidence trimmed to fit context: %s of %s items (%s tokens, budget %s)",
+                    keep, len(items), used, budget,
+                )
+            return candidate
+    raise RuntimeError("health summary context exceeds the local model's window even when minimised")
+
+
 async def generate() -> dict[str, Any]:
     context = _build_context()
     evidence_reasoning = context["_evidence_reasoning"]
@@ -215,7 +256,15 @@ async def generate() -> dict[str, Any]:
         if key not in {"_evidence_reasoning", "evidence_context"}
     }
     prompt_context["shared_evidence_context"] = evidence_reasoning
-    prompt = (
+    prompt = await _fitted_prompt(prompt_context)
+    # Fast default model: the quality (27B) model is currently GPU-starved and
+    # times out on a synthesis this size. The fast model handles it in seconds.
+    result = await invoke_llm(prompt, response_json_schema=SUMMARY_SCHEMA, max_tokens=SUMMARY_MAX_TOKENS)
+    return await _finish_summary(result, context, evidence_reasoning)
+
+
+def _summary_prompt(prompt_context: dict[str, Any]) -> str:
+    return (
         "You are a health-data analyst writing the overall picture for a person with Type 1 diabetes who "
         "tracks a great deal of data. Using the multi-domain snapshot below, write a substantive, specific "
         "summary that spots INTERESTING CONNECTIONS and POTENTIAL INDICATORS across domains — where glucose, "
@@ -242,9 +291,13 @@ async def generate() -> dict[str, Any]:
         "and the subset for each observation on that observation. Never invent an evidence ID.\n\n"
         f"DATA SNAPSHOT (last {WINDOW_DAYS} days where applicable):\n{json.dumps(prompt_context, indent=2, default=str)}"
     )
-    # Fast default model: the quality (27B) model is currently GPU-starved and
-    # times out on a synthesis this size. The fast model handles it in seconds.
-    result = await invoke_llm(prompt, response_json_schema=SUMMARY_SCHEMA, max_tokens=3000)
+
+
+async def _finish_summary(
+    result: dict[str, Any] | None,
+    context: dict[str, Any],
+    evidence_reasoning: dict[str, Any],
+) -> dict[str, Any]:
     if result:
         valid_evidence_ids = {item["id"] for item in evidence_reasoning["items"]}
         evidence_ids = list(dict.fromkeys(result.get("evidence_item_ids") or []))

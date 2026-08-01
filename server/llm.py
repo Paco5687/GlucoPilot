@@ -40,6 +40,75 @@ def _local_client_and_base(raw_url: str) -> tuple[httpx.AsyncClient, str]:
     return httpx.AsyncClient(timeout=300), raw_url.rstrip("/")
 
 
+# Reserved against the model's advertised window for the chat-template wrapper
+# and role scaffolding, which are added server-side and never appear in the
+# string we measure.
+CONTEXT_SAFETY_MARGIN = 256
+_CONTEXT_LIMIT_CACHE: dict[str, int] = {}
+
+
+def _tokenizer_endpoints(raw_url: str) -> tuple[httpx.AsyncClient, str, str]:
+    client, base = _local_client_and_base(raw_url)
+    # /tokenize sits at the server root, a sibling of the /v1 API surface.
+    root = base[: -len("/v1")] if base.endswith("/v1") else base
+    return client, base, root
+
+
+async def context_limit(url_override: str | None = None, model_override: str | None = None) -> int | None:
+    """The model's usable input window, or None when the server won't say.
+
+    vLLM advertises `max_model_len` on /v1/models. Ollama does not, so callers
+    must treat None as "no budget enforced" rather than assuming a default —
+    guessing a limit here would trim context that the model could have used.
+    """
+    raw_url = url_override or config_value("local_llm_url", LOCAL_URL_DEFAULT)
+    model = model_override or config_value("local_llm_model", LOCAL_MODEL_DEFAULT)
+    cache_key = f"{raw_url}|{model}"
+    if cache_key in _CONTEXT_LIMIT_CACHE:
+        return _CONTEXT_LIMIT_CACHE[cache_key] or None
+
+    client, base, _ = _tokenizer_endpoints(raw_url)
+    limit = 0
+    try:
+        async with client:
+            response = await client.get(f"{base}/models", timeout=15)
+            if response.status_code == 200:
+                for entry in response.json().get("data") or []:
+                    if entry.get("id") == model and entry.get("max_model_len"):
+                        limit = int(entry["max_model_len"])
+                        break
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        limit = 0
+    _CONTEXT_LIMIT_CACHE[cache_key] = limit
+    return limit or None
+
+
+async def count_tokens(
+    text: str, url_override: str | None = None, model_override: str | None = None
+) -> int | None:
+    """Exact input-token count from the serving model, or None if unavailable.
+
+    Worth the round trip rather than estimating from length: prose runs about
+    5 chars/token while the dense JSON in an evidence bundle runs under 2, so a
+    single character ratio misjudges a mixed prompt by more than 2x — which is
+    how a 96k-char guard let a 15k-token prompt through a 16k window.
+    """
+    raw_url = url_override or config_value("local_llm_url", LOCAL_URL_DEFAULT)
+    model = model_override or config_value("local_llm_model", LOCAL_MODEL_DEFAULT)
+    client, _, root = _tokenizer_endpoints(raw_url)
+    try:
+        async with client:
+            response = await client.post(
+                f"{root}/tokenize", json={"model": model, "prompt": text}, timeout=30
+            )
+            if response.status_code != 200:
+                return None
+            count = response.json().get("count")
+            return int(count) if count is not None else None
+    except (httpx.HTTPError, ValueError, KeyError, TypeError):
+        return None
+
+
 def _extract_json(text: str) -> Any:
     text = text.strip()
     # strip markdown fences and any <think> blocks defensively
