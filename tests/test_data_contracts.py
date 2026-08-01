@@ -65,7 +65,7 @@ def _version(*, algorithm: bool = False) -> DataVersion:
 
 def test_all_registered_entities_have_one_versioned_contract():
     assert set(ENTITY_CONTRACTS) == set(ENTITY_SCHEMA_BY_NAME)
-    assert len(ENTITY_CONTRACTS) == 34
+    assert len(ENTITY_CONTRACTS) == 35
     assert DATA_CONTRACT_NAME == "glucopilot-clinical-data-contracts"
     assert DATA_CONTRACT_VERSION == "1.0.0"
     assert DEPLOYMENT_OWNER_ID == "urn:glucopilot:owner:self"

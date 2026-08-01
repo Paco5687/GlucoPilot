@@ -178,7 +178,10 @@ describe("visit report contradictions", () => {
     expect(screen.getByText("30 units/day")).toBeTruthy();
     expect(screen.getByText("24 units/day")).toBeTruthy();
     expect(screen.getByText(/No conflicting value has been selected silently/)).toBeTruthy();
-    expect(screen.getByText("Shared evidence context")).toBeTruthy();
+    // The evidence context is reference material: collapsed until expanded.
+    const evidenceToggle = screen.getByRole("button", { name: /shared evidence context/i });
+    expect(screen.queryByText("2026-05-01")).toBeNull();
+    fireEvent.click(evidenceToggle);
     expect(screen.getByText("2026-05-01")).toBeTruthy();
     expect(screen.getByText("Confirmed conditions & diagnoses")).toBeTruthy();
     expect(screen.getByText(/Synthetic confirmed diagnosis/)).toBeTruthy();
@@ -231,7 +234,11 @@ describe("visit report contradictions", () => {
       name: "Questions previously recorded (1)",
     });
     expect(screen.queryByText("Synthetic legacy question")).toBeNull();
-    expect(screen.getByLabelText("Include in print")).toHaveProperty("checked", false);
+    // Both optional sections — legacy questions and the evidence context —
+    // stay out of the printout until explicitly included.
+    for (const checkbox of screen.getAllByLabelText("Include in print")) {
+      expect(checkbox).toHaveProperty("checked", false);
+    }
     expect(screen.queryByText(/evidence balance/i)).toBeNull();
 
     fireEvent.click(toggle);

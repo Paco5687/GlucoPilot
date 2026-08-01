@@ -717,6 +717,15 @@ ENTITY_CONTRACTS = {
             _time("entry_date", TimeMeaning.EFFECTIVE, *LOCAL_DATE),
         ),
         _contract(
+            # Care-team notes are authored prose (routines, protocols,
+            # prescription instructions) signed by whoever wrote them — the
+            # owner as a patient report, a provider as a clinician statement.
+            "CareTeamNote",
+            IdentityPolicy.APPLICATION_RECORD,
+            frozenset({AssertionKind.PATIENT_REPORT, AssertionKind.CLINICIAN_CONFIRMATION}),
+            frozenset({SourceClass.PATIENT, SourceClass.CLINICIAN}),
+        ),
+        _contract(
             "HealthSummary",
             IdentityPolicy.DERIVED_OUTPUT,
             DERIVED,
@@ -743,5 +752,5 @@ ENTITY_CONTRACTS = {
     )
 }
 
-if len(ENTITY_CONTRACTS) != 34:
-    raise RuntimeError("entity contract mapping must contain all 34 registered entities")
+if len(ENTITY_CONTRACTS) != 35:
+    raise RuntimeError("entity contract mapping must contain all 35 registered entities")

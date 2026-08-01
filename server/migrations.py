@@ -2452,6 +2452,33 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        22,
+        "care_team_note_registry",
+        # Registers the CareTeamNote entity (provider-writable care notes:
+        # routines, protocols, prescription instructions) in the schema
+        # registry. The migration-2 baseline stays untouched, per its contract.
+        (
+            Statement(
+                """
+                INSERT INTO entity_schema_registry (
+                    entity_type, schema_version, storage_kind, domain, owner_scope,
+                    api_exposure, lifecycle, description
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "CareTeamNote",
+                    1,
+                    "json",
+                    "clinical",
+                    "deployment_owner",
+                    "dedicated",
+                    "event",
+                    "Care-team authored note: routines, protocols, prescription instructions",
+                ),
+            ),
+        ),
+    ),
 )
 
 

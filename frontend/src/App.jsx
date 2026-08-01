@@ -18,6 +18,7 @@ import Overview from './pages/Overview';
 import Insulin from './pages/Insulin';
 import Companion from './pages/Companion';
 import Symptoms from './pages/Symptoms';
+import CareNotes from './pages/CareNotes';
 import History from './pages/History';
 import Records from './pages/Records';
 import Report from './pages/Report';
@@ -49,6 +50,7 @@ const AuthenticatedApp = () => {
         <Route path="/import" element={<CsvImport />} />
         <Route path="/period" element={<PeriodTracker />} />
         <Route path="/wearables" element={<Wearables />} />
+        <Route path="/care-notes" element={<CareNotes />} />
         <Route path="/overview" element={<Overview />} />
         <Route path="/insulin" element={<Insulin />} />
         <Route path="/companion" element={<Companion />} />

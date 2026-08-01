@@ -1,5 +1,6 @@
+import { useState } from "react";
 import ClaimEvidenceDialog from "@/components/evidence/ClaimEvidenceDialog";
-import { AlertTriangle, Database, ExternalLink, FileSearch, ShieldCheck } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronRight, Database, ExternalLink, FileSearch, ShieldCheck } from "lucide-react";
 
 function humanize(value) {
   return String(value || "evidence")
@@ -13,7 +14,12 @@ function sourceLabel(link) {
   return `Open ${humanize(link.entity_type)} source`;
 }
 
-export default function EvidenceContextBlock({ context, narrativeEvidenceIds = [] }) {
+// collapsible: the Visit Report treats this as reference material — collapsed on
+// screen and excluded from the printout unless explicitly included, matching the
+// "Questions previously recorded" section. Overview keeps the always-open layout.
+export default function EvidenceContextBlock({ context, narrativeEvidenceIds = [], collapsible = false }) {
+  const [open, setOpen] = useState(false);
+  const [includeInPrint, setIncludeInPrint] = useState(false);
   if (!context?.bundle) return null;
 
   const referenced = new Set(narrativeEvidenceIds || []);
@@ -27,20 +33,14 @@ export default function EvidenceContextBlock({ context, narrativeEvidenceIds = [
   ).length;
   const blocking = (context.contradictions || []).filter((item) => item.severity === "blocking").length;
 
-  return (
-    <div className="report-section report-card rounded-xl border border-border bg-card p-4 space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="font-semibold text-sm flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-primary" /> Shared evidence context
-          </h2>
-          <p className="text-[11px] text-muted-foreground mt-1">
-            Deterministic Evidence Bundle {context.bundle.version} · narrative and report claims use the same governed sources.
-          </p>
-        </div>
-        <span className="text-[9px] uppercase tracking-wide text-muted-foreground">{context.contract_version}</span>
-      </div>
+  const description = (
+    <p className="text-[11px] text-muted-foreground">
+      Deterministic Evidence Bundle {context.bundle.version} · narrative and report claims use the same governed sources.
+    </p>
+  );
 
+  const body = (
+    <>
       <div className="grid gap-2 sm:grid-cols-2">
         <div className="rounded-lg bg-muted/50 p-3">
           <div className="text-[10px] uppercase tracking-wide text-muted-foreground flex items-center gap-1">
@@ -131,6 +131,56 @@ export default function EvidenceContextBlock({ context, narrativeEvidenceIds = [
             ))}
             {sources.length > 8 && <span className="text-[11px] text-muted-foreground self-center">+{sources.length - 8} more governed sources</span>}
           </div>
+        </div>
+      )}
+    </>
+  );
+
+  if (!collapsible) {
+    return (
+      <div className="report-section report-card rounded-xl border border-border bg-card p-4 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="font-semibold text-sm flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-primary" /> Shared evidence context
+            </h2>
+            <div className="mt-1">{description}</div>
+          </div>
+          <span className="text-[9px] uppercase tracking-wide text-muted-foreground">{context.contract_version}</span>
+        </div>
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <div className={`report-section report-card rounded-xl border border-border bg-card p-4 space-y-3 ${includeInPrint ? "" : "print:hidden"}`}>
+      <div className="print:hidden flex flex-wrap items-center justify-between gap-3">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="inline-flex items-center gap-2 text-sm font-semibold text-muted-foreground hover:text-foreground"
+        >
+          {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          <ShieldCheck className="w-4 h-4 text-primary" /> Shared evidence context
+        </button>
+        <label className="inline-flex items-center gap-2 text-[11px] text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={includeInPrint}
+            onChange={(event) => setIncludeInPrint(event.target.checked)}
+          />
+          Include in print
+        </label>
+      </div>
+      <h2 className="hidden print:block text-sm font-semibold">Shared evidence context</h2>
+      {(open || includeInPrint) && (
+        <div className="space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            {description}
+            <span className="text-[9px] uppercase tracking-wide text-muted-foreground">{context.contract_version}</span>
+          </div>
+          {body}
         </div>
       )}
     </div>

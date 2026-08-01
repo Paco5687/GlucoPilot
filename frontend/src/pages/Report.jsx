@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import DataQualityNote from "@/components/DataQualityNote";
 import EvidenceContextBlock from "@/components/evidence/EvidenceContextBlock";
-import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope, ScrollText, Beaker, CalendarRange, ChevronDown, ChevronRight } from "lucide-react";
+import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope, ScrollText, Beaker, CalendarRange, ChevronDown, ChevronRight, ClipboardList } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, Line, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
 } from "recharts";
@@ -526,6 +526,27 @@ export default function Report() {
         </div>
       )}
 
+      {/* Standing care-team notes: protocols and instructions signed by their authors */}
+      {report.care_notes?.length > 0 && (
+        <div className="report-section report-card rounded-xl border border-border p-4">
+          <h2 className="font-semibold text-sm mb-2 flex items-center gap-2">
+            <ClipboardList className="w-4 h-4 text-primary" /> Care team notes
+          </h2>
+          <div className="space-y-3">
+            {report.care_notes.map((note, i) => (
+              <div key={i}>
+                <p className="text-sm font-medium">
+                  <span className="uppercase text-[10px] tracking-wide text-muted-foreground mr-2">{note.kind}</span>
+                  {note.title}
+                </p>
+                {note.body && <p className="text-sm whitespace-pre-wrap">{note.body}</p>}
+                <p className="text-[11px] text-muted-foreground">{note.author}{note.updated ? ` · ${note.updated}` : ""}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Medications & allergies */}
       {(report.medications?.length > 0 || report.allergies?.length > 0) && (
         <div className="report-section grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -608,6 +629,7 @@ export default function Report() {
       <EvidenceContextBlock
         context={report.evidence_context}
         narrativeEvidenceIds={n?.evidence_item_ids}
+        collapsible
       />
 
       {/* Glucose */}

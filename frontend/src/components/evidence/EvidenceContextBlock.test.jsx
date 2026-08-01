@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import EvidenceContextBlock from "./EvidenceContextBlock";
 
@@ -61,5 +61,45 @@ describe("shared evidence context", () => {
     expect(screen.getByRole("button", { name: /show evidence/i })).toBeTruthy();
     expect(screen.getByRole("link", { name: /open lab result source/i }).getAttribute("href"))
       .toBe("/api/evidence/sources/LabResult/lab_1");
+  });
+
+  it("collapsible mode starts collapsed and excluded from print", () => {
+    const { container } = render(<EvidenceContextBlock context={context} collapsible />);
+
+    // Header is there, body is not, and the whole section stays out of print.
+    expect(screen.getByRole("button", { name: /shared evidence context/i })).toBeTruthy();
+    expect(screen.queryByText("Data quality")).toBeNull();
+    expect(container.firstChild.className).toContain("print:hidden");
+
+    // Expanding reveals the body on screen without opting into print.
+    fireEvent.click(screen.getByRole("button", { name: /shared evidence context/i }));
+    expect(screen.getByText("Data quality")).toBeTruthy();
+    expect(screen.getByText("2026-07-20")).toBeTruthy();
+    expect(container.firstChild.className).toContain("print:hidden");
+
+    fireEvent.click(screen.getByRole("button", { name: /shared evidence context/i }));
+    expect(screen.queryByText("Data quality")).toBeNull();
+  });
+
+  it("include-in-print opts the section into the printout and shows the body", () => {
+    const { container } = render(<EvidenceContextBlock context={context} collapsible />);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /include in print/i }));
+
+    // Section will print, and the body is visible so you can see what prints.
+    expect(container.firstChild.className).not.toContain("print:hidden");
+    expect(screen.getByText("Data quality")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /include in print/i }));
+    expect(container.firstChild.className).toContain("print:hidden");
+    expect(screen.queryByText("Data quality")).toBeNull();
+  });
+
+  it("non-collapsible usage keeps the always-open layout with no print controls", () => {
+    const { container } = render(<EvidenceContextBlock context={context} />);
+
+    expect(screen.getByText("Data quality")).toBeTruthy();
+    expect(screen.queryByRole("checkbox", { name: /include in print/i })).toBeNull();
+    expect(container.firstChild.className).not.toContain("print:hidden");
   });
 });

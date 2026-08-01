@@ -8,15 +8,20 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from . import companion, cycle_inference, dexcom, dexcom_share, fingerstick, fitbit, glooko, google_health, health_summary, insights, insulin, nightscout, oura, patterns, tandem
-from .auth import require_admin
+from .auth import require_admin, require_login, session_actor
 from .connector_provenance import run_connector
 
 log = logging.getLogger("glucopilot.functions")
 
-router = APIRouter(dependencies=[Depends(require_admin)])
+router = APIRouter(dependencies=[Depends(require_login)])
+
+# The one function a read-only provider session may invoke: the Companion,
+# which scopes its threads by actor and refuses memory writes for providers.
+# Everything else on this dispatch mutates source data and stays admin-only.
+PROVIDER_FUNCTIONS = {"companion"}
 
 
-async def _dispatch(name: str, body: dict[str, Any]) -> Any:
+async def _dispatch(name: str, body: dict[str, Any], actor: str = "owner") -> Any:
     source = {
         "nightscout": "nightscout",
         "ouraSync": "oura",
@@ -61,7 +66,7 @@ async def _dispatch(name: str, body: dict[str, Any]) -> Any:
     if name == "insulin":
         return await insulin.handle(body)
     if name == "companion":
-        return await companion.handle(body)
+        return await companion.handle(body, actor=actor)
     if name == "analyzeInsights":
         return await insights.analyze()
     if name == "inferCycles":
@@ -71,12 +76,14 @@ async def _dispatch(name: str, body: dict[str, Any]) -> Any:
 
 @router.post("/api/functions/{name}")
 async def invoke(name: str, request: Request):
+    if name not in PROVIDER_FUNCTIONS:
+        require_admin(request)
     try:
         body = await request.json()
     except Exception:
         body = {}
     try:
-        result = await _dispatch(name, body if isinstance(body, dict) else {})
+        result = await _dispatch(name, body if isinstance(body, dict) else {}, actor=session_actor(request))
     except HTTPException:
         raise
     except httpx.ConnectError as err:
