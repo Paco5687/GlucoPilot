@@ -323,8 +323,9 @@ def _reply_prompt(
 
 # Ordered least-to-most costly to lose. Web sources go first because they are
 # general reference the model can say it lacks; conversation history and
-# memories degrade gradually; the evidence bundle is never dropped here because
-# every personal claim must cite it, so a reply without it cannot be grounded.
+# memories degrade gradually. The evidence bundle is preserved through every
+# step here — every personal claim must cite it — and only when a bare prompt
+# still overflows does _EVIDENCE_TRIM_STEPS shed its least-relevant tail.
 _PROMPT_BUDGET_STEPS: tuple[dict[str, Any], ...] = (
     {"history_turns": HISTORY_TURNS, "memory_limit": PROMPT_MEMORY_LIMIT, "keep_sources": True},
     {"history_turns": HISTORY_TURNS, "memory_limit": PROMPT_MEMORY_LIMIT, "keep_sources": False},
@@ -333,6 +334,28 @@ _PROMPT_BUDGET_STEPS: tuple[dict[str, Any], ...] = (
     {"history_turns": 1, "memory_limit": 6, "keep_sources": False},
     {"history_turns": 0, "memory_limit": 0, "keep_sources": False},
 )
+
+# Evidence items are ranked most-relevant-first, so a partial dossier beats a
+# refusal: 48 items answer "how did last night look?" no better than the best 16.
+_EVIDENCE_TRIM_STEPS = (32, 20, 12, 6)
+
+
+def _trimmed_evidence(evidence_context: dict, keep: int) -> dict:
+    items = list(evidence_context.get("items") or [])
+    if keep >= len(items):
+        return evidence_context
+    kept = items[:keep]
+    aliases = {item.get("alias") for item in kept}
+    trimmed = dict(evidence_context)
+    trimmed["items"] = kept
+    # The model must not see an alias whose content was dropped — an opposing
+    # note citing [E40] would let it "cite" evidence it never read.
+    trimmed["opposing_evidence"] = [
+        entry for entry in evidence_context.get("opposing_evidence") or []
+        if not entry.get("evidence_alias") or entry.get("evidence_alias") in aliases
+    ]
+    trimmed["evidence_truncated"] = {"kept": keep, "available": len(items)}
+    return trimmed
 
 
 async def _fitted_reply_prompt(
@@ -359,9 +382,10 @@ async def _fitted_reply_prompt(
         if quality_url and quality_model:
             url_override, model_override = quality_url, quality_model
 
-    def build(step: dict[str, Any]) -> str:
+    def build(step: dict[str, Any], evidence: dict | None = None) -> str:
         return _reply_prompt(
-            user_msg, evidence_context, memories, history, sources, metrics,
+            user_msg, evidence if evidence is not None else evidence_context,
+            memories, history, sources, metrics,
             memory_limit=step["memory_limit"],
             history_turns=step["history_turns"],
             keep_sources=step["keep_sources"],
@@ -387,8 +411,23 @@ async def _fitted_reply_prompt(
             return candidate
         prompt = candidate
 
-    # Even with nothing optional left the evidence bundle overflows. Surfacing
-    # this beats sending a request the model will reject with a 502.
+    # A bare prompt still overflows: the evidence bundle itself is the weight,
+    # so shed its least-relevant tail rather than refusing to answer.
+    bare = _PROMPT_BUDGET_STEPS[-1]
+    for keep in _EVIDENCE_TRIM_STEPS:
+        candidate = build(bare, _trimmed_evidence(evidence_context, keep))
+        used = await count_tokens(candidate, url_override, model_override)
+        if used is None:
+            return candidate
+        if used <= budget:
+            log.warning(
+                "companion evidence trimmed to fit context: kept %s of %s items (%s tokens, budget %s)",
+                keep, len(evidence_context.get("items") or []), used, budget,
+            )
+            return candidate
+
+    # Even a minimal dossier overflows. Surfacing this beats sending a request
+    # the model will reject with a 502.
     raise companion_evidence.CompanionEvidenceError(
         "the bounded evidence for this question exceeds the local model's context window"
     )

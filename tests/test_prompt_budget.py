@@ -186,3 +186,89 @@ def test_health_summary_keeps_the_most_relevant_items(fake_model):
 
     assert '"e0"' in prompt
     assert '"e183"' not in prompt
+
+
+def test_evidence_tail_is_shed_before_refusing(fake_model):
+    """A partial dossier beats a refusal — items are ranked most-relevant-first."""
+    fake_model["limit"] = 8192
+    evidence = {
+        "items": [
+            {"alias": f"E{index}", "domain": "glucose", "data": {"blob": "x" * 400}}
+            for index in range(1, 49)
+        ],
+        "opposing_evidence": [
+            {"evidence_alias": "E2", "summary": "kept — its item survives"},
+            {"evidence_alias": "E47", "summary": "dropped with its item"},
+            {"summary": "protective note without an alias, always kept"},
+        ],
+    }
+
+    prompt = _fit(evidence_context=evidence)
+    used = int(len(prompt) / fake_model["chars_per_token"])
+    budget = fake_model["limit"] - companion.REPLY_MAX_TOKENS - companion.CONTEXT_SAFETY_MARGIN
+
+    assert used <= budget
+    assert "What changed this week?" in prompt
+    # The trim is disclosed, survivors keep their aliases, and no alias points
+    # at content the model cannot read.
+    assert "evidence_truncated" in prompt
+    assert '"alias":"E1"' in prompt
+    assert "its item survives" in prompt
+    assert "dropped with its item" not in prompt
+    assert "always kept" in prompt
+
+
+def test_trimmed_evidence_never_mutates_the_original():
+    evidence = {
+        "items": [{"alias": f"E{index}"} for index in range(1, 11)],
+        "opposing_evidence": [{"evidence_alias": "E9"}],
+    }
+    trimmed = companion._trimmed_evidence(evidence, 3)
+
+    assert len(trimmed["items"]) == 3
+    assert trimmed["opposing_evidence"] == []
+    assert len(evidence["items"]) == 10
+    assert len(evidence["opposing_evidence"]) == 1
+
+
+def test_quality_tier_limit_falls_back_to_declared_config(monkeypatch):
+    from server import llm
+
+    def config(name, default=""):
+        return {
+            "quality_llm_url": "unix:///run/glucopilot/ollama.sock",
+            "quality_llm_context": "16384",
+        }.get(name, default)
+
+    monkeypatch.setattr(llm, "config_value", config)
+    monkeypatch.setitem(llm._CONTEXT_LIMIT_CACHE, "unix:///run/glucopilot/ollama.sock|gemma3:27b", 0)
+
+    # The /v1/models probe found nothing (cached 0); the declared value fills in.
+    assert llm._configured_limit("unix:///run/glucopilot/ollama.sock") == 16384
+    assert llm._configured_limit("unix:///run/glucopilot/llm.sock") == 0
+
+
+def test_count_tokens_proxies_through_the_default_tokenizer(monkeypatch):
+    from server import llm
+
+    async def tokenize(raw_url, model, text):
+        # The quality server has no /tokenize; the default vLLM one does.
+        if raw_url == "unix:///run/glucopilot/ollama.sock":
+            return None
+        return 1000
+
+    monkeypatch.setattr(llm, "_tokenize_once", tokenize)
+    monkeypatch.setattr(llm, "config_value", lambda name, default="": default)
+
+    proxied = asyncio.run(
+        llm.count_tokens("text", "unix:///run/glucopilot/ollama.sock", "gemma3:27b")
+    )
+    # Inflated by the cross-tokenizer margin, never reported as exact.
+    assert proxied == int(1000 * llm.PROXY_TOKENIZER_MARGIN) + 1
+
+    # When the default server itself cannot count, there is no safe proxy.
+    async def nobody(raw_url, model, text):
+        return None
+
+    monkeypatch.setattr(llm, "_tokenize_once", nobody)
+    assert asyncio.run(llm.count_tokens("text")) is None

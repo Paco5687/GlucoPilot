@@ -54,12 +54,31 @@ def _tokenizer_endpoints(raw_url: str) -> tuple[httpx.AsyncClient, str, str]:
     return client, base, root
 
 
-async def context_limit(url_override: str | None = None, model_override: str | None = None) -> int | None:
-    """The model's usable input window, or None when the server won't say.
+def _configured_limit(raw_url: str) -> int:
+    """Operator-declared window for a server that won't advertise one.
 
-    vLLM advertises `max_model_len` on /v1/models. Ollama does not, so callers
-    must treat None as "no budget enforced" rather than assuming a default —
-    guessing a limit here would trim context that the model could have used.
+    Ollama exposes no max_model_len, but this deployment sets its window itself
+    (OLLAMA_CONTEXT_LENGTH), so the same number can be declared in Settings as
+    `quality_llm_context`. A declared limit beats the alternative — Ollama
+    silently truncates an oversized prompt, which reads as the model ignoring
+    half the dossier. Still a fallback, never a baked-in guess: unset means
+    unbudgeted, exactly as before.
+    """
+    if raw_url == config_value("quality_llm_url"):
+        try:
+            return int(config_value("quality_llm_context", "0") or 0)
+        except ValueError:
+            return 0
+    return 0
+
+
+async def context_limit(url_override: str | None = None, model_override: str | None = None) -> int | None:
+    """The model's usable input window, or None when nobody will say.
+
+    vLLM advertises `max_model_len` on /v1/models. For servers that don't
+    (Ollama), an operator-declared `quality_llm_context` fills in; with neither,
+    callers must treat None as "no budget enforced" rather than assuming a
+    default — guessing here would trim context the model could have used.
     """
     raw_url = url_override or config_value("local_llm_url", LOCAL_URL_DEFAULT)
     model = model_override or config_value("local_llm_model", LOCAL_MODEL_DEFAULT)
@@ -79,22 +98,19 @@ async def context_limit(url_override: str | None = None, model_override: str | N
                         break
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
         limit = 0
+    if not limit:
+        limit = _configured_limit(raw_url)
     _CONTEXT_LIMIT_CACHE[cache_key] = limit
     return limit or None
 
 
-async def count_tokens(
-    text: str, url_override: str | None = None, model_override: str | None = None
-) -> int | None:
-    """Exact input-token count from the serving model, or None if unavailable.
+# Modern BPE vocabularies land within a few percent of each other on the same
+# text; inflating a proxy count by this factor keeps a cross-tokenizer estimate
+# on the safe side of the budget.
+PROXY_TOKENIZER_MARGIN = 1.15
 
-    Worth the round trip rather than estimating from length: prose runs about
-    5 chars/token while the dense JSON in an evidence bundle runs under 2, so a
-    single character ratio misjudges a mixed prompt by more than 2x — which is
-    how a 96k-char guard let a 15k-token prompt through a 16k window.
-    """
-    raw_url = url_override or config_value("local_llm_url", LOCAL_URL_DEFAULT)
-    model = model_override or config_value("local_llm_model", LOCAL_MODEL_DEFAULT)
+
+async def _tokenize_once(raw_url: str, model: str, text: str) -> int | None:
     client, _, root = _tokenizer_endpoints(raw_url)
     try:
         async with client:
@@ -107,6 +123,35 @@ async def count_tokens(
             return int(count) if count is not None else None
     except (httpx.HTTPError, ValueError, KeyError, TypeError):
         return None
+
+
+async def count_tokens(
+    text: str, url_override: str | None = None, model_override: str | None = None
+) -> int | None:
+    """Input-token count from the serving model, or None if nobody can count.
+
+    Worth the round trip rather than estimating from length: prose runs about
+    5 chars/token while the dense JSON in an evidence bundle runs under 2, so a
+    single character ratio misjudges a mixed prompt by more than 2x — which is
+    how a 96k-char guard let a 15k-token prompt through a 16k window.
+
+    Ollama has no /tokenize, so a budgeted quality-tier prompt is counted by the
+    default vLLM server's tokenizer instead, inflated by PROXY_TOKENIZER_MARGIN
+    to absorb vocabulary drift between the two models.
+    """
+    raw_url = url_override or config_value("local_llm_url", LOCAL_URL_DEFAULT)
+    model = model_override or config_value("local_llm_model", LOCAL_MODEL_DEFAULT)
+    count = await _tokenize_once(raw_url, model, text)
+    if count is not None:
+        return count
+    default_url = config_value("local_llm_url", LOCAL_URL_DEFAULT)
+    default_model = config_value("local_llm_model", LOCAL_MODEL_DEFAULT)
+    if (raw_url, model) == (default_url, default_model):
+        return None
+    proxied = await _tokenize_once(default_url, default_model, text)
+    if proxied is None:
+        return None
+    return int(proxied * PROXY_TOKENIZER_MARGIN) + 1
 
 
 def _extract_json(text: str) -> Any:
