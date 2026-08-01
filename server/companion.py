@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
+from . import care_notes as care_notes_module
 from . import companion_evidence, insulin, research
 from .auth import require_login, session_actor
 from .config import APP_TIMEZONE, OWNER_EMAIL
@@ -43,6 +44,7 @@ router = APIRouter(dependencies=[Depends(require_login)])
 
 MAX_MEMORIES = 150
 PROMPT_MEMORY_LIMIT = 40
+PROMPT_NOTE_LIMIT = 20  # care-team notes shown to the model, pinned first
 HISTORY_TURNS = 8  # exchanges of prior context sent each turn
 REPLY_MAX_TOKENS = 1200  # enough for a substantive answer without truncating mid-thought
 
@@ -68,6 +70,8 @@ SYSTEM = (
     "correlation, or hypothesis MUST end with one or more exact [E#] aliases copied from the supplied evidence items. "
     "Never invent or alter an evidence alias. Cite lived-experience memory only with its exact [M#] alias, and keep "
     "general medical information separate from personal inference, using [G#] only for supplied trusted references. "
+    "When relaying a care-team note (a routine, protocol, or prescription instruction), cite its exact [C#] alias "
+    "and attribute it to its author. "
     "When she shares how she's feeling or what's happening in her life, take it seriously and connect it to what you see.\n"
     "When the evidence context contains an unresolved contradiction, show both sides and call it unresolved. Never choose a "
     "side silently, and never use a blocking contradiction as the basis for a definitive claim.\n"
@@ -113,6 +117,16 @@ def _now() -> str:
 
 def _entity(entity_type: str) -> EntityRepository:
     return get_repositories().entity(entity_type)
+
+
+def _care_notes() -> list[dict[str, Any]]:
+    """Care-team notes for the prompt — shared context for every actor, since a
+    provider's protocol is exactly what both Emily and other clinicians ask about."""
+    try:
+        return care_notes_module._list()
+    except Exception:
+        log.warning("care notes unavailable for companion context", exc_info=True)
+        return []
 
 
 def _memories() -> list[dict[str, Any]]:
@@ -320,6 +334,8 @@ def _reply_prompt(
     history_turns: int | None = None,
     keep_sources: bool = True,
     audience: str = "",
+    care_notes: list | None = None,
+    note_limit: int | None = None,
 ) -> str:
     memory_items = companion_evidence.memory_aliases(
         memories[: memory_limit if memory_limit is not None else PROMPT_MEMORY_LIMIT]
@@ -334,6 +350,22 @@ def _reply_prompt(
         f"{str(message.get('content') or '')[:800]}"
         for message in (history[-turns * 2:] if turns else [])
     ) or "(start of conversation)"
+    note_txt = ""
+    kept_notes = (care_notes or [])[: note_limit if note_limit is not None else PROMPT_NOTE_LIMIT]
+    if kept_notes:
+        blocks = [
+            f"[{item['alias']}] [{item['kind']}] {item['title']} — {item['author']}"
+            + (f" ({item['updated']})" if item.get("updated") else "")
+            + f"\n{item['body']}"
+            for item in companion_evidence.care_note_aliases(kept_notes)
+        ]
+        note_txt = (
+            "\n\n=== CARE TEAM NOTES (standing instructions from her providers and herself) ===\n"
+            + "\n\n".join(blocks)
+            + "\n\nWhen you reference a routine, protocol, or instruction from these notes, cite its exact [C#] alias "
+              "and name its author. These are the care team's words — report them faithfully; do not reinterpret them "
+              "as your own advice or as data-derived findings."
+        )
     src_txt = ""
     if sources and keep_sources:
         blocks = [
@@ -355,6 +387,7 @@ def _reply_prompt(
         f"{json.dumps(metrics or {}, indent=1, default=str)}\n\n"
         f"=== WHAT YOU REMEMBER ABOUT HER LIVED EXPERIENCE ===\n{mem_txt}\n\n"
         f"=== RECENT CONVERSATION ===\n{hist_txt}"
+        f"{note_txt}"
         f"{src_txt}\n\n"
         f"Emily: {user_msg}\nCompanion:"
     )
@@ -366,12 +399,12 @@ def _reply_prompt(
 # step here — every personal claim must cite it — and only when a bare prompt
 # still overflows does _EVIDENCE_TRIM_STEPS shed its least-relevant tail.
 _PROMPT_BUDGET_STEPS: tuple[dict[str, Any], ...] = (
-    {"history_turns": HISTORY_TURNS, "memory_limit": PROMPT_MEMORY_LIMIT, "keep_sources": True},
-    {"history_turns": HISTORY_TURNS, "memory_limit": PROMPT_MEMORY_LIMIT, "keep_sources": False},
-    {"history_turns": 4, "memory_limit": 24, "keep_sources": False},
-    {"history_turns": 2, "memory_limit": 12, "keep_sources": False},
-    {"history_turns": 1, "memory_limit": 6, "keep_sources": False},
-    {"history_turns": 0, "memory_limit": 0, "keep_sources": False},
+    {"history_turns": HISTORY_TURNS, "memory_limit": PROMPT_MEMORY_LIMIT, "keep_sources": True, "note_limit": PROMPT_NOTE_LIMIT},
+    {"history_turns": HISTORY_TURNS, "memory_limit": PROMPT_MEMORY_LIMIT, "keep_sources": False, "note_limit": PROMPT_NOTE_LIMIT},
+    {"history_turns": 4, "memory_limit": 24, "keep_sources": False, "note_limit": 12},
+    {"history_turns": 2, "memory_limit": 12, "keep_sources": False, "note_limit": 8},
+    {"history_turns": 1, "memory_limit": 6, "keep_sources": False, "note_limit": 4},
+    {"history_turns": 0, "memory_limit": 0, "keep_sources": False, "note_limit": 0},
 )
 
 # Evidence items are ranked most-relevant-first, so a partial dossier beats a
@@ -407,6 +440,7 @@ async def _fitted_reply_prompt(
     *,
     tier: str = "default",
     audience: str = "",
+    care_notes: list | None = None,
 ) -> str:
     """Build the reply prompt, shedding optional context until it fits the window.
 
@@ -430,6 +464,8 @@ async def _fitted_reply_prompt(
             history_turns=step["history_turns"],
             keep_sources=step["keep_sources"],
             audience=audience,
+            care_notes=care_notes,
+            note_limit=step.get("note_limit"),
         )
 
     limit = await context_limit(url_override, model_override)
@@ -484,6 +520,7 @@ async def _reply(
     sources: list | None = None,
     tier: str = "default",
     audience: str = "",
+    care_notes: list | None = None,
 ) -> str:
     return _strip_signoff(await invoke_llm(
         await _fitted_reply_prompt(
@@ -495,6 +532,7 @@ async def _reply(
             metrics,
             tier=tier,
             audience=audience,
+            care_notes=care_notes,
         ),
         max_tokens=REPLY_MAX_TOKENS,
         tier=tier,
@@ -508,10 +546,11 @@ async def _finalize_grounded_reply(
     sources: list[dict[str, Any]],
     *,
     tier: str = "default",
+    care_notes: list[dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Validate a reply and make one bounded repair attempt when citations fail."""
     reply, evidence = companion_evidence.finalize_reply(
-        raw_reply, public_evidence, memories, sources
+        raw_reply, public_evidence, memories, sources, care_notes
     )
     initial_omissions = int((evidence.get("omissions") or {}).get("count") or 0)
     if not initial_omissions:
@@ -520,7 +559,7 @@ async def _finalize_grounded_reply(
 
     repair_prompt = (
         "Rewrite the draft below as a concise natural chat response. Remove every "
-        "personal-health statement that does not already have a valid [E#] or [M#] "
+        "personal-health statement that does not already have a valid [E#], [M#], or [C#] "
         "citation on the same line. Preserve valid citation aliases exactly; never "
         "invent, renumber, or add one. General information may retain an existing "
         "[G#] citation. Do not mention citation validation, unsupported claims, or "
@@ -536,7 +575,7 @@ async def _finalize_grounded_reply(
             )
         )
         repaired_reply, repaired_evidence = companion_evidence.finalize_reply(
-            repaired_raw, public_evidence, memories, sources
+            repaired_raw, public_evidence, memories, sources, care_notes
         )
         repaired_omissions = int(
             (repaired_evidence.get("omissions") or {}).get("count") or 0
@@ -718,6 +757,7 @@ async def handle(body: dict[str, Any], actor: str = "owner") -> dict[str, Any]:
                 "statements": evidence.get("statements") or [],
                 "evidence_items": evidence.get("evidence_items") or [],
                 "external_sources": evidence.get("external_sources") or [],
+                "care_notes": evidence.get("care_notes") or [],
                 "missing_data_caveats": evidence.get("missing_data_caveats") or [],
                 "budget": evidence.get("budget") or {},
             }
@@ -760,6 +800,7 @@ async def handle(body: dict[str, Any], actor: str = "owner") -> dict[str, Any]:
         history = _thread_history(tid)
         memories = _memories() if actor == "owner" else []
         prompt_memories = memories[:PROMPT_MEMORY_LIMIT]
+        notes = _care_notes()
         try:
             public_evidence, reasoning, metrics = _grounding(text)
             raw_reply = await _reply(
@@ -769,6 +810,7 @@ async def handle(body: dict[str, Any], actor: str = "owner") -> dict[str, Any]:
                 history[:-1],
                 metrics=metrics,
                 audience=_audience_note(actor),
+                care_notes=notes,
             )
             reply, evidence = await _finalize_grounded_reply(
                 raw_reply,
@@ -776,6 +818,7 @@ async def handle(body: dict[str, Any], actor: str = "owner") -> dict[str, Any]:
                 prompt_memories,
                 [],
                 tier=body.get("tier", "default"),
+                care_notes=notes,
             )
         except Exception as err:
             log.exception("companion reply failed")
@@ -881,6 +924,7 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
         yield json.dumps({"sources": sources}) + "\n"
 
     yield json.dumps({"grounding": True}) + "\n"
+    notes = _care_notes()
     try:
         public_evidence, reasoning, metrics = _grounding(text)
         prompt = await _fitted_reply_prompt(
@@ -892,6 +936,7 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
             metrics,
             tier=tier,
             audience=_audience_note(actor),
+            care_notes=notes,
         )
     except Exception as err:
         log.exception("companion evidence grounding failed")
@@ -918,6 +963,7 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
         prompt_memories,
         sources,
         tier=tier,
+        care_notes=notes,
     )
     if not reply:
         yield json.dumps({"error": "Companion returned no supported response."}) + "\n"

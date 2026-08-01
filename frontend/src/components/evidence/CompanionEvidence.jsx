@@ -73,6 +73,19 @@ function ShowEvidence({ result }) {
           </li>
         ))}
       </ul>
+      {result.care_notes?.length > 0 && (
+        <div className="space-y-1.5">
+          <p className="text-[11px] font-medium text-muted-foreground">Cited care-team notes</p>
+          {result.care_notes.map((note) => (
+            <div key={note.alias} className="rounded border border-border bg-background/60 px-2.5 py-1.5 text-xs">
+              <span className="font-mono text-[10px] text-muted-foreground mr-1.5">[{note.alias}]</span>
+              <span className="uppercase text-[10px] tracking-wide text-muted-foreground mr-1.5">{note.kind}</span>
+              <span className="font-medium">{note.title}</span>
+              <span className="text-muted-foreground"> — {note.author}{note.updated ? ` · ${note.updated}` : ""}</span>
+            </div>
+          ))}
+        </div>
+      )}
       <Sources items={result.evidence_items} external={result.external_sources} />
       {!!result.missing_data_caveats?.length && (
         <p className="text-[11px] text-amber-700">

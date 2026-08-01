@@ -17,7 +17,7 @@ from .clinical_reviews import companion_context as clinical_review_context
 
 CONTRACT_VERSION = "companion-evidence-context/1.0.0"
 MAX_PROMPT_CONTEXT_CHARS = 48_000
-_CITATION_RE = re.compile(r"\[([EMG])(\d+)\]", re.IGNORECASE)
+_CITATION_RE = re.compile(r"\[([EMGC])(\d+)\]", re.IGNORECASE)
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _EXCLUDED_TYPES = {"DailySummary", "HealthSummary", "InsuranceInfo", "WeeklySummary"}
 _REASONING_FIELDS = {
@@ -509,6 +509,25 @@ def memory_aliases(memories: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def care_note_aliases(notes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """[C#] aliases for care-team notes — provider-authored routines, protocols,
+    and prescription instructions the Companion may quote and cite. Aliases are
+    dense over the non-empty notes so prompt and validation always agree."""
+    substantive = [note for note in notes if note.get("title") or note.get("body")]
+    return [
+        {
+            "alias": f"C{index}",
+            "id": note.get("id"),
+            "kind": note.get("kind") or "note",
+            "author": note.get("author_name") or "care team",
+            "title": str(note.get("title") or "")[:120],
+            "body": str(note.get("body") or "")[:1200],
+            "updated": str(note.get("updated_date") or "")[:10],
+        }
+        for index, note in enumerate(substantive, 1)
+    ]
+
+
 def external_aliases(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
@@ -597,6 +616,10 @@ def _classification(text: str, kinds: set[str]) -> str:
     lower = text.lower()
     if re.search(r"\b(emergency|urgent|911|dose|start|stop|care team|doctor|clinician)\b", lower):
         return "safety_guidance"
+    if "C" in kinds and "E" not in kinds:
+        # Relaying what a clinician wrote is reporting an instruction, not
+        # inferring from data.
+        return "care_instruction"
     if "M" in kinds and "E" not in kinds:
         return "user_memory"
     if "E" in kinds:
@@ -611,7 +634,7 @@ def _classification(text: str, kinds: set[str]) -> str:
 
 
 def _uncited_personal_claim(text: str, classification: str) -> bool:
-    if classification in {"safety_guidance", "user_memory"}:
+    if classification in {"safety_guidance", "user_memory", "care_instruction"}:
         return False
     lower = text.lower()
     personal = re.search(
@@ -653,6 +676,7 @@ def finalize_reply(
     public_context: dict[str, Any],
     memories: list[dict[str, Any]],
     sources: list[dict[str, Any]],
+    care_notes: list[dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Validate aliases, qualify labs, and persist bounded claim/source links."""
     evidence_by_alias = {
@@ -667,16 +691,22 @@ def finalize_reply(
         item["alias"].upper(): item
         for item in external_aliases(sources)
     }
+    note_by_alias = {
+        item["alias"].upper(): item
+        for item in care_note_aliases(care_notes or [])
+    }
     valid = {
         **evidence_by_alias,
         **memory_by_alias,
         **external_by_alias,
+        **note_by_alias,
     }
     output_lines: list[str] = []
     statements: list[dict[str, Any]] = []
     used_evidence: dict[str, dict[str, Any]] = {}
     used_external: dict[str, dict[str, Any]] = {}
     used_memories: dict[str, dict[str, Any]] = {}
+    used_notes: dict[str, dict[str, Any]] = {}
     omitted_claims = 0
 
     for line in str(reply or "").splitlines():
@@ -705,7 +735,7 @@ def finalize_reply(
             for item in evidence_items
         ):
             line = _qualify_unverified(line)
-        if not (kinds & {"E", "M"}) and _uncited_personal_claim(line, classification):
+        if not (kinds & {"E", "M", "C"}) and _uncited_personal_claim(line, classification):
             # Fail closed without turning every unsupported sentence into a
             # repeated, alarming chat message. The omission is represented once
             # in the response footer and structurally in the evidence metadata.
@@ -718,6 +748,8 @@ def finalize_reply(
                 used_external[alias] = external_by_alias[alias]
             if alias in memory_by_alias:
                 used_memories[alias] = memory_by_alias[alias]
+            if alias in note_by_alias:
+                used_notes[alias] = note_by_alias[alias]
         source_ids = list(dict.fromkeys(
             source_id
             for item in evidence_items
@@ -749,6 +781,11 @@ def finalize_reply(
                 for alias in aliases
                 if alias in external_by_alias
             ],
+            "care_note_ids": [
+                note_by_alias[alias].get("id")
+                for alias in aliases
+                if alias in note_by_alias and note_by_alias[alias].get("id")
+            ],
         })
         output_lines.append(line)
 
@@ -769,6 +806,7 @@ def finalize_reply(
         "evidence_items": [used_evidence[key] for key in sorted(used_evidence)],
         "memories": [used_memories[key] for key in sorted(used_memories)],
         "external_sources": [used_external[key] for key in sorted(used_external)],
+        "care_notes": [used_notes[key] for key in sorted(used_notes)],
         "opposing_evidence": public_context.get("opposing_evidence") or [],
         "contradictions": public_context.get("contradictions") or [],
         "missing_data_caveats": public_context.get("missing_data_caveats") or [],
