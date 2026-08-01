@@ -214,8 +214,8 @@ def test_concurrent_runners_apply_each_migration_once(tmp_path):
 
 
 def test_registry_covers_all_known_types_without_expanding_generic_api():
-    assert len(ENTITY_SCHEMAS) == 34
-    assert len({schema.name for schema in ENTITY_SCHEMAS}) == 34
+    assert len(ENTITY_SCHEMAS) == 35
+    assert len({schema.name for schema in ENTITY_SCHEMAS}) == 35
     assert len(GENERIC_API_TYPES) == 19
     assert "GoogleHealthConnection" not in GENERIC_API_TYPES
     assert "GlucoseReading" in GENERIC_API_TYPES

@@ -6,6 +6,8 @@ import ReactMarkdown from "react-markdown";
 import SafetyBanner from "../components/SafetyBanner";
 import CompanionEvidence from "@/components/evidence/CompanionEvidence";
 import { MessageCircleHeart, Send, Loader2, Brain, Plus, X, Zap, Sparkles, Trash2, Check, BookMarked } from "lucide-react";
+import { useContext } from "react";
+import { AuthContext } from "@/lib/AuthContext";
 import { toast } from "sonner";
 
 const SUGGESTIONS = [
@@ -36,6 +38,10 @@ function compactLegacyGroundingNotices(content) {
 }
 
 export default function Companion() {
+  // Providers chat in their own threads; the memory panel is Emily's private
+  // record and stays owner-only (the backend refuses it for providers too).
+  // Null-safe context read: isolated test renders mount without an AuthProvider.
+  const isProvider = useContext(AuthContext)?.isProvider === true;
   const [threads, setThreads] = useState([]);
   const [activeThread, setActiveThread] = useState(null); // thread id, or null for a fresh chat
   const [messages, setMessages] = useState([]);
@@ -56,8 +62,9 @@ export default function Companion() {
     catch { return []; }
   }, []);
   const loadMemories = useCallback(async () => {
+    if (isProvider) return;
     try { const r = await base44.functions.invoke("companion", { action: "memories" }); setMemories(r.data?.memories || []); } catch { /* */ }
-  }, []);
+  }, [isProvider]);
 
   const openThread = useCallback(async (id) => {
     setActiveThread(id);
@@ -219,9 +226,11 @@ export default function Companion() {
               <Sparkles className="w-3.5 h-3.5" /> Deep
             </button>
           </div>
-          <Button variant="outline" size="sm" onClick={() => setShowMem((s) => !s)} className="gap-1.5 text-xs">
-            <Brain className="w-3.5 h-3.5" /> Memory ({memories.length})
-          </Button>
+          {!isProvider && (
+            <Button variant="outline" size="sm" onClick={() => setShowMem((s) => !s)} className="gap-1.5 text-xs">
+              <Brain className="w-3.5 h-3.5" /> Memory ({memories.length})
+            </Button>
+          )}
         </div>
       </div>
 

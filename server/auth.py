@@ -277,6 +277,18 @@ def require_admin(request: Request) -> None:
         raise HTTPException(status_code=403, detail="Read-only provider access — this action is not permitted.")
 
 
+def session_actor(request: Request) -> str:
+    """Stable identity for rows a session may author: "owner" or "provider:<name>".
+
+    Provider-writable surfaces (Companion threads, care notes) scope their rows
+    by this value, so each provider sees their own material and nobody edits
+    anyone else's.
+    """
+    if session_role(request) == "provider":
+        return f"provider:{request.session.get('provider_name') or 'provider'}"
+    return "owner"
+
+
 def current_user(role: str = "admin", provider_name: str = "") -> dict:
     if role == "provider":
         return {

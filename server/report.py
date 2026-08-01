@@ -590,6 +590,7 @@ async def visit_report(body: ReportBody):
     labs = _labs()
 
     from . import (
+        care_notes,
         conditions,
         activity_position,
         episodes,
@@ -614,6 +615,7 @@ async def visit_report(body: ReportBody):
         "allergies": meds.get_allergies(),
         "history": history.report_block(),
         "symptoms": symptoms.report_block(days),
+        "care_notes": care_notes.report_block(),
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "days": days,
         "start_date": since_iso[:10],

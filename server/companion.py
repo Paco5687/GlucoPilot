@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from . import companion_evidence, insulin, research
-from .auth import require_admin
+from .auth import require_login, session_actor
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value
 from .data_quality import assess_cgm, cgm_points
@@ -37,7 +37,9 @@ from .unit_of_work import unit_of_work
 
 log = logging.getLogger("glucopilot.companion")
 
-router = APIRouter(dependencies=[Depends(require_admin)])
+# Providers get their own actor-scoped chats; writes to Emily's memories and
+# threads are enforced per-action below, not by locking out the whole router.
+router = APIRouter(dependencies=[Depends(require_login)])
 
 MAX_MEMORIES = 150
 PROMPT_MEMORY_LIMIT = 40
@@ -189,11 +191,36 @@ def _glucose_detail() -> dict[str, Any] | None:
     }
 
 
-def _threads() -> list[dict[str, Any]]:
-    _ensure_thread_migration()
-    return _entity("CompanionThread").query(
-        {"owner_email": OWNER_EMAIL}, "-updated_date", 100
-    )
+def _record_actor(record: dict[str, Any]) -> str:
+    # Rows created before provider chats existed carry no actor: all owner's.
+    return record.get("actor") or "owner"
+
+
+def _actor_display(actor: str) -> str:
+    return actor.split(":", 1)[1] if actor.startswith("provider:") else actor
+
+
+def _threads(actor: str = "owner") -> list[dict[str, Any]]:
+    if actor == "owner":
+        _ensure_thread_migration()
+    return [
+        thread
+        for thread in _entity("CompanionThread").query(
+            {"owner_email": OWNER_EMAIL}, "-updated_date", 200
+        )
+        if _record_actor(thread) == actor
+    ][:100]
+
+
+def _thread_for(thread_id: str | None, actor: str) -> dict[str, Any] | None:
+    """The thread, only if this actor owns it — the one gate every thread-scoped
+    action funnels through."""
+    if not thread_id:
+        return None
+    thread = _entity("CompanionThread").get(thread_id)
+    if not thread or _record_actor(thread) != actor:
+        return None
+    return thread
 
 
 def _thread_history(thread_id: str, limit: int = HISTORY_TURNS * 2) -> list[dict[str, Any]]:
@@ -204,11 +231,12 @@ def _thread_history(thread_id: str, limit: int = HISTORY_TURNS * 2) -> list[dict
     )
 
 
-def _new_thread(first_msg: str) -> dict[str, Any]:
+def _new_thread(first_msg: str, actor: str = "owner") -> dict[str, Any]:
     title = (first_msg or "").strip().replace("\n", " ")[:60] or "New chat"
     return _entity("CompanionThread").create(
         {
             "title": title,
+            "actor": actor,
             "created_date": _now(),
             "updated_date": _now(),
             "owner_email": OWNER_EMAIL,
@@ -270,6 +298,16 @@ def _deterministic_metrics(scope_names: set[str]) -> dict[str, Any]:
     }
 
 
+def _audience_note(actor: str) -> str:
+    if actor == "owner":
+        return ""
+    return (
+        f"\n\nAUDIENCE: You are speaking with {_actor_display(actor)}, a clinician on Emily's "
+        "care team — not Emily herself. Address the clinician professionally, refer to Emily "
+        "in the third person, and keep every citation rule exactly as stated."
+    )
+
+
 def _reply_prompt(
     user_msg: str,
     evidence_context: dict,
@@ -281,6 +319,7 @@ def _reply_prompt(
     memory_limit: int | None = None,
     history_turns: int | None = None,
     keep_sources: bool = True,
+    audience: str = "",
 ) -> str:
     memory_items = companion_evidence.memory_aliases(
         memories[: memory_limit if memory_limit is not None else PROMPT_MEMORY_LIMIT]
@@ -309,7 +348,7 @@ def _reply_prompt(
               "say so rather than guessing. Never use a general source as evidence for a personal-data claim."
         )
     return (
-        f"{SYSTEM}\n\n"
+        f"{SYSTEM}{audience}\n\n"
         "=== BOUNDED PERSONAL EVIDENCE ===\n"
         f"{companion_evidence.prompt_context(evidence_context)}\n\n"
         "=== DETERMINISTIC METRICS (cite the Evidence Bundle sources that support any personal statement) ===\n"
@@ -367,6 +406,7 @@ async def _fitted_reply_prompt(
     metrics: dict | None = None,
     *,
     tier: str = "default",
+    audience: str = "",
 ) -> str:
     """Build the reply prompt, shedding optional context until it fits the window.
 
@@ -389,6 +429,7 @@ async def _fitted_reply_prompt(
             memory_limit=step["memory_limit"],
             history_turns=step["history_turns"],
             keep_sources=step["keep_sources"],
+            audience=audience,
         )
 
     limit = await context_limit(url_override, model_override)
@@ -442,6 +483,7 @@ async def _reply(
     metrics: dict | None = None,
     sources: list | None = None,
     tier: str = "default",
+    audience: str = "",
 ) -> str:
     return _strip_signoff(await invoke_llm(
         await _fitted_reply_prompt(
@@ -452,6 +494,7 @@ async def _reply(
             sources,
             metrics,
             tier=tier,
+            audience=audience,
         ),
         max_tokens=REPLY_MAX_TOKENS,
         tier=tier,
@@ -596,19 +639,23 @@ async def _extract_memories(user_msg: str, reply: str, existing: list) -> list[d
     return mems
 
 
-async def handle(body: dict[str, Any]) -> dict[str, Any]:
+async def handle(body: dict[str, Any], actor: str = "owner") -> dict[str, Any]:
     action = body.get("action", "threads")
 
+    # Memories are Emily's private, chat-derived record. Providers get their own
+    # threads but never read or write hers.
+    if actor != "owner" and action in ("memories", "add_memory", "delete_memory"):
+        return {"error": "Memories belong to the account owner.", "_status": 403}
+
     if action == "threads":
-        return {"threads": _threads()}
+        return {"threads": _threads(actor)}
 
     if action == "history":
-        tid = body.get("thread_id")
-        if not tid:
+        if not _thread_for(body.get("thread_id"), actor):
             return {"messages": []}
         return {
             "messages": _entity("ChatMessage").query(
-                {"owner_email": OWNER_EMAIL, "thread_id": tid},
+                {"owner_email": OWNER_EMAIL, "thread_id": body["thread_id"]},
                 "created_date",
                 1000,
             )
@@ -616,13 +663,13 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
 
     if action == "rename_thread":
         tid, title = body.get("thread_id"), (body.get("title") or "").strip()
-        if tid and title:
+        if title and _thread_for(tid, actor):
             _entity("CompanionThread").update(tid, {"title": title[:60]})
-        return {"ok": True, "threads": _threads()}
+        return {"ok": True, "threads": _threads(actor)}
 
     if action in ("delete_thread", "clear"):  # "clear" kept for shim compatibility
         tid = body.get("thread_id")
-        if tid:
+        if _thread_for(tid, actor):
             with unit_of_work() as work:
                 messages = work.repositories.entity("ChatMessage")
                 for message in messages.query(
@@ -633,7 +680,7 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
                     messages.delete(message["id"])
                 work.repositories.entity("CompanionThread").delete(tid)
                 work.commit()
-        return {"ok": True, "threads": _threads()}
+        return {"ok": True, "threads": _threads(actor)}
 
     if action == "memories":
         return {"memories": _memories()}
@@ -659,7 +706,7 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
 
     if action == "evidence_command":
         message = _companion_message(body.get("message_id"))
-        if not message:
+        if not message or not _thread_for(message.get("thread_id"), actor):
             return {"error": "Companion evidence not found.", "_status": 404}
         evidence = message["evidence"]
         command = str(body.get("command") or "show").strip().lower()
@@ -694,18 +741,24 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
         text = (body.get("message") or "").strip()
         if not text:
             return {"error": "Message is empty.", "_status": 400}
-        tid = body.get("thread_id") or _new_thread(text)["id"]
+        if body.get("thread_id"):
+            if not _thread_for(body["thread_id"], actor):
+                return {"error": "Thread not found.", "_status": 404}
+            tid = body["thread_id"]
+        else:
+            tid = _new_thread(text, actor)["id"]
         _entity("ChatMessage").create(
             {
                 "role": "user",
                 "content": text,
                 "thread_id": tid,
+                "actor": actor,
                 "created_date": _now(),
                 "owner_email": OWNER_EMAIL,
             }
         )
         history = _thread_history(tid)
-        memories = _memories()
+        memories = _memories() if actor == "owner" else []
         prompt_memories = memories[:PROMPT_MEMORY_LIMIT]
         try:
             public_evidence, reasoning, metrics = _grounding(text)
@@ -715,6 +768,7 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
                 prompt_memories,
                 history[:-1],
                 metrics=metrics,
+                audience=_audience_note(actor),
             )
             reply, evidence = await _finalize_grounded_reply(
                 raw_reply,
@@ -734,6 +788,7 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
                     "content": reply,
                     "evidence": evidence,
                     "thread_id": tid,
+                    "actor": actor,
                     "created_date": _now(),
                     "owner_email": OWNER_EMAIL,
                 }
@@ -742,7 +797,7 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
                 tid, {"updated_date": _now()}
             )
             work.commit()
-        remembered = await _store_new_memories(text, reply, memories)
+        remembered = await _store_new_memories(text, reply, memories) if actor == "owner" else []
         return {
             "reply": reply,
             "evidence": evidence,
@@ -778,19 +833,24 @@ async def _store_new_memories(text: str, reply: str, memories: list) -> list[str
     return remembered
 
 
-async def stream_send(text: str, tier: str = "default", thread_id: str | None = None):
+async def stream_send(text: str, tier: str = "default", thread_id: str | None = None, actor: str = "owner"):
     """Stream a reply as newline-delimited JSON. Emits {"thread": {...}} first if a
     new thread was created, {"delta": "..."} per chunk, then a final
     {"done": true, "remembered": [...], "thread_id": ...}. Persists the exchange
     to its thread and extracts memories once the reply completes. tier="quality"
-    uses the bigger, slower local model."""
+    uses the bigger, slower local model. Provider actors chat in their own
+    threads, without Emily's memories in the prompt and without writing any."""
     text = (text or "").strip()
     if not text:
         yield json.dumps({"error": "Message is empty."}) + "\n"
         return
     tier = "quality" if tier == "quality" else "default"
-    if not thread_id:
-        thread = _new_thread(text)
+    if thread_id:
+        if not _thread_for(thread_id, actor):
+            yield json.dumps({"error": "Thread not found."}) + "\n"
+            return
+    else:
+        thread = _new_thread(text, actor)
         thread_id = thread["id"]
         yield json.dumps({"thread": thread}) + "\n"
     _entity("ChatMessage").create(
@@ -798,12 +858,13 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
             "role": "user",
             "content": text,
             "thread_id": thread_id,
+            "actor": actor,
             "created_date": _now(),
             "owner_email": OWNER_EMAIL,
         }
     )
     history = _thread_history(thread_id)
-    memories = _memories()
+    memories = _memories() if actor == "owner" else []
     prompt_memories = memories[:PROMPT_MEMORY_LIMIT]
 
     # Optional grounding: search trusted medical sources and let the model cite
@@ -830,6 +891,7 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
             sources,
             metrics,
             tier=tier,
+            audience=_audience_note(actor),
         )
     except Exception as err:
         log.exception("companion evidence grounding failed")
@@ -866,6 +928,7 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
                 "role": "assistant",
                 "content": reply,
                 "thread_id": thread_id,
+                "actor": actor,
                 "sources": sources or None,
                 "evidence": evidence,
                 "created_date": _now(),
@@ -882,7 +945,7 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
         "evidence": evidence,
         "message_id": message["id"],
     }) + "\n"
-    remembered = await _store_new_memories(text, reply, memories)
+    remembered = await _store_new_memories(text, reply, memories) if actor == "owner" else []
     yield json.dumps({"done": True, "remembered": remembered, "thread_id": thread_id}) + "\n"
 
 
@@ -894,6 +957,11 @@ async def companion_stream(request: Request):
         body = {}
     b = body if isinstance(body, dict) else {}
     return StreamingResponse(
-        stream_send(b.get("message", ""), b.get("tier", "default"), b.get("thread_id")),
+        stream_send(
+            b.get("message", ""),
+            b.get("tier", "default"),
+            b.get("thread_id"),
+            actor=session_actor(request),
+        ),
         media_type="application/x-ndjson",
     )

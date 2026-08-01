@@ -1,8 +1,9 @@
-import { Outlet, Link, useLocation } from "react-router-dom";
+import {
+  Outlet, Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, LineChart, GitCompare, Plug, Menu, X, Shield,
   Heart, LogOut, Settings, FolderHeart, FileText, FileHeart, Eye, Watch, Sparkles, Syringe, MessageCircleHeart, NotebookPen, ScrollText, Share2,
-  Activity,
+  Activity, ClipboardList,
 } from "lucide-react";
 import { Bug } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -26,7 +27,8 @@ const navGroups = [
     items: [
       { path: "/insulin", label: "Insulin", icon: Syringe },
       { path: "/compare", label: "Compare", icon: GitCompare },
-      { path: "/companion", label: "Companion", icon: MessageCircleHeart, adminOnly: true },
+      // Providers get their own actor-scoped Companion threads (memories stay owner-only).
+      { path: "/companion", label: "Companion", icon: MessageCircleHeart },
     ],
   },
   {
@@ -38,6 +40,7 @@ const navGroups = [
       { path: "/period", label: "Cycle", icon: Heart },
       { path: "/wearables", label: "Wearables", icon: Watch },
       { path: "/records", label: "Records", icon: FolderHeart },
+      { path: "/care-notes", label: "Care Notes", icon: ClipboardList },
       { path: "/report", label: "Visit Report", icon: FileText },
       { path: "/brief", label: "Clinician Brief", icon: FileHeart },
       { path: "/exports", label: "Share Export", icon: Share2 },

@@ -74,7 +74,13 @@ BASELINE_ENTITY_SCHEMAS = (
     _schema("BugReport", "operations", "Locally retained in-app bug report", lifecycle="event"),
 )
 
-ENTITY_SCHEMAS = BASELINE_ENTITY_SCHEMAS
+# Appended after the migration-2 baseline. Each addition ships with its own
+# registry-insert migration; the baseline tuple above never changes.
+ADDITIONAL_ENTITY_SCHEMAS = (
+    _schema("CareTeamNote", "clinical", "Care-team authored note: routines, protocols, prescription instructions", lifecycle="event"),
+)
+
+ENTITY_SCHEMAS = BASELINE_ENTITY_SCHEMAS + ADDITIONAL_ENTITY_SCHEMAS
 
 ENTITY_SCHEMA_BY_NAME = {schema.name: schema for schema in ENTITY_SCHEMAS}
 if len(ENTITY_SCHEMA_BY_NAME) != len(ENTITY_SCHEMAS):

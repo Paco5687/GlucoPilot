@@ -256,6 +256,7 @@ are omitted from the time column below for brevity.
 | Clinical / `InsuranceInfo` | owner singleton | effective date partial | source fact or patient report; document, clinician, or patient |
 | Clinical / `SymptomLog` | application record | entry date observed partial | patient report; patient |
 | Clinical / `HistoryEntry` | application record | entry date effective partial | patient report; patient |
+| Clinical / `CareTeamNote` | application record | envelope only | patient report or clinician confirmation; patient or clinician |
 | Analytics / `HealthSummary` | derived output | generated time recorded UTC | versioned derived statistic; algorithm |
 | Companion / `HealthMemory` | application record | envelope only | patient report or hypothesis; patient or algorithm |
 | Companion / `CompanionThread` | application record | envelope only | system source fact or patient report; system or patient |

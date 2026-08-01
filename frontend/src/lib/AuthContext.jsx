@@ -1,7 +1,9 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import { base44 } from '@/api/base44Client';
 
-const AuthContext = createContext();
+// Exported so role-aware hooks can read it null-safely from contexts (tests,
+// isolated renders) that mount without an AuthProvider.
+export const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
