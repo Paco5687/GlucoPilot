@@ -28,6 +28,7 @@ PLAIN_KEYS = (
     "local_llm_model",
     "quality_llm_url",
     "quality_llm_model",
+    "quality_llm_context",
     "app_timezone",
     "sync_enabled",
     "oura_client_id",

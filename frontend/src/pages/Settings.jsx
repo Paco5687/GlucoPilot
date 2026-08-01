@@ -259,6 +259,20 @@ export default function Settings() {
                   onChange={(e) => setValue("quality_llm_model", e.target.value)}
                 />
               </div>
+              <div>
+                <Label htmlFor="quality_llm_context" className="text-xs">Report model context window (tokens)</Label>
+                <Input
+                  id="quality_llm_context"
+                  className="mt-1 font-mono text-xs"
+                  placeholder="16384"
+                  value={values.quality_llm_context || ""}
+                  onChange={(e) => setValue("quality_llm_context", e.target.value)}
+                />
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Ollama doesn't report its context size, so declare it here (match OLLAMA_CONTEXT_LENGTH).
+                  Without it, oversized prompts are silently cut short instead of being trimmed intelligently.
+                </p>
+              </div>
             </div>
           </>
         )}
