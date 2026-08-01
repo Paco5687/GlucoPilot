@@ -229,8 +229,6 @@ export default function Wearables() {
         </div>
       </div>
 
-      <ActivityPositionAnalysis days={range} readOnly={isViewingShared} />
-
       {loading ? (
         <div className="flex items-center justify-center h-40">
           <Loader2 className="w-5 h-5 animate-spin text-primary" />
@@ -257,6 +255,10 @@ export default function Wearables() {
           </div>
         </div>
       )}
+
+      {/* Dense correlation analysis reads better as an appendix than a lede —
+          the daily charts above are what this page is opened for. */}
+      <ActivityPositionAnalysis days={range} readOnly={isViewingShared} />
     </div>
   );
 }
