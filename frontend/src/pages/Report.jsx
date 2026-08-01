@@ -608,6 +608,7 @@ export default function Report() {
       <EvidenceContextBlock
         context={report.evidence_context}
         narrativeEvidenceIds={n?.evidence_item_ids}
+        collapsible
       />
 
       {/* Glucose */}
