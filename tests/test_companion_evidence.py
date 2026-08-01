@@ -396,7 +396,9 @@ def test_local_model_prompt_bounds_memories_history_and_evidence(companion_datab
         {},
     )
 
-    assert len(prompt) <= companion.MAX_REPLY_PROMPT_CHARS
+    # Per-section caps still bound the prompt at assembly. The overall size is
+    # enforced separately by _fitted_reply_prompt, which budgets in tokens the
+    # serving model counts rather than characters — see test_prompt_budget.
     assert "[M40]" in prompt
     assert "[M41]" not in prompt
     assert prompt.count("Emily: " + "y" * 800) <= companion.HISTORY_TURNS
