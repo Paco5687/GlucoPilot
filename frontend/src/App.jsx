@@ -19,6 +19,7 @@ import Insulin from './pages/Insulin';
 import Companion from './pages/Companion';
 import Symptoms from './pages/Symptoms';
 import CareNotes from './pages/CareNotes';
+import ProviderInvite from './pages/ProviderInvite';
 import History from './pages/History';
 import Records from './pages/Records';
 import Report from './pages/Report';
@@ -42,6 +43,7 @@ const AuthenticatedApp = () => {
       <Route path="/oura-callback" element={<OuraCallback />} />
       <Route path="/fitbit-callback" element={<FitbitCallback />} />
       <Route path="/google-health-callback" element={<GoogleHealthCallback />} />
+      <Route path="/provider-invite" element={<ProviderInvite />} />
       <Route element={<AuthGate />}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/explorer" element={<Explorer />} />
