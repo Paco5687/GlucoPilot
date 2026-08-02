@@ -257,6 +257,132 @@ def save_providers(providers: list[dict]) -> None:
     set_setting("providers", json.dumps(providers))
 
 
+# --- Provider invites: a single-use link instead of a shared password. ---
+# The admin generates a link and emails it; the provider picks their own
+# username and password on a public page. Only the token's SHA-256 is stored,
+# so a database read never yields a usable invite.
+
+INVITE_TTL_SECONDS = 7 * 24 * 3600
+
+
+def _invite_hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def load_invites() -> list[dict]:
+    raw = get_setting("provider_invites")
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        invites = data if isinstance(data, list) else []
+    except ValueError:
+        return []
+    now = int(time.time())
+    return [
+        invite for invite in invites
+        if isinstance(invite, dict)
+        and invite.get("token_hash")
+        and int(invite.get("expires_at") or 0) > now
+    ]
+
+
+def save_invites(invites: list[dict]) -> None:
+    set_setting("provider_invites", json.dumps(invites))
+
+
+def _invite_public(invite: dict) -> dict:
+    return {
+        # The hash is not the token; exposing it to the admin UI as an id is safe.
+        "id": invite["token_hash"][:12],
+        "created_at": invite.get("created_at"),
+        "expires_at": invite.get("expires_at"),
+    }
+
+
+def create_provider_invite() -> tuple[str, dict]:
+    invites = load_invites()
+    token = secrets.token_urlsafe(32)
+    invite = {
+        "token_hash": _invite_hash(token),
+        "created_at": int(time.time()),
+        "expires_at": int(time.time()) + INVITE_TTL_SECONDS,
+    }
+    save_invites([*invites, invite])
+    return token, invite
+
+
+def _taken_usernames() -> set[str]:
+    admin = env("APP_USERNAME", "") or get_setting("admin_username") or "admin"
+    return {admin.lower(), *(p["username"].lower() for p in load_providers())}
+
+
+def accept_provider_invite(token: str, username: str, password: str) -> None:
+    """Consume an invite and create the provider login it authorizes."""
+    username = username.strip()
+    invites = load_invites()
+    match = next((i for i in invites if secrets.compare_digest(i["token_hash"], _invite_hash(token))), None)
+    if not match:
+        raise HTTPException(status_code=410, detail="This invite link is invalid or has expired. Ask for a new one.")
+    if not (2 <= len(username) <= 40):
+        raise HTTPException(status_code=400, detail="Username must be 2-40 characters.")
+    if username.lower() in _taken_usernames():
+        raise HTTPException(status_code=400, detail="That username is taken — choose another.")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    providers = load_providers()
+    if len(providers) >= MAX_PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Maximum of {MAX_PROVIDERS} provider logins reached.")
+    # Consume the token first so a duplicate submit cannot create two logins.
+    save_invites([i for i in invites if i["token_hash"] != match["token_hash"]])
+    providers.append({"username": username, "password_hash": make_password_hash(password)})
+    save_providers(providers)
+
+
+@router.get("/api/provider/invites")
+def provider_invites_list(request: Request):
+    require_admin(request)
+    return {"invites": [_invite_public(i) for i in load_invites()]}
+
+
+@router.post("/api/provider/invites")
+def provider_invites_create(request: Request):
+    require_admin(request)
+    if len(load_providers()) >= MAX_PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Maximum of {MAX_PROVIDERS} provider logins reached.")
+    token, invite = create_provider_invite()
+    # The raw token appears exactly once, in this response; only its hash persists.
+    return {"token": token, "invite": _invite_public(invite)}
+
+
+@router.delete("/api/provider/invites/{invite_id}")
+def provider_invites_revoke(invite_id: str, request: Request):
+    require_admin(request)
+    save_invites([i for i in load_invites() if i["token_hash"][:12] != invite_id])
+    return {"invites": [_invite_public(i) for i in load_invites()]}
+
+
+@router.get("/api/provider/invite/{token}")
+def provider_invite_status(token: str):
+    """Public: lets the invite page tell a live link from a dead one."""
+    invites = load_invites()
+    match = next((i for i in invites if secrets.compare_digest(i["token_hash"], _invite_hash(token))), None)
+    if not match:
+        return {"valid": False}
+    return {"valid": True, "expires_at": match["expires_at"], "at_capacity": len(load_providers()) >= MAX_PROVIDERS}
+
+
+@router.post("/api/provider/invite/accept")
+async def provider_invite_accept(request: Request):
+    body = await request.json()
+    accept_provider_invite(
+        str(body.get("token") or ""),
+        str(body.get("username") or ""),
+        str(body.get("password") or ""),
+    )
+    return {"ok": True}
+
+
 @router.post("/logout")
 def logout(request: Request):
     request.session.clear()
