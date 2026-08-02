@@ -126,6 +126,8 @@ def login_page(error: str = "") -> HTMLResponse:
           <p><a href="/forgot" style="color:#0f766e;font-weight:600">Generate a reset code</a> —
           then paste it into a terminal on the server. The code is a one-time random
           token; it reveals nothing on its own and expires in 30 minutes.</p>
+          <p>Provider login? <a href="/provider-reset" style="color:#0f766e;font-weight:600">Reset with your
+          security questions</a>.</p>
         </details>
       </form>
         """,
@@ -257,6 +259,150 @@ def save_providers(providers: list[dict]) -> None:
     set_setting("providers", json.dumps(providers))
 
 
+# --- Provider security questions: self-service password reset without email. ---
+# The weakest practical link in question-based recovery is guessable answers,
+# so the design compensates where it can: three questions, ALL required to
+# match, answers normalized then Argon2-hashed exactly like passwords, and a
+# lockout after repeated failures — the throttle is the only brake there is
+# when no email round-trip exists.
+
+REQUIRED_QUESTIONS = 3
+RESET_MAX_FAILS = 5
+RESET_LOCKOUT_SECONDS = 15 * 60
+
+
+def _normalize_answer(answer: str) -> str:
+    return " ".join(str(answer or "").lower().split())
+
+
+def validate_security_questions(questions: list) -> list[dict]:
+    """Validate and hash a full set of question/answer pairs."""
+    if not isinstance(questions, list) or len(questions) != REQUIRED_QUESTIONS:
+        raise HTTPException(status_code=400, detail=f"Exactly {REQUIRED_QUESTIONS} security questions are required.")
+    cleaned = []
+    for pair in questions:
+        question = str((pair or {}).get("question") or "").strip()[:200]
+        answer = _normalize_answer((pair or {}).get("answer") or "")
+        if len(question) < 8:
+            raise HTTPException(status_code=400, detail="Each security question needs at least 8 characters.")
+        if len(answer) < 2:
+            raise HTTPException(status_code=400, detail="Each answer needs at least 2 characters.")
+        cleaned.append({"question": question, "answer_hash": make_password_hash(answer)})
+    if len({pair["question"].lower() for pair in cleaned}) != REQUIRED_QUESTIONS:
+        raise HTTPException(status_code=400, detail="Each security question must be different.")
+    return cleaned
+
+
+def _reset_throttle() -> dict:
+    raw = get_setting("provider_reset_throttle")
+    try:
+        data = json.loads(raw) if raw else {}
+        return data if isinstance(data, dict) else {}
+    except ValueError:
+        return {}
+
+
+def _check_reset_lock(username: str) -> None:
+    state = _reset_throttle().get(username.lower()) or {}
+    locked_until = int(state.get("locked_until") or 0)
+    if locked_until > int(time.time()):
+        minutes = max(1, (locked_until - int(time.time())) // 60)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed attempts. Try again in about {minutes} minute{'s' if minutes != 1 else ''}.",
+        )
+
+
+def _record_reset_failure(username: str) -> None:
+    throttle = _reset_throttle()
+    state = throttle.get(username.lower()) or {}
+    fails = int(state.get("fails") or 0) + 1
+    state["fails"] = fails
+    if fails >= RESET_MAX_FAILS:
+        state["locked_until"] = int(time.time()) + RESET_LOCKOUT_SECONDS
+        state["fails"] = 0
+    throttle[username.lower()] = state
+    set_setting("provider_reset_throttle", json.dumps(throttle))
+
+
+def _clear_reset_failures(username: str) -> None:
+    throttle = _reset_throttle()
+    if username.lower() in throttle:
+        del throttle[username.lower()]
+        set_setting("provider_reset_throttle", json.dumps(throttle))
+
+
+@router.get("/api/provider/reset/questions")
+def provider_reset_questions(username: str = ""):
+    """Public: the questions for a username, or null when self-reset is not
+    available (unknown user, or an account created before questions existed)."""
+    provider = next((p for p in load_providers() if p.get("username", "").lower() == username.strip().lower()), None)
+    questions = (provider or {}).get("security_questions") or []
+    if len(questions) != REQUIRED_QUESTIONS:
+        return {"questions": None}
+    return {"questions": [q["question"] for q in questions]}
+
+
+@router.post("/api/provider/reset")
+async def provider_reset(request: Request):
+    body = await request.json()
+    username = str(body.get("username") or "").strip()
+    answers = body.get("answers") if isinstance(body.get("answers"), list) else []
+    new_password = str(body.get("password") or "")
+    _check_reset_lock(username)
+
+    providers = load_providers()
+    provider = next((p for p in providers if p.get("username", "").lower() == username.lower()), None)
+    questions = (provider or {}).get("security_questions") or []
+    generic = HTTPException(status_code=400, detail="Those answers don't match our records.")
+    if not provider or len(questions) != REQUIRED_QUESTIONS or len(answers) != REQUIRED_QUESTIONS:
+        _record_reset_failure(username)
+        raise generic
+    # ALL answers must verify — a single lucky guess is not enough.
+    if not all(
+        verify_password(_normalize_answer(answer), pair.get("answer_hash", ""))
+        for answer, pair in zip(answers, questions)
+    ):
+        _record_reset_failure(username)
+        raise generic
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    provider["password_hash"] = make_password_hash(new_password)
+    save_providers(providers)
+    _clear_reset_failures(username)
+    return {"ok": True}
+
+
+@router.post("/api/provider/security-questions")
+async def provider_set_questions(request: Request):
+    """A logged-in provider (re)keys their own recovery questions. Requires the
+    current password so an unattended session cannot be re-keyed by a passerby."""
+    if session_role(request) != "provider":
+        raise HTTPException(status_code=403, detail="A provider session is required.")
+    body = await request.json()
+    username = request.session.get("provider_name") or ""
+    providers = load_providers()
+    provider = next((p for p in providers if p.get("username") == username), None)
+    if not provider:
+        raise HTTPException(status_code=404, detail="Provider not found.")
+    if not verify_password(str(body.get("current_password") or ""), provider.get("password_hash", "")):
+        raise HTTPException(status_code=403, detail="Current password is incorrect.")
+    provider["security_questions"] = validate_security_questions(body.get("questions"))
+    save_providers(providers)
+    return {"ok": True}
+
+
+@router.get("/api/provider/security-questions")
+def provider_get_questions(request: Request):
+    """A logged-in provider sees their own questions (never the answer hashes)."""
+    if session_role(request) != "provider":
+        raise HTTPException(status_code=403, detail="A provider session is required.")
+    username = request.session.get("provider_name") or ""
+    provider = next((p for p in load_providers() if p.get("username") == username), None)
+    questions = (provider or {}).get("security_questions") or []
+    return {"questions": [q["question"] for q in questions]}
+
+
 # --- Provider invites: a single-use link instead of a shared password. ---
 # The admin generates a link and emails it; the provider picks their own
 # username and password on a public page. Only the token's SHA-256 is stored,
@@ -317,7 +463,7 @@ def _taken_usernames() -> set[str]:
     return {admin.lower(), *(p["username"].lower() for p in load_providers())}
 
 
-def accept_provider_invite(token: str, username: str, password: str) -> None:
+def accept_provider_invite(token: str, username: str, password: str, questions: list | None = None) -> None:
     """Consume an invite and create the provider login it authorizes."""
     username = username.strip()
     invites = load_invites()
@@ -330,12 +476,19 @@ def accept_provider_invite(token: str, username: str, password: str) -> None:
         raise HTTPException(status_code=400, detail="That username is taken — choose another.")
     if len(password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    # Recovery is question-based (no email), so every new login starts with a
+    # full set — validated before the token is spent.
+    security_questions = validate_security_questions(questions)
     providers = load_providers()
     if len(providers) >= MAX_PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Maximum of {MAX_PROVIDERS} provider logins reached.")
     # Consume the token first so a duplicate submit cannot create two logins.
     save_invites([i for i in invites if i["token_hash"] != match["token_hash"]])
-    providers.append({"username": username, "password_hash": make_password_hash(password)})
+    providers.append({
+        "username": username,
+        "password_hash": make_password_hash(password),
+        "security_questions": security_questions,
+    })
     save_providers(providers)
 
 
@@ -379,6 +532,7 @@ async def provider_invite_accept(request: Request):
         str(body.get("token") or ""),
         str(body.get("username") or ""),
         str(body.get("password") or ""),
+        body.get("questions"),
     )
     return {"ok": True}
 
