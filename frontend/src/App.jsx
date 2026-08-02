@@ -20,6 +20,8 @@ import Companion from './pages/Companion';
 import Symptoms from './pages/Symptoms';
 import CareNotes from './pages/CareNotes';
 import ProviderInvite from './pages/ProviderInvite';
+import ProviderReset from './pages/ProviderReset';
+import ProviderSecurity from './pages/ProviderSecurity';
 import History from './pages/History';
 import Records from './pages/Records';
 import Report from './pages/Report';
@@ -44,6 +46,7 @@ const AuthenticatedApp = () => {
       <Route path="/fitbit-callback" element={<FitbitCallback />} />
       <Route path="/google-health-callback" element={<GoogleHealthCallback />} />
       <Route path="/provider-invite" element={<ProviderInvite />} />
+      <Route path="/provider-reset" element={<ProviderReset />} />
       <Route element={<AuthGate />}>
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/explorer" element={<Explorer />} />
@@ -53,6 +56,7 @@ const AuthenticatedApp = () => {
         <Route path="/period" element={<PeriodTracker />} />
         <Route path="/wearables" element={<Wearables />} />
         <Route path="/care-notes" element={<CareNotes />} />
+        <Route path="/provider-security" element={<ProviderSecurity />} />
         <Route path="/overview" element={<Overview />} />
         <Route path="/insulin" element={<Insulin />} />
         <Route path="/companion" element={<Companion />} />

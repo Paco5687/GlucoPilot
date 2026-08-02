@@ -3,7 +3,7 @@ import {
 import {
   LayoutDashboard, LineChart, GitCompare, Plug, Menu, X, Shield,
   Heart, LogOut, Settings, FolderHeart, FileText, FileHeart, Eye, Watch, Sparkles, Syringe, MessageCircleHeart, NotebookPen, ScrollText, Share2,
-  Activity, ClipboardList,
+  Activity, ClipboardList, KeyRound,
 } from "lucide-react";
 import { Bug } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -149,6 +149,15 @@ export default function Layout() {
             </TooltipProvider>
             <span className="truncate">{user?.full_name || "Signed in"}</span>
           </div>
+          {isProvider && (
+            <Link
+              to="/provider-security"
+              onClick={close}
+              className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+            >
+              <KeyRound className="w-4 h-4" /> Security questions
+            </Link>
+          )}
           <button
             onClick={() => { setBugOpen(true); close(); }}
             className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"

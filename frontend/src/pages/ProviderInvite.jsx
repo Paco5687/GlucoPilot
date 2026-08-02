@@ -43,6 +43,11 @@ export default function ProviderInvite() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [questions, setQuestions] = useState([
+    { question: "", answer: "" },
+    { question: "", answer: "" },
+    { question: "", answer: "" },
+  ]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
@@ -61,7 +66,7 @@ export default function ProviderInvite() {
     try {
       await api("/api/provider/invite/accept", {
         method: "POST",
-        body: JSON.stringify({ token, username: username.trim(), password }),
+        body: JSON.stringify({ token, username: username.trim(), password, questions }),
       });
       setDone(true);
     } catch (err) {
@@ -135,9 +140,37 @@ export default function ProviderInvite() {
           <Input id="inv_confirm" type="password" className="mt-1" value={confirm}
             onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" />
         </div>
+        <div className="pt-1 space-y-3">
+          <div>
+            <p className="text-xs font-medium">Security questions</p>
+            <p className="text-[11px] text-muted-foreground">
+              These are how you reset a forgotten password (there's no email recovery). Write three
+              questions only you can answer — avoid anything guessable from public info. All three
+              must be answered correctly to reset.
+            </p>
+          </div>
+          {questions.map((pair, index) => (
+            <div key={index} className="space-y-1.5">
+              <Input
+                aria-label={`Security question ${index + 1}`}
+                placeholder={`Question ${index + 1} (e.g. street I grew up on, first patient's initials…)`}
+                value={pair.question}
+                onChange={(e) => setQuestions(questions.map((q, qi) => qi === index ? { ...q, question: e.target.value } : q))}
+              />
+              <Input
+                aria-label={`Answer ${index + 1}`}
+                placeholder="Answer (not case-sensitive)"
+                value={pair.answer}
+                onChange={(e) => setQuestions(questions.map((q, qi) => qi === index ? { ...q, answer: e.target.value } : q))}
+                autoComplete="off"
+              />
+            </div>
+          ))}
+        </div>
         {error && <p className="text-xs text-destructive">{error}</p>}
         <Button onClick={accept} className="w-full"
-          disabled={busy || status.at_capacity || username.trim().length < 2 || password.length < 8 || !confirm}>
+          disabled={busy || status.at_capacity || username.trim().length < 2 || password.length < 8 || !confirm
+            || questions.some((q) => q.question.trim().length < 8 || q.answer.trim().length < 2)}>
           {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : "Create my login"}
         </Button>
       </div>
