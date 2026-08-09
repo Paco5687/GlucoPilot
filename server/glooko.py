@@ -11,15 +11,40 @@ so mappers are defensive and unknown records are skipped, not guessed at.
 Accounts with 2FA enabled cannot be scraped — disable 2FA on the Glooko
 account used here.
 
-NOTE: v2 `scheduled_basals` carries programmed/temp basal segments. Automated
-micro-basal series (Control-IQ / Omnipod 5) live in the v3 graph API and can
-be added once real payloads are available to inspect.
+NOTE on insulin completeness (investigated Aug 2026, device INSULET_OMNIPOD_5):
+
+The v2 event streams are NOT the whole day. `scheduled_basals` is the
+manual-mode stream — overlay it on `/api/v2/pumps/modes` (which tiles each day
+to exactly 24h of manual/automatic/limited) and 90 of 91 records start inside a
+MANUAL window. `normal_boluses` is user-initiated only, ~0.9 U/day. On an
+Omnipod 5 that misses over half the day, because Automated Mode delivery is
+never published as events.
+
+It IS published as daily totals, via the v3 graph API — the same call Glooko's
+own charts make:
+
+    GET {us.}api.glooko.com/api/v3/graph/data
+        ?patient=<glookoCode>&startDate=..&endDate=..
+        &series[]=totalInsulinPerDay&series[]=basalUnitsPerDay
+        &series[]=bolusUnitsPerDay
+
+Series names are camelCase (snake_case silently returns nothing), and the
+response carries a `dailyInsulinTotals` map keyed by epoch. `_fetch_daily_
+insulin_totals` uses it for real TDD; that is the only complete insulin figure
+available here, so treat it as authoritative and never reconstruct a total from
+the v2 streams alone.
+
+Endpoint discovery oracle, if more is ever needed: a real path answers 422
+asking for `lastGuid`/`lastUpdatedAt`, a fake one answers 404. That found
+`modes`, `events`, `alarms`, `extended_boluses`, `pumps/readings`,
+`pumps/settings`, `exercises` and `notes` beyond the endpoints synced here.
 """
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -67,6 +92,13 @@ def _region() -> str:
 
 def _base_url() -> str:
     return f"https://{REGION_HOSTS.get(_region(), REGION_HOSTS['us'])}"
+
+
+def _graph_base_url() -> str:
+    """The v3 graph API is served from the region-prefixed host."""
+    region = _region()
+    host = REGION_HOSTS.get(region, REGION_HOSTS["us"])
+    return f"https://us.{host}" if region == "us" else f"https://{host}"
 
 
 def _headers() -> dict[str, str]:
@@ -355,6 +387,117 @@ def _persist_readings(mapped: list[dict]) -> tuple[int, int]:
     return persist_readings_deduped(mapped, READING_TOLERANCE)
 
 
+async def _fetch_daily_insulin_totals(client: httpx.AsyncClient, days: int) -> list[dict[str, Any]]:
+    """Authoritative per-day insulin totals from the v3 graph API.
+
+    This is the only Glooko surface that reports Automated Mode delivery. The
+    v2 event streams carry the programmed schedule and manual boluses only, so
+    on an Omnipod 5 they miss over half the day's insulin; these totals are
+    what Glooko's own charts show, and what makes a real TDD possible.
+
+    Buckets are anchored to the query window, so the request is framed on local
+    midnight boundaries — each bucket then lands at local noon, and its local
+    date is the day it describes.
+    """
+    profile = await _login(client)
+    code = (profile.get("userLogin") or {}).get("glookoCode")
+    if not code:
+        log.warning("glooko: no glookoCode on session; skipping daily insulin totals")
+        return []
+
+    tz = ZoneInfo(config_value("app_timezone", "America/New_York"))
+    today = datetime.now(tz).date()
+    start_local = datetime.combine(today - timedelta(days=days), time.min, tzinfo=tz)
+    end_local = datetime.combine(today + timedelta(days=1), time.min, tzinfo=tz) - timedelta(milliseconds=1)
+
+    def stamp(value: datetime) -> str:
+        return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+    params = [
+        ("patient", code),
+        ("startDate", stamp(start_local)),
+        ("endDate", stamp(end_local)),
+        ("series[]", "totalInsulinPerDay"),
+        ("series[]", "basalUnitsPerDay"),
+        ("series[]", "bolusUnitsPerDay"),
+        ("locale", "en"),
+        ("splitByDay", "false"),
+    ]
+    response = await client.get(f"{_graph_base_url()}/api/v3/graph/data", params=params, headers=_headers())
+    if response.status_code >= 400:
+        log.warning("glooko daily insulin totals failed: %s %s", response.status_code, response.text[:200])
+        source_failure(f"Glooko daily insulin totals failed with status {response.status_code}")
+        return []
+    payload = response.json() if response.text else {}
+    totals = ((payload.get("series") or {}).get("dailyInsulinTotals")) or {}
+    if not isinstance(totals, dict):
+        return []
+
+    capture_records(
+        [{"epoch": key, **value} for key, value in totals.items() if isinstance(value, dict)],
+        external_id="/api/v3/graph/data:dailyInsulinTotals",
+        metadata={"path": "/api/v3/graph/data", "series": "dailyInsulinTotals"},
+    )
+
+    rows: list[dict[str, Any]] = []
+    for key, value in totals.items():
+        if not isinstance(value, dict) or not value.get("hasPump"):
+            continue
+        try:
+            local_date = datetime.fromtimestamp(int(key), timezone.utc).astimezone(tz).date()
+        except (TypeError, ValueError, OSError):
+            continue
+        # Today is still accumulating; a partial total would read as a real drop.
+        if local_date >= today:
+            continue
+        total = _num(value.get("totalInsulinPerDay"))
+        if total is None or total <= 0:
+            continue
+        rows.append({
+            "date": local_date.isoformat(),
+            "total": total,
+            "basal": _num(value.get("basalUnitsPerDay")),
+            "bolus": _num(value.get("bolusUnitsPerDay")),
+        })
+    return rows
+
+
+def _map_daily_total(row: dict[str, Any]) -> dict[str, Any] | None:
+    """A Daily Total treatment in the note format parse_pump_daily_total expects.
+
+    Glooko rounds every field to one decimal independently, so its basal and
+    bolus can miss their own total by up to 0.1 U — enough to trip the
+    reconciler's 0.05 component check on roughly a quarter of days. Rather than
+    loosen a tolerance that also guards exact pump records, basal is derived as
+    (total - bolus): the total is the authoritative figure Glooko charts, the
+    bolus comes from discrete events, and the note then sums exactly without
+    inventing precision the source never had.
+    """
+    total, basal, bolus = row.get("total"), row.get("basal"), row.get("bolus")
+    if total is None:
+        return None
+    if bolus is not None:
+        basal = round(total - bolus, 2)
+    parts = []
+    if bolus is not None:
+        parts.append(f"Bolus: {round(bolus, 2)}U")
+    if basal is not None:
+        parts.append(f"Basal: {round(basal, 2)}U")
+    parts.append(f"Total: {round(total, 2)}U")
+    return {
+        "type": "insulin",
+        "event_type": "Daily Total",
+        # Midday UTC keeps the ISO prefix equal to the local date, which is the
+        # day label the reconciler reads off a Daily Total row.
+        "timestamp": f"{row['date']}T12:00:00.000Z",
+        "notes": " | ".join(parts),
+        "source": "glooko",
+        "ns_id": f"glooko-dailytotal-{row['date']}",
+        "owner_email": OWNER_EMAIL,
+    }
+
+
+
 # ── actions ──────────────────────────────────────────────────────────────
 
 
@@ -370,6 +513,9 @@ async def _sync(days: int, include_cgm: bool) -> dict[str, Any]:
         readings = (
             await _fetch_list(client, "/api/v2/cgm/readings", "readings", since) if include_cgm else []
         )
+        # The v2 streams miss Automated Mode delivery entirely; these totals are
+        # the only complete picture of the day's insulin.
+        daily_totals = await _fetch_daily_insulin_totals(client, days)
 
     treatments = [m for r in boluses for m in _map_bolus(r)] + [
         m
@@ -377,6 +523,7 @@ async def _sync(days: int, include_cgm: bool) -> dict[str, Any]:
             [_map_basal(r) for r in basals]
             + [_map_food(r) for r in foods]
             + [_map_insulin(r) for r in insulins]
+            + [_map_daily_total(r) for r in daily_totals]
         )
         if m
     ]
@@ -397,6 +544,7 @@ async def _sync(days: int, include_cgm: bool) -> dict[str, Any]:
             "boluses": len(boluses),
             "basals": len(basals),
             "foods": len(foods),
+            "daily_totals": len(daily_totals),
             "insulins": len(insulins),
             "cgm": len(readings),
         },

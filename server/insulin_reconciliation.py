@@ -5,6 +5,14 @@ separate.  In particular, Glooko ``scheduled_basals`` records describe the
 programmed schedule, not confirmed delivery, so they are never used to claim a
 complete calculated total.  Tandem basal delivery intervals may produce a
 calculated total only when they cover the complete local day without conflicts.
+
+On an automated-mode pump (verified Aug 2026 against an Omnipod 5), the Glooko
+v2 event streams carry only the programmed schedule and manual boluses, so a
+total calculated from them would miss over half the day. Glooko does publish a
+complete per-day figure through its v3 graph API, and `glooko` maps it into a
+Daily Total row — which lands here as a pump_reported total rather than a
+calculated one. That distinction is the point: the number is authoritative
+because the pump vendor computed it, not because this module summed events.
 """
 
 from __future__ import annotations
@@ -415,6 +423,12 @@ def reconcile_treatments(
     limitations = []
     if any(day["scheduled_basal"]["coverage_pct"] > 0 for day in reconciled_days):
         limitations.append("Glooko basal records are scheduled/programmed rates, not confirmed delivery.")
+        # An automated-mode pump delivers most insulin outside these events, so
+        # say where the real total comes from instead of implying there is none.
+        limitations.append(
+            "Automated-mode delivery is not in Glooko's event streams, so totals here come from "
+            "the pump-reported daily figure rather than from summing basal and bolus events."
+        )
     if any(day["completeness"] in {"bolus_only", "partial_delivered_basal"} for day in reconciled_days):
         limitations.append("Days without complete delivered basal coverage do not have a calculated TDD.")
     if any(day["pump_reported"]["conflict"] for day in reconciled_days):
