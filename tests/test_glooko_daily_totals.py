@@ -73,3 +73,52 @@ def test_us_graph_host_is_region_prefixed(monkeypatch):
     assert glooko._graph_base_url() == "https://us.api.glooko.com"
     monkeypatch.setattr(glooko, "_region", lambda: "eu")
     assert glooko._graph_base_url() == "https://eu.api.glooko.com"
+
+
+def test_pod_activation_becomes_a_site_change():
+    mapped = glooko._map_pump_event({
+        "type": "pod_activating", "pumpTimestamp": "2026-08-08T14:40:33.000Z",
+        "guid": "abc-123",
+    })
+    assert mapped["event_type"] == "Site Change"
+    assert mapped["ns_id"] == "glooko-abc-123"
+    assert mapped["timestamp"].startswith("2026-08-08T14:40:33")
+
+
+def test_only_the_activation_event_maps_from_a_pod_swap():
+    # One physical swap emits five events; four of them must map to nothing.
+    for kind in ("pod_deactivated", "reservoir_change", "prime_cannula", "prime_tubing"):
+        assert glooko._map_pump_event({"type": kind, "pumpTimestamp": "2026-08-08T14:40:00.000Z"}) is None
+    sensor = glooko._map_pump_event({"type": "cgm_sensor_change", "pumpTimestamp": "2026-08-08T15:00:00.000Z"})
+    assert sensor["event_type"] == "Sensor Start"
+
+
+def test_settled_mode_period_maps_with_minutes():
+    from datetime import datetime, timedelta, timezone
+    start = datetime.now(timezone.utc) - timedelta(hours=14)
+    end = start + timedelta(seconds=39001)
+    mapped = glooko._map_mode({
+        "type": "manual",
+        "pumpTimestamp": start.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "endTimestamp": end.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "duration": 39001,
+        "guid": "mode-guid-1",
+    })
+    assert mapped["type"] == "pump_mode"
+    assert mapped["mode"] == "manual"
+    # Seconds in, minutes stored — consistent with every other Treatment duration.
+    assert round(mapped["duration"]) == 650
+    assert mapped["ns_id"] == "glooko-mode-guid-1"
+
+
+def test_open_or_fresh_mode_periods_are_not_stored():
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    # No end: still open. Fresh end: could still be extended by the next sync.
+    assert glooko._map_mode({"type": "automatic",
+        "pumpTimestamp": (now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "duration": 10800}) is None
+    assert glooko._map_mode({"type": "automatic",
+        "pumpTimestamp": (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "endTimestamp": (now - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+        "duration": 5400}) is None

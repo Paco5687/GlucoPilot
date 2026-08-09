@@ -462,6 +462,68 @@ async def _fetch_daily_insulin_totals(client: httpx.AsyncClient, days: int) -> l
     return rows
 
 
+# One physical pod swap emits five events (deactivate, activate, reservoir,
+# prime x2); pod_activating is the single moment the new pod goes live, so it
+# alone becomes the Site Change treatment. Sensor changes map the same way.
+_EVENT_TREATMENTS = {
+    "pod_activating": ("Site Change", "Pod change"),
+    "cgm_sensor_change": ("Sensor Start", "CGM sensor change"),
+}
+
+
+def _map_pump_event(r: dict) -> dict | None:
+    mapping = _EVENT_TREATMENTS.get(str(r.get("type") or "").lower())
+    ts = _parse_ts(_first(r, "pumpTimestamp", "timestamp"))
+    if mapping is None or ts is None:
+        return None
+    event_type, note = mapping
+    mapped = {
+        "type": "note",
+        "event_type": event_type,
+        "timestamp": _iso(ts),
+        "notes": note,
+        "source": "glooko",
+        "owner_email": OWNER_EMAIL,
+    }
+    if r.get("guid"):
+        mapped["ns_id"] = f"glooko-{r['guid']}"
+    return mapped
+
+
+def _map_mode(r: dict) -> dict | None:
+    """A pump operating-mode period (manual / automatic / limited).
+
+    These tile each day to exactly 24h, which is what makes mode-split
+    analytics trustworthy: every glucose reading falls in exactly one period.
+    Durations are seconds (verified: a 39001s period matches its own
+    endTimestamp); stored in minutes like every other Treatment duration.
+    """
+    mode = str(r.get("type") or "").lower()
+    ts = _parse_ts(_first(r, "pumpTimestamp", "timestamp"))
+    duration = _num(r.get("duration"))
+    if not mode or ts is None or not duration:
+        return None
+    mapped = {
+        "type": "pump_mode",
+        "event_type": "Pump Mode",
+        "timestamp": _iso(ts),
+        "mode": mode,
+        "duration": duration / 60,
+        "source": "glooko",
+        "owner_email": OWNER_EMAIL,
+    }
+    end = _parse_ts(r.get("endTimestamp"))
+    # Dedup is create-once by guid, so only settled periods are stored: an open
+    # period grows between syncs and would be frozen at its first-seen length.
+    # Two hours past its end is comfortably beyond Glooko's ~1h feed lag.
+    if end is None or (datetime.now(timezone.utc) - end) < timedelta(hours=2):
+        return None
+    mapped["end_timestamp"] = _iso(end)
+    if r.get("guid"):
+        mapped["ns_id"] = f"glooko-{r['guid']}"
+    return mapped
+
+
 def _map_daily_total(row: dict[str, Any]) -> dict[str, Any] | None:
     """A Daily Total treatment in the note format parse_pump_daily_total expects.
 
@@ -516,6 +578,8 @@ async def _sync(days: int, include_cgm: bool) -> dict[str, Any]:
         # The v2 streams miss Automated Mode delivery entirely; these totals are
         # the only complete picture of the day's insulin.
         daily_totals = await _fetch_daily_insulin_totals(client, days)
+        pump_events = await _fetch_list(client, "/api/v2/pumps/events", "events", since)
+        pump_modes = await _fetch_list(client, "/api/v2/pumps/modes", "modes", since)
 
     treatments = [m for r in boluses for m in _map_bolus(r)] + [
         m
@@ -524,6 +588,8 @@ async def _sync(days: int, include_cgm: bool) -> dict[str, Any]:
             + [_map_food(r) for r in foods]
             + [_map_insulin(r) for r in insulins]
             + [_map_daily_total(r) for r in daily_totals]
+            + [_map_pump_event(r) for r in pump_events]
+            + [_map_mode(r) for r in pump_modes]
         )
         if m
     ]
@@ -545,6 +611,8 @@ async def _sync(days: int, include_cgm: bool) -> dict[str, Any]:
             "basals": len(basals),
             "foods": len(foods),
             "daily_totals": len(daily_totals),
+            "pump_events": len(pump_events),
+            "pump_modes": len(pump_modes),
             "insulins": len(insulins),
             "cgm": len(readings),
         },

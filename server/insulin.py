@@ -78,6 +78,73 @@ def _daily_tdd() -> dict[str, dict[str, float]]:
     return output
 
 
+MODE_SPLIT_DAYS = 30
+
+
+def _mode_split() -> dict[str, Any] | None:
+    """Time and TIR split by pump operating mode (Omnipod 5 manual/automatic).
+
+    Mode periods tile each day completely, so every CGM reading falls in at
+    most one period — which makes "is Automated Mode doing better than her
+    manual settings?" answerable from her own data.
+    """
+    import bisect
+
+    repositories = get_repositories()
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(days=MODE_SPLIT_DAYS)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    periods = []
+    for row in repositories.treatments.query(
+        {"owner_email": OWNER_EMAIL, "type": "pump_mode", "timestamp": {"$gte": since}},
+        "timestamp",
+        5000,
+    ):
+        try:
+            start = datetime.fromisoformat(str(row["timestamp"]).replace("Z", "+00:00"))
+        except (KeyError, ValueError):
+            continue
+        minutes = row.get("duration")
+        mode = str(row.get("mode") or "").lower()
+        if not mode or not minutes:
+            continue
+        periods.append((start, start + timedelta(minutes=float(minutes)), mode))
+    if not periods:
+        return None
+    periods.sort()
+
+    minutes_by_mode: dict[str, float] = {}
+    for start, end, mode in periods:
+        minutes_by_mode[mode] = minutes_by_mode.get(mode, 0.0) + (end - start).total_seconds() / 60
+
+    readings_by_mode: dict[str, list[float]] = {}
+    starts = [period[0] for period in periods]
+    for reading in repositories.glucose.query(
+        {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}}, "timestamp", 40000
+    ):
+        value = reading.get("value")
+        try:
+            instant = datetime.fromisoformat(str(reading["timestamp"]).replace("Z", "+00:00"))
+        except (KeyError, ValueError):
+            continue
+        if value is None:
+            continue
+        index = bisect.bisect_right(starts, instant) - 1
+        if index >= 0 and instant < periods[index][1]:
+            readings_by_mode.setdefault(periods[index][2], []).append(float(value))
+
+    total_minutes = sum(minutes_by_mode.values())
+    modes = {}
+    for mode, minutes in sorted(minutes_by_mode.items(), key=lambda item: -item[1]):
+        values = readings_by_mode.get(mode) or []
+        modes[mode] = {
+            "pct_time": round(100 * minutes / total_minutes, 1) if total_minutes else None,
+            "tir_70_180": round(100 * sum(1 for v in values if 70 <= v <= 180) / len(values)) if values else None,
+            "avg_glucose": round(sum(values) / len(values)) if values else None,
+            "n_readings": len(values),
+        }
+    return {"window_days": MODE_SPLIT_DAYS, "modes": modes}
+
+
 def _category(tdd_per_kg: float | None) -> str:
     if tdd_per_kg is None:
         return "unknown"
@@ -212,6 +279,7 @@ def estimate() -> dict[str, Any]:
         "current": age_days <= CURRENT_DATA_DAYS,
         "data_age_days": age_days,
         "total_sources": source_counts,
+        "mode_split": _mode_split(),
         "reconciliation": estimate_reconciliation,
         "algorithm_version": reconciliation["algorithm_version"],
         "input_data_version": reconciliation["input_data_version"],
