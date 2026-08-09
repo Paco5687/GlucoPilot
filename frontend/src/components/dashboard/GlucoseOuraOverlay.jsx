@@ -4,6 +4,22 @@ import {
   Tooltip, CartesianGrid, ReferenceLine,
 } from "recharts";
 
+// This is a day-scale correlation chart: one point per calendar day, matched
+// against Oura's nightly scores. It deliberately does NOT follow the
+// dashboard's hour-scale range picker — a 3h glucose window would produce a
+// single "day" and an invisible one-point line, which is exactly the broken
+// state this replaced. It owns its own window instead.
+
+const WINDOWS = [
+  { key: 14, label: "14d" },
+  { key: 30, label: "30d" },
+  { key: 60, label: "60d" },
+];
+
+// Fewer readings than this and a "daily" average is really a fragment of a
+// day; the day still shows its Oura scores, just no glucose stats.
+const MIN_READINGS_PER_DAY = 24;
+
 const OURA_METRICS = [
   { key: "sleep_score", label: "Sleep Score", color: "#6366f1" },
   { key: "readiness_score", label: "Readiness", color: "#10b981" },
@@ -14,6 +30,14 @@ const GLUCOSE_METRICS = [
   { key: "avg_glucose", label: "Avg Glucose", color: "#0d9668" },
   { key: "tir", label: "Time in Range %", color: "#22c55e" },
 ];
+
+// Local calendar day — Oura's `date` is the local sleep day, so glucose must
+// bucket the same way. toISOString() would use UTC and push every evening
+// reading onto the next day's bucket.
+export function localDayKey(timestamp) {
+  const d = new Date(timestamp);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
 
 function OverlayTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
@@ -34,32 +58,36 @@ function OverlayTooltip({ active, payload, label }) {
 }
 
 export default function GlucoseOuraOverlay({ readings, ouraData }) {
+  const [windowDays, setWindowDays] = useState(14);
   const [activeOura, setActiveOura] = useState(["sleep_score"]);
   const [activeGlucose, setActiveGlucose] = useState(["avg_glucose"]);
 
   const chartData = useMemo(() => {
     if (!readings?.length || !ouraData?.length) return [];
 
-    // Build daily glucose stats
+    const today = localDayKey(Date.now());
+    const cutoff = localDayKey(Date.now() - windowDays * 86400000);
+
     const glucoseByDay = {};
     readings.forEach((r) => {
-      const day = new Date(r.timestamp).toISOString().split("T")[0];
+      const day = localDayKey(r.timestamp);
       if (!glucoseByDay[day]) glucoseByDay[day] = [];
       glucoseByDay[day].push(r.value);
     });
 
-    // Merge with Oura data
     const ouraByDay = {};
     ouraData.forEach((d) => { ouraByDay[d.date] = d; });
 
     const allDays = new Set([...Object.keys(glucoseByDay), ...Object.keys(ouraByDay)]);
     return [...allDays]
+      .filter((day) => day >= cutoff && day < today) // today is still accumulating
       .sort()
       .map((day) => {
         const gVals = glucoseByDay[day] || [];
         const oura = ouraByDay[day] || {};
-        const avg = gVals.length ? Math.round(gVals.reduce((s, v) => s + v, 0) / gVals.length) : null;
-        const tir = gVals.length
+        const enough = gVals.length >= MIN_READINGS_PER_DAY;
+        const avg = enough ? Math.round(gVals.reduce((s, v) => s + v, 0) / gVals.length) : null;
+        const tir = enough
           ? Math.round((gVals.filter((v) => v >= 70 && v <= 180).length / gVals.length) * 100)
           : null;
         return {
@@ -72,7 +100,7 @@ export default function GlucoseOuraOverlay({ readings, ouraData }) {
           activity_score: oura.activity_score,
         };
       });
-  }, [readings, ouraData]);
+  }, [readings, ouraData, windowDays]);
 
   if (!chartData.length) return null;
 
@@ -82,7 +110,20 @@ export default function GlucoseOuraOverlay({ readings, ouraData }) {
   return (
     <div className="bg-card rounded-xl border border-border p-4">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
-        <h3 className="text-sm font-semibold">Glucose × Oura Overlay</h3>
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-semibold">Glucose × Oura by day</h3>
+          <div className="flex rounded-lg border border-border overflow-hidden">
+            {WINDOWS.map((w) => (
+              <button
+                key={w.key}
+                onClick={() => setWindowDays(w.key)}
+                className={`text-[10px] px-2 py-0.5 ${windowDays === w.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+              >
+                {w.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="flex flex-wrap gap-1.5">
           {GLUCOSE_METRICS.map((m) => (
             <button
@@ -143,18 +184,19 @@ export default function GlucoseOuraOverlay({ readings, ouraData }) {
               m.key === "tir" ? (
                 <Bar key={m.key} yAxisId="oura" dataKey={m.key} fill={m.color} name={m.label} opacity={0.25} barSize={12} />
               ) : (
-                <Line key={m.key} yAxisId="glucose" type="monotone" dataKey={m.key} stroke={m.color} strokeWidth={2.5} dot={false} name={m.label} connectNulls />
+                // Small dots so a day isolated by gaps still renders.
+                <Line key={m.key} yAxisId="glucose" type="monotone" dataKey={m.key} stroke={m.color} strokeWidth={2.5} dot={{ r: 2 }} name={m.label} connectNulls />
               )
             ))}
 
             {OURA_METRICS.filter((m) => activeOura.includes(m.key)).map((m) => (
-              <Line key={m.key} yAxisId="oura" type="monotone" dataKey={m.key} stroke={m.color} strokeWidth={2} dot={false} name={m.label} strokeDasharray="6 3" connectNulls />
+              <Line key={m.key} yAxisId="oura" type="monotone" dataKey={m.key} stroke={m.color} strokeWidth={2} dot={{ r: 2 }} name={m.label} strokeDasharray="6 3" connectNulls />
             ))}
           </ComposedChart>
         </ResponsiveContainer>
       </div>
       <p className="text-[10px] text-muted-foreground mt-2 text-center">
-        Solid line = glucose · Dashed lines = Oura scores · Bars = Time in Range %
+        One point per day (today excluded while incomplete) · Solid line = glucose, left axis · Dashed lines = Oura scores, right axis · Bars = Time in Range %
       </p>
     </div>
   );
