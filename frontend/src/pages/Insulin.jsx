@@ -234,6 +234,28 @@ export default function Insulin() {
             </div>
           )}
 
+          {Object.keys(r.mode_split?.modes || {}).length > 0 && (
+            <div className="bg-card rounded-xl border border-border p-4">
+              <h3 className="text-sm font-semibold mb-2">Glucose by pump mode · last {r.mode_split.window_days} days</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {Object.entries(r.mode_split.modes).map(([mode, m]) => (
+                  <div key={mode} className="rounded-lg border border-border p-3 text-sm">
+                    <div className="text-xs text-muted-foreground capitalize mb-1">{mode} mode · {m.pct_time}% of time</div>
+                    <div className="font-semibold tabular-nums">
+                      {m.tir_70_180 != null ? `${m.tir_70_180}% in range` : "no CGM overlap"}
+                    </div>
+                    {m.avg_glucose != null && (
+                      <div className="text-xs text-muted-foreground tabular-nums">avg {m.avg_glucose} mg/dL · {m.n_readings.toLocaleString()} readings</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-2">
+                Whether Automated Mode is holding range better than manual settings — an observation to explore with the care team, not a settings verdict.
+              </p>
+            </div>
+          )}
+
         </>
       )}
       {!loading && <ResponseEvents absn={absn} />}
