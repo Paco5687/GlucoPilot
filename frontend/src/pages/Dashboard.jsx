@@ -18,7 +18,6 @@ import SymptomNudge from "../components/dashboard/SymptomNudge";
 import GlucoseOuraOverlay from "../components/dashboard/GlucoseOuraOverlay";
 import CorrelationCards from "../components/dashboard/CorrelationCards";
 import ContradictionPanel from "../components/ContradictionPanel";
-import ManagementBurdenCard from "../components/dashboard/ManagementBurdenCard";
 import TimeRangePicker, { RANGES } from "../components/dashboard/TimeRangePicker";
 import { Loader2 } from "lucide-react";
 
@@ -153,8 +152,6 @@ export default function Dashboard() {
       <ContradictionPanel domains={["glucose", "pump_tdd"]} title="Glucose and insulin contradictions" />
 
       <SymptomNudge />
-
-      <ManagementBurdenCard days={90} />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-1">

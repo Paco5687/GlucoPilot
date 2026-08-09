@@ -3,6 +3,7 @@ import { base44 } from "@/api/base44Client";
 import SafetyBanner from "../components/SafetyBanner";
 import DataQualityNote from "@/components/DataQualityNote";
 import ContradictionPanel from "@/components/ContradictionPanel";
+import ManagementBurdenCard from "@/components/insulin/ManagementBurdenCard";
 import { Syringe, Loader2, TrendingUp, TrendingDown, AlertTriangle } from "lucide-react";
 
 const CAT = {
@@ -236,6 +237,10 @@ export default function Insulin() {
         </>
       )}
       {!loading && <ResponseEvents absn={absn} />}
+
+      {/* The effort ledger belongs with the dosing it measures — boluses, temp
+          basals, pump interactions — rather than crowding the daily dashboard. */}
+      <ManagementBurdenCard days={90} />
     </div>
   );
 }
