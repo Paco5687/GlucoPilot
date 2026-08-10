@@ -1,6 +1,11 @@
 import { useMemo } from "react";
 import { Moon, Activity, Flame, TrendingUp, TrendingDown, Minus } from "lucide-react";
 import { correlationConfidence } from "@/lib/analyticsConfidence";
+import { localDayKey } from "./GlucoseOuraOverlay";
+
+// Day-pair correlations need weeks of days regardless of the dashboard's
+// hour-scale picker, so the window is fixed here.
+const WINDOW_DAYS = 60;
 
 function buildInsight(label, confidence, highLabel, lowLabel) {
   const r = confidence.effect_size.value;
@@ -65,16 +70,20 @@ export default function CorrelationCards({ readings, ouraData }) {
   const analysis = useMemo(() => {
     if (!readings?.length || !ouraData?.length) return null;
 
-    // Build daily glucose TIR
+    // Build daily glucose TIR on LOCAL days (Oura dates are local sleep days;
+    // UTC bucketing would shift every evening reading onto the next day).
+    const today = localDayKey(Date.now());
+    const cutoff = localDayKey(Date.now() - WINDOW_DAYS * 86400000);
     const glucoseByDay = {};
     readings.forEach((r) => {
-      const day = new Date(r.timestamp).toISOString().split("T")[0];
+      const day = localDayKey(r.timestamp);
+      if (day < cutoff || day >= today) return; // today is still accumulating
       if (!glucoseByDay[day]) glucoseByDay[day] = [];
       glucoseByDay[day].push(r.value);
     });
     const tirByDay = {};
     for (const [day, vals] of Object.entries(glucoseByDay)) {
-      if (vals.length < 10) continue; // skip sparse days
+      if (vals.length < 24) continue; // skip sparse days — a fragment is not a day
       tirByDay[day] = Math.round((vals.filter((v) => v >= 70 && v <= 180).length / vals.length) * 100);
     }
 

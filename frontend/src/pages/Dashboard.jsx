@@ -183,10 +183,13 @@ export default function Dashboard() {
 
       <OuraPanel data={filteredOura} isViewingShared={isViewingShared} onRefresh={loadOura} />
 
-      {filteredOura.length > 0 && (
+      {ouraData.length > 0 && (
         <>
-          <GlucoseOuraOverlay readings={filteredReadings.length ? filteredReadings : readings.slice(0, 288)} ouraData={filteredOura} />
-          <CorrelationCards readings={filteredReadings.length ? filteredReadings : readings.slice(0, 288)} ouraData={filteredOura} />
+          {/* Day-scale charts own their windows; the hour-scale picker gave
+              them 3h of glucose against 14d of Oura, which rendered as an
+              invisible one-point line. */}
+          <GlucoseOuraOverlay readings={readings} ouraData={ouraData} />
+          <CorrelationCards readings={readings} ouraData={ouraData} />
         </>
       )}
 
