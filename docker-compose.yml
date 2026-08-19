@@ -29,7 +29,7 @@ services:
       - ./run:/run/glucopilot
       # Breeze connector credential, provisioned and owned by the operator.
       # Read-only, never written by the app, never surfaced by any endpoint.
-      # - ./secrets/breeze-connector.key:/run/secrets/breeze-connector.key:ro
+      - ./secrets/breeze-connector.key:/run/secrets/breeze-connector.key:ro
       # Optional: mount a folder of exports for one-time imports, e.g.
       #   docker compose exec glucopilot python -m server.import_base44_export /import/GlucoseReading_export.csv
       # - ./import:/import:ro
