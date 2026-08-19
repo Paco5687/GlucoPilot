@@ -28,6 +28,7 @@ All values are environment variables (see `docker-compose.yml`):
     BREEZE_CONNECTOR_API_KEY_FILE=/run/secrets/breeze-connector.key
     BREEZE_MODEL_ALIAS=breeze-general-instruct
     BREEZE_REQUEST_TIMEOUT_SECONDS=360
+    BREEZE_MAX_CONTEXT_TOKENS=4096
     BREEZE_VISION_POLICY=local
 
 Select the provider with `llm_provider = breeze` on the Settings page. The
@@ -42,7 +43,8 @@ alias, whether a usable credential is present) — never the credential itself.
 * **No silent cloud fallback.** A Breeze failure raises. It never degrades to
   Anthropic or OpenAI — that would move health data off-premises unasked.
 * **No silent truncation.** A request above the route's 4096 output-token
-  ceiling is refused with both numbers, not quietly clamped.
+  ceiling, or whose prompt plus output exceeds the configured total context,
+  is refused with both numbers, not quietly clamped.
 * **Non-streaming.** Breeze answers in one piece today. `invoke_llm_stream()`
   makes one complete request and yields it as a single chunk, so the NDJSON
   interface above it is unchanged. Token streaming is not faked.
@@ -69,7 +71,8 @@ alias, whether a usable credential is present) — never the credential itself.
 
 ## Context sizing
 
-Breeze's current route caps output at 4096 tokens. Measure prompts before
-enabling: `server/health_summary.py` and the Companion reply prompt are the
-largest, and both exceed a 4096-token *context* window if that is also the
-route's input limit. See the connector report for current measurements.
+Breeze's current route has a 4096-token total context window and separately
+caps output at 4096 tokens. The Connector measures text before dispatch and
+fails closed when prompt plus reserved output does not fit. The Companion
+reply and health-summary prompts therefore remain ineligible for this alias;
+they must not be truncated to make them fit.

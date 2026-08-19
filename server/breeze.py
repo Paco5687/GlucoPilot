@@ -38,6 +38,8 @@ log = logging.getLogger("glucopilot.breeze")
 # The route's ceiling. Requests above it are refused, not shrunk: quietly
 # lowering a caller's max_tokens truncates clinical output mid-sentence.
 MAX_OUTPUT_TOKENS = 4096
+DEFAULT_MAX_CONTEXT_TOKENS = 4096
+CHAT_TEMPLATE_OVERHEAD_TOKENS = 32
 
 # Escalation thresholds for a degraded router (operator-facing, not user-facing).
 RETRYABLE_503_WARN_COUNT = 3
@@ -72,6 +74,14 @@ def request_timeout() -> float:
         return float(env("BREEZE_REQUEST_TIMEOUT_SECONDS", "360"))
     except ValueError:
         return 360.0
+
+
+def max_context_tokens() -> int:
+    try:
+        value = int(env("BREEZE_MAX_CONTEXT_TOKENS", str(DEFAULT_MAX_CONTEXT_TOKENS)))
+    except ValueError:
+        return DEFAULT_MAX_CONTEXT_TOKENS
+    return value if value > 0 else DEFAULT_MAX_CONTEXT_TOKENS
 
 
 def vision_policy() -> str:
@@ -231,6 +241,10 @@ async def models() -> list[str]:
 
 
 async def model_status() -> str:
+    return str((await model_capacity())["state"])
+
+
+async def model_capacity() -> dict[str, Any]:
     token = _read_credential()
     async with _client() as client:
         response = await client.get(
@@ -239,7 +253,14 @@ async def model_status() -> str:
     _raise_for_status(response)
     body = response.json() if response.text else {}
     status = str(body.get("state") or "").strip().lower()
-    return status if status in _STATUS_VALUES else "unavailable"
+    capabilities = body.get("capabilities") or {}
+    return {
+        "state": status if status in _STATUS_VALUES else "unavailable",
+        "max_context_tokens": capabilities.get("max_context_tokens"),
+        "max_output_tokens": capabilities.get("max_output_tokens"),
+        "supports_json_schema": capabilities.get("supports_json_schema"),
+        "supports_streaming": capabilities.get("supports_streaming"),
+    }
 
 
 def _strict_response_format(schema: dict[str, Any], name: str) -> dict[str, Any]:
@@ -267,6 +288,7 @@ async def complete(
     temperature: float | None = None,
     top_p: float | None = None,
     schema_name: str | None = None,
+    prompt_tokens: int | None = None,
 ) -> Any:
     """One non-streaming completion. Text only; images are a caller error here."""
     if images:
@@ -280,6 +302,22 @@ async def complete(
             400,
             f"Requested {max_tokens} output tokens; the Breeze route allows at most {MAX_OUTPUT_TOKENS}. "
             "Refusing rather than silently reducing the limit.",
+        )
+    estimated_prompt_tokens = prompt_tokens
+    if estimated_prompt_tokens is None:
+        # Byte count is a conservative tokenizer-independent upper bound for
+        # byte-level BPE. Normal dispatch passes the local tokenizer estimate;
+        # this keeps direct callers fail-closed without adding PHI to discovery.
+        estimated_prompt_tokens = len(prompt.encode("utf-8"))
+    required_context = (
+        estimated_prompt_tokens + max_tokens + CHAT_TEMPLATE_OVERHEAD_TOKENS
+    )
+    if required_context > max_context_tokens():
+        raise BreezeError(
+            400,
+            f"Breeze request needs approximately {required_context} context tokens; "
+            f"the configured route allows {max_context_tokens()}. Refusing rather "
+            "than silently truncating clinical context.",
         )
 
     token = _read_credential()
@@ -372,6 +410,7 @@ def status_summary() -> dict[str, Any]:
         "vision_policy": vision_policy(),
         "request_timeout_seconds": request_timeout(),
         "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "max_context_tokens": max_context_tokens(),
         "socket_present": Path(socket_path()).exists(),
         "credential": credential_state,
     }

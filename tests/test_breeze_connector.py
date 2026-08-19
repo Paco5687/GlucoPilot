@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn, UnixStreamServer
 
 import pytest
+from fastapi import HTTPException
 
 from server import breeze
 
@@ -140,6 +141,26 @@ class TestDiscovery:
             handler.routes[("GET", "/v1/models/breeze-general-instruct/status")] = (200, {"state": reported}, {})
             assert asyncio.run(breeze.model_status()) == reported
 
+    def test_model_capacity_exposes_route_limits(self, router):
+        handler, _ = router
+        handler.routes[("GET", "/v1/models/breeze-general-instruct/status")] = (200, {
+            "state": "ready",
+            "capabilities": {
+                "max_context_tokens": 4096,
+                "max_output_tokens": 4096,
+                "supports_json_schema": True,
+                "supports_streaming": False,
+            },
+        }, {})
+
+        assert asyncio.run(breeze.model_capacity()) == {
+            "state": "ready",
+            "max_context_tokens": 4096,
+            "max_output_tokens": 4096,
+            "supports_json_schema": True,
+            "supports_streaming": False,
+        }
+
     def test_unknown_status_is_treated_as_unavailable(self, router):
         handler, _ = router
         handler.routes[("GET", "/v1/models/breeze-general-instruct/status")] = (200, {"state": "banana"}, {})
@@ -202,6 +223,22 @@ class TestCompletion:
         assert err.value.status_code == 400
         assert str(breeze.MAX_OUTPUT_TOKENS) in err.value.detail
         # Refused before any request left the process.
+        assert not [c for c in handler.seen if c[1] == "/v1/chat/completions"]
+
+    def test_oversized_total_context_is_refused_not_truncated(self, router):
+        handler, _ = router
+        handler.routes[("POST", "/v1/chat/completions")] = _completion("never reached")
+
+        with pytest.raises(breeze.BreezeError) as err:
+            asyncio.run(breeze.complete(
+                "clinical evidence",
+                None,
+                1200,
+                prompt_tokens=5712,
+            ))
+
+        assert err.value.status_code == 400
+        assert "silently truncating" in err.value.detail
         assert not [c for c in handler.seen if c[1] == "/v1/chat/completions"]
 
     def test_images_never_reach_the_text_route(self, router):
@@ -324,6 +361,7 @@ class TestLogging:
         assert "bra_" not in json.dumps(summary)
         assert summary["enabled"] is True
         assert summary["max_output_tokens"] == breeze.MAX_OUTPUT_TOKENS
+        assert summary["max_context_tokens"] == breeze.DEFAULT_MAX_CONTEXT_TOKENS
 
 
 class TestProviderDispatch:
@@ -377,6 +415,19 @@ class TestProviderDispatch:
 
         with pytest.raises(breeze.BreezeError):
             asyncio.run(llm.invoke_llm("anything", max_tokens=10))
+
+    def test_breeze_provider_requires_explicit_enablement(self, router, monkeypatch):
+        from server import llm
+
+        monkeypatch.setattr(llm, "config_value", lambda name, default="": (
+            "breeze" if name == "llm_provider" else default))
+        monkeypatch.setenv("BREEZE_ENABLED", "false")
+
+        with pytest.raises(HTTPException) as err:
+            asyncio.run(llm.invoke_llm("anything", max_tokens=10))
+
+        assert err.value.status_code == 503
+        assert "BREEZE_ENABLED is false" in err.value.detail
 
     def test_stream_yields_one_complete_chunk(self, router, monkeypatch):
         from server import llm

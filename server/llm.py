@@ -355,11 +355,22 @@ async def invoke_llm(
     """
     provider = config_value("llm_provider", "anthropic").strip().lower()
     if provider == "breeze":
+        if not breeze.enabled():
+            raise HTTPException(
+                status_code=503,
+                detail="Breeze is selected but BREEZE_ENABLED is false.",
+            )
         if images:
             # Breeze is a text route. Images must keep going to the explicitly
             # configured local vision model — never stripped, never sent out.
             return await _invoke_local_vision(prompt, response_json_schema, max_tokens, images)
-        return await breeze.complete(prompt, response_json_schema, max_tokens)
+        prompt_tokens = await count_tokens(prompt)
+        return await breeze.complete(
+            prompt,
+            response_json_schema,
+            max_tokens,
+            prompt_tokens=prompt_tokens,
+        )
     if provider == "local":
         if tier == "quality" and not images:
             q_url = config_value("quality_llm_url")
@@ -481,9 +492,20 @@ async def invoke_llm_stream(prompt: str, max_tokens: int = 700, tier: str = "def
     watching deltas should see real generation progress or none at all."""
     provider = config_value("llm_provider", "anthropic").strip().lower()
     if provider == "breeze":
+        if not breeze.enabled():
+            raise HTTPException(
+                status_code=503,
+                detail="Breeze is selected but BREEZE_ENABLED is false.",
+            )
         # `stop` is intentionally dropped: the route does not accept it, and
         # silently ignoring it here is safer than sending an unsupported field.
-        text = await breeze.complete(prompt, None, max_tokens)
+        prompt_tokens = await count_tokens(prompt)
+        text = await breeze.complete(
+            prompt,
+            None,
+            max_tokens,
+            prompt_tokens=prompt_tokens,
+        )
         yield text if isinstance(text, str) else str(text)
         return
     if provider == "local":
