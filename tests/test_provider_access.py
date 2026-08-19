@@ -184,3 +184,15 @@ class TestCareNotes:
         assert block[0]["author"] == "drchen"
         assert block[0]["kind"] == "prescription"
         assert block[0]["pinned"] is True
+
+
+class TestQualityTierFlag:
+    def test_threads_advertise_quality_tier_only_when_configured(self, database, monkeypatch):
+        monkeypatch.setattr(companion, "config_value", lambda name, default="": "")
+        assert _handle({"action": "threads"}, "owner")["quality_tier_available"] is False
+
+        monkeypatch.setattr(companion, "config_value", lambda name, default="": {
+            "quality_llm_url": "unix:///run/glucopilot/ollama.sock",
+            "quality_llm_model": "gemma3:27b",
+        }.get(name, default))
+        assert _handle({"action": "threads"}, "owner")["quality_tier_available"] is True
