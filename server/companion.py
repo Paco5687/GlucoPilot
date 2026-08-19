@@ -536,6 +536,7 @@ async def _reply(
         ),
         max_tokens=REPLY_MAX_TOKENS,
         tier=tier,
+        site="companion_reply",
     ))
 
 
@@ -572,6 +573,7 @@ async def _finalize_grounded_reply(
                 repair_prompt,
                 max_tokens=REPLY_MAX_TOKENS,
                 tier=tier,
+                site="companion_repair",
             )
         )
         repaired_reply, repaired_evidence = companion_evidence.finalize_reply(
@@ -642,7 +644,7 @@ async def _distill_query(user_msg: str) -> str | None:
         f"Message: {user_msg}\nQuery:"
     )
     try:
-        res = await invoke_llm(prompt, max_tokens=24)
+        res = await invoke_llm(prompt, max_tokens=24, site="companion_distill")
     except Exception:
         return None
     q = (res or "").strip().strip('"').splitlines()[0].strip().rstrip(".")
@@ -670,10 +672,10 @@ async def _extract_memories(user_msg: str, reply: str, existing: list) -> list[d
         f"ALREADY KNOWN:\n{known}\n\n"
         f"Emily said: {user_msg}\nCompanion replied: {reply}\n\nReturn the new memories (empty list if none)."
     )
-    res = await invoke_llm(prompt, response_json_schema=MEMORY_SCHEMA, max_tokens=500)
+    res = await invoke_llm(prompt, response_json_schema=MEMORY_SCHEMA, max_tokens=500, site="companion_memory_extract")
     mems = (res or {}).get("memories", []) if isinstance(res, dict) else []
     if not mems:  # small local model is noisy on this task — one retry before giving up
-        res = await invoke_llm(prompt, response_json_schema=MEMORY_SCHEMA, max_tokens=500)
+        res = await invoke_llm(prompt, response_json_schema=MEMORY_SCHEMA, max_tokens=500, site="companion_memory_extract")
         mems = (res or {}).get("memories", []) if isinstance(res, dict) else []
     return mems
 
@@ -944,7 +946,7 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
         return
     parts: list[str] = []
     try:
-        async for chunk in invoke_llm_stream(prompt, max_tokens=REPLY_MAX_TOKENS, tier=tier, stop=SIGNOFF_STOP):
+        async for chunk in invoke_llm_stream(prompt, max_tokens=REPLY_MAX_TOKENS, tier=tier, stop=SIGNOFF_STOP, site="companion_reply"):
             if not chunk:
                 continue
             parts.append(chunk)

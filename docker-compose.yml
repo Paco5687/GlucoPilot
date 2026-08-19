@@ -10,10 +10,26 @@ services:
     extra_hosts:
       # Reach host-local services (e.g. a local LLM). See docs/LOCAL_MODELS.md.
       - "host.docker.internal:host-gateway"
+    environment:
+      # TensorBreeze connector (off until the operator provisions the socket
+      # and credential below). GlucoPilot stays an independent application;
+      # these only add Breeze as a text-inference provider.
+      BREEZE_ENABLED: ${BREEZE_ENABLED:-false}
+      BREEZE_ROUTER_SOCKET: ${BREEZE_ROUTER_SOCKET:-/run/glucopilot/breeze-router.sock}
+      BREEZE_ROUTER_ORIGIN: ${BREEZE_ROUTER_ORIGIN:-http://tensorbreeze}
+      BREEZE_CONNECTOR_API_KEY_FILE: ${BREEZE_CONNECTOR_API_KEY_FILE:-/run/secrets/breeze-connector.key}
+      BREEZE_MODEL_ALIAS: ${BREEZE_MODEL_ALIAS:-breeze-general-instruct}
+      BREEZE_REQUEST_TIMEOUT_SECONDS: ${BREEZE_REQUEST_TIMEOUT_SECONDS:-360}
+      BREEZE_MAX_CONTEXT_TOKENS: ${BREEZE_MAX_CONTEXT_TOKENS:-4096}
+      BREEZE_VISION_POLICY: ${BREEZE_VISION_POLICY:-local}
     volumes:
       - data:/data
       # Unix sockets to host-local LLM servers (optional; see docs/LOCAL_MODELS.md).
+      # The operator mounts the Breeze router socket into this same directory.
       - ./run:/run/glucopilot
+      # Breeze connector credential, provisioned and owned by the operator.
+      # Read-only, never written by the app, never surfaced by any endpoint.
+      - ./secrets/breeze-connector.key:/run/secrets/breeze-connector.key:ro
       # Optional: mount a folder of exports for one-time imports, e.g.
       #   docker compose exec glucopilot python -m server.import_base44_export /import/GlucoseReading_export.csv
       # - ./import:/import:ro

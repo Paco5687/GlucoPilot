@@ -16,6 +16,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from . import breeze
 from .auth import require_admin
 from .config import ANTHROPIC_API_URL
 from .db import config_value
@@ -315,12 +316,55 @@ async def _invoke_local(
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
+async def _invoke_local_vision(
+    prompt: str, response_json_schema: dict | None, max_tokens: int, images: list[str]
+) -> Any:
+    """Route an image request to the explicitly configured local vision model.
+
+    Used when the active text provider is text-only (Breeze). Images are never
+    dropped to make a request fit and never forwarded to a text route: if the
+    local vision model is not configured or not reachable, this fails loudly so
+    the caller sees a missing capability rather than a silently degraded answer.
+    """
+    raw_url = config_value("local_llm_url", LOCAL_URL_DEFAULT)
+    model = config_value("local_llm_model", LOCAL_MODEL_DEFAULT)
+    if not raw_url or not model:
+        raise HTTPException(
+            status_code=503,
+            detail="This request contains images, which require the local vision model. "
+                   "It is not configured (local_llm_url / local_llm_model).",
+        )
+    return await _invoke_local(prompt, response_json_schema, max_tokens, images,
+                              url_override=raw_url, model_override=model)
+
+
+async def _dispatch_local_text(
+    prompt: str,
+    response_json_schema: dict | None,
+    max_tokens: int,
+    images: list[str] | None,
+    tier: str,
+) -> Any:
+    """The existing local provider behaviour, exactly — including the quality
+    tier diversion. Shared by provider=local and by hybrid Breeze routing when
+    a call stays local."""
+    if tier == "quality" and not images:
+        q_url = config_value("quality_llm_url")
+        q_model = config_value("quality_llm_model")
+        if q_url and q_model:
+            return await _invoke_local(
+                prompt, response_json_schema, max_tokens, None, url_override=q_url, model_override=q_model
+            )
+    return await _invoke_local(prompt, response_json_schema, max_tokens, images)
+
+
 async def invoke_llm(
     prompt: str,
     response_json_schema: dict | None = None,
     max_tokens: int = 4000,
     images: list[str] | None = None,
     tier: str = "default",
+    site: str = "",
 ) -> Any:
     """images: list of "media_type|base64" strings (e.g. "image/png|iVBOR...").
 
@@ -329,17 +373,33 @@ async def invoke_llm(
     narrative, where prose quality matters and calls are infrequent. Image
     tasks and frequent/interactive calls stay on the fast default (vision) model.
     With the Anthropic provider, tier is ignored (Claude already serves both).
+
+    site is a fixed, PHI-free call-site identifier. Under llm_provider=breeze it
+    drives HYBRID routing: only allowlisted sites whose measured prompt plus
+    reserved output plus chat overhead fit the discovered context budget go to
+    Breeze; everything else — including an unspecified site — uses the existing
+    local providers. The decision is made before any inference request; a
+    failure after a Breeze request has begun surfaces without retry or fallback.
     """
     provider = config_value("llm_provider", "anthropic").strip().lower()
+    if provider == "breeze":
+        if images:
+            # Breeze is a text route. Images must keep going to the explicitly
+            # configured local vision model — never stripped, never sent out.
+            breeze._log_route(site, "local_vision", "vision", prompt_tokens=None,
+                              output_tokens=max_tokens, limit=None)
+            return await _invoke_local_vision(prompt, response_json_schema, max_tokens, images)
+        route, details = await breeze.route_text_call(site, prompt, max_tokens, count_tokens)
+        if route == "breeze":
+            return await breeze.complete(
+                prompt,
+                response_json_schema,
+                max_tokens,
+                prompt_tokens=details.get("prompt_tokens"),
+            )
+        return await _dispatch_local_text(prompt, response_json_schema, max_tokens, images, tier)
     if provider == "local":
-        if tier == "quality" and not images:
-            q_url = config_value("quality_llm_url")
-            q_model = config_value("quality_llm_model")
-            if q_url and q_model:
-                return await _invoke_local(
-                    prompt, response_json_schema, max_tokens, None, url_override=q_url, model_override=q_model
-                )
-        return await _invoke_local(prompt, response_json_schema, max_tokens, images)
+        return await _dispatch_local_text(prompt, response_json_schema, max_tokens, images, tier)
     if provider == "openai":
         return await _invoke_openai(prompt, response_json_schema, max_tokens, images)
     return await _invoke_anthropic(prompt, response_json_schema, max_tokens, images)
@@ -438,22 +498,47 @@ async def _stream_local(prompt: str, max_tokens: int, url_override: str | None =
         yield tail
 
 
-async def invoke_llm_stream(prompt: str, max_tokens: int = 700, tier: str = "default", stop: list[str] | None = None):
+def _local_stream_overrides(tier: str) -> tuple[str | None, str | None]:
+    if tier == "quality":
+        q_url = config_value("quality_llm_url")
+        q_model = config_value("quality_llm_model")
+        if q_url and q_model:
+            return q_url, q_model
+    return None, None
+
+
+async def invoke_llm_stream(prompt: str, max_tokens: int = 700, tier: str = "default", stop: list[str] | None = None, site: str = ""):
     """Yield reply text incrementally. The local provider streams token-by-token;
     cloud providers yield the full reply once (correct, just not chunked).
 
     tier="quality" streams from the bigger, slower local model (e.g. Ollama
     gemma3:27b) when one is configured — streaming makes that model usable
-    interactively since tokens appear as they're generated."""
+    interactively since tokens appear as they're generated.
+
+    Breeze is non-streaming today: it makes one complete request and yields the
+    finished reply as a single chunk, so the NDJSON interface above it is
+    unchanged. Deliberately not split into fake token-sized pieces — a caller
+    watching deltas should see real generation progress or none at all."""
     provider = config_value("llm_provider", "anthropic").strip().lower()
+    if provider == "breeze":
+        route, details = await breeze.route_text_call(site, prompt, max_tokens, count_tokens)
+        if route == "breeze":
+            # `stop` is intentionally dropped: the route does not accept it, and
+            # silently ignoring it here is safer than sending an unsupported field.
+            text = await breeze.complete(
+                prompt,
+                None,
+                max_tokens,
+                prompt_tokens=details.get("prompt_tokens"),
+            )
+            yield text if isinstance(text, str) else str(text)
+            return
+        # Hybrid: this call stays on the local provider, which really streams.
+        async for chunk in _stream_local(prompt, max_tokens, *_local_stream_overrides(tier), stop=stop):
+            yield chunk
+        return
     if provider == "local":
-        url_override = model_override = None
-        if tier == "quality":
-            q_url = config_value("quality_llm_url")
-            q_model = config_value("quality_llm_model")
-            if q_url and q_model:
-                url_override, model_override = q_url, q_model
-        async for chunk in _stream_local(prompt, max_tokens, url_override, model_override, stop=stop):
+        async for chunk in _stream_local(prompt, max_tokens, *_local_stream_overrides(tier), stop=stop):
             yield chunk
         return
     text = await invoke_llm(prompt, max_tokens=max_tokens, tier=tier)

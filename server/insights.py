@@ -542,6 +542,7 @@ Detected relationships (r = Pearson correlation over n days; TIR = % time 70-180
                     }
                 },
             },
+            site="insights",
         )
         for item in (result or {}).get("insights", []):
             if isinstance(item.get("index"), int):

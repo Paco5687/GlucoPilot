@@ -82,7 +82,16 @@ def get_settings():
     values = {name: config_value(name, PLAIN_DEFAULTS.get(name, "")) for name in PLAIN_KEYS}
     readonly = {name: os.getenv(name.upper(), "") for name in READONLY_KEYS}
     readonly["ingest_token"] = ingest_token()
-    return {"secrets": secrets, "values": values, "readonly": readonly}
+    # Non-secret Breeze connector status. Deliberately never includes the
+    # credential, any part of it, or the contents of its file — only whether a
+    # usable one is present.
+    from . import breeze
+    return {
+        "secrets": secrets,
+        "values": values,
+        "readonly": readonly,
+        "breeze": breeze.status_summary(),
+    }
 
 
 class SettingsUpdate(BaseModel):
