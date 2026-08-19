@@ -689,7 +689,14 @@ async def handle(body: dict[str, Any], actor: str = "owner") -> dict[str, Any]:
         return {"error": "Memories belong to the account owner.", "_status": 403}
 
     if action == "threads":
-        return {"threads": _threads(actor)}
+        return {
+            "threads": _threads(actor),
+            # The Fast/Deep toggle only makes sense when a second model is
+            # actually configured; with none, the UI hides it entirely.
+            "quality_tier_available": bool(
+                config_value("quality_llm_url") and config_value("quality_llm_model")
+            ),
+        }
 
     if action == "history":
         if not _thread_for(body.get("thread_id"), actor):
