@@ -412,6 +412,7 @@ IMPORTANT: This is educational only. Always frame suggestions as "discuss with y
                         }
                     },
                 },
+                site="patterns",
             )
             for ai in (ai_result or {}).get("patterns", []):
                 idx = ai.get("index")

@@ -414,3 +414,128 @@ def status_summary() -> dict[str, Any]:
         "socket_present": Path(socket_path()).exists(),
         "credential": credential_state,
     }
+
+# ── Hybrid routing ───────────────────────────────────────────────────────────
+# BREEZE_ENABLED=true means Breeze is AVAILABLE for eligible calls, not that
+# every text call must use it. The route is decided deterministically before
+# any inference request; sending a call to local because it exceeds a declared
+# capability is a routing decision, not a failure fallback. Once a Breeze
+# request has begun, its failure surfaces — never retried, never rerouted.
+
+# Call sites allowed on the Breeze route at all. Everything else — the
+# interactive Companion reply, grounding repair, health summary, visit
+# narrative, insights, patterns, and every image call — stays on the existing
+# local providers until the route's context window can hold them. A site's
+# max_tokens is never reduced to make it eligible.
+BREEZE_ELIGIBLE_SITES = frozenset({
+    "companion_distill",
+    "record_title_backfill",
+    "companion_memory_extract",
+})
+
+# Sites whose prompts are small enough that a byte count — a conservative
+# upper bound on byte-level BPE tokens — proves fit even with no tokenizer.
+# Conditional sites (memory extraction) need a real token count or go local.
+STATICALLY_TINY_SITES = frozenset({
+    "companion_distill",
+    "record_title_backfill",
+})
+
+CAPABILITY_CACHE_TTL_SECONDS = 300
+_capability_cache: tuple[float, dict[str, int]] | None = None
+
+
+def _reset_capability_cache() -> None:
+    global _capability_cache
+    _capability_cache = None
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+async def discovered_limits() -> dict[str, int]:
+    """The route's context/output limits, discovered when the Router offers them.
+
+    New Router releases report `capabilities` on the model-status endpoint and
+    those values win. Absent or malformed fields fall back to the configured
+    BREEZE_MAX_CONTEXT_TOKENS and the fixed output ceiling — never to
+    "unlimited". Discovery failure (router down, credential missing) also uses
+    the fallbacks: the routing budget stays defined, and the dispatch attempt
+    surfaces the real problem.
+    """
+    global _capability_cache
+    now = time.monotonic()
+    if _capability_cache and now - _capability_cache[0] < CAPABILITY_CACHE_TTL_SECONDS:
+        return _capability_cache[1]
+    limits = {
+        "max_context_tokens": max_context_tokens(),
+        "max_output_tokens": MAX_OUTPUT_TOKENS,
+    }
+    try:
+        capacity = await model_capacity()
+    except BreezeError:
+        return limits  # not cached: recover as soon as discovery works again
+    discovered_context = _positive_int(capacity.get("max_context_tokens"))
+    discovered_output = _positive_int(capacity.get("max_output_tokens"))
+    if discovered_context is not None:
+        limits["max_context_tokens"] = discovered_context
+    if discovered_output is not None:
+        limits["max_output_tokens"] = discovered_output
+    _capability_cache = (now, limits)
+    return limits
+
+
+def _log_route(site: str, route: str, reason: str, *, prompt_tokens: int | None,
+               output_tokens: int, limit: int | None) -> None:
+    # PHI-free by construction: a fixed site identifier and numbers only.
+    log.info(
+        "breeze routing site=%s route=%s reason=%s prompt_tokens=%s output_tokens=%s context_limit=%s",
+        site or "unspecified", route, reason, prompt_tokens, output_tokens, limit,
+    )
+
+
+async def route_text_call(site: str, prompt: str, max_tokens: int, count_tokens_fn) -> tuple[str, dict[str, Any]]:
+    """Deterministic pre-dispatch routing for a text call.
+
+    Returns ("breeze"|"local_text", details). details carries prompt_tokens
+    when they were measured, so dispatch does not count twice.
+    """
+    if not enabled():
+        _log_route(site, "local_text", "disabled", prompt_tokens=None,
+                   output_tokens=max_tokens, limit=None)
+        return "local_text", {}
+    if site not in BREEZE_ELIGIBLE_SITES:
+        _log_route(site, "local_text", "site_policy", prompt_tokens=None,
+                   output_tokens=max_tokens, limit=None)
+        return "local_text", {}
+
+    limits = await discovered_limits()
+    if max_tokens > limits["max_output_tokens"]:
+        _log_route(site, "local_text", "output_exceeded", prompt_tokens=None,
+                   output_tokens=max_tokens, limit=limits["max_output_tokens"])
+        return "local_text", {}
+
+    prompt_tokens = await count_tokens_fn(prompt)
+    if prompt_tokens is None:
+        if site in STATICALLY_TINY_SITES:
+            prompt_tokens = len(prompt.encode("utf-8"))
+        else:
+            _log_route(site, "local_text", "token_count_unavailable", prompt_tokens=None,
+                       output_tokens=max_tokens, limit=limits["max_context_tokens"])
+            return "local_text", {}
+
+    required = prompt_tokens + max_tokens + CHAT_TEMPLATE_OVERHEAD_TOKENS
+    if required > limits["max_context_tokens"]:
+        _log_route(site, "local_text", "context_exceeded", prompt_tokens=prompt_tokens,
+                   output_tokens=max_tokens, limit=limits["max_context_tokens"])
+        return "local_text", {}
+
+    _log_route(site, "breeze", "eligible", prompt_tokens=prompt_tokens,
+               output_tokens=max_tokens, limit=limits["max_context_tokens"])
+    return "breeze", {"prompt_tokens": prompt_tokens}
+

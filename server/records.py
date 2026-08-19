@@ -145,7 +145,7 @@ async def _extract(images: list[str], page_numbers: list[int]) -> dict:
         + ", ".join(str(page) for page in page_numbers)
         + ". Use those absolute document page numbers in source_page; do not restart numbering for this batch."
     )
-    return await invoke_llm(numbered_prompt, response_json_schema=EXTRACTION_SCHEMA, max_tokens=6000, images=images)
+    return await invoke_llm(numbered_prompt, response_json_schema=EXTRACTION_SCHEMA, max_tokens=6000, images=images, site="record_extraction")
 
 
 def _absolute_source_pages(part: dict, page_numbers: list[int]) -> None:
@@ -546,6 +546,7 @@ async def backfill_titles():
                     "label (lab vendor, imaging center, or test/panel name) — no date, max 5 words:\n\n"
                     + summary[:800],
                     max_tokens=30,
+                    site="record_title_backfill",
                 )
                 src = (out or "").strip().strip('"').splitlines()[0][:60] if out else ""
             except Exception:

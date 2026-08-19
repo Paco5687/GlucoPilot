@@ -18,7 +18,6 @@ from http.server import BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn, UnixStreamServer
 
 import pytest
-from fastapi import HTTPException
 
 from server import breeze
 
@@ -389,7 +388,9 @@ class TestProviderDispatch:
         monkeypatch.setattr(llm.breeze, "complete", fake_breeze)
         monkeypatch.setattr(llm, "_invoke_local", fake_local)
 
-        assert asyncio.run(llm.invoke_llm("plain text", max_tokens=100)) == "text answer"
+        assert asyncio.run(
+            llm.invoke_llm("plain text", max_tokens=100, site="companion_distill")
+        ) == "text answer"
         assert calls == {"breeze": True}
 
         calls.clear()
@@ -414,20 +415,30 @@ class TestProviderDispatch:
         monkeypatch.setattr(llm, "_invoke_openai", must_not_run)
 
         with pytest.raises(breeze.BreezeError):
-            asyncio.run(llm.invoke_llm("anything", max_tokens=10))
+            asyncio.run(llm.invoke_llm("anything", max_tokens=10, site="companion_distill"))
 
-    def test_breeze_provider_requires_explicit_enablement(self, router, monkeypatch):
+    def test_disabled_breeze_routes_local_and_never_dispatches(self, router, monkeypatch):
         from server import llm
 
         monkeypatch.setattr(llm, "config_value", lambda name, default="": (
             "breeze" if name == "llm_provider" else default))
         monkeypatch.setenv("BREEZE_ENABLED", "false")
 
-        with pytest.raises(HTTPException) as err:
-            asyncio.run(llm.invoke_llm("anything", max_tokens=10))
+        called = {}
 
-        assert err.value.status_code == 503
-        assert "BREEZE_ENABLED is false" in err.value.detail
+        async def local(prompt, schema, max_tokens, images=None, **kw):
+            called["local"] = True
+            return "served locally"
+
+        async def must_not_run(*args, **kwargs):
+            raise AssertionError("Breeze dispatched while BREEZE_ENABLED=false")
+
+        monkeypatch.setattr(llm, "_invoke_local", local)
+        monkeypatch.setattr(llm.breeze, "complete", must_not_run)
+
+        result = asyncio.run(llm.invoke_llm("anything", max_tokens=10, site="companion_distill"))
+        assert result == "served locally"
+        assert called == {"local": True}
 
     def test_stream_yields_one_complete_chunk(self, router, monkeypatch):
         from server import llm
@@ -442,7 +453,8 @@ class TestProviderDispatch:
         monkeypatch.setattr(llm.breeze, "complete", fake_breeze)
 
         async def collect():
-            return [chunk async for chunk in llm.invoke_llm_stream("hi", max_tokens=50, stop=["\n\n—"])]
+            return [chunk async for chunk in llm.invoke_llm_stream(
+                "hi", max_tokens=50, stop=["\n\n—"], site="companion_distill")]
 
         chunks = asyncio.run(collect())
         # One chunk, not fake token-sized slices.

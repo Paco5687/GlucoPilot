@@ -119,7 +119,7 @@ async def extract_insurance(file: UploadFile, back: UploadFile | None = None):
     if not images:
         raise HTTPException(status_code=400, detail="No image provided.")
     try:
-        extracted = await invoke_llm(EXTRACTION_PROMPT, response_json_schema=EXTRACTION_SCHEMA, max_tokens=1500, images=images)
+        extracted = await invoke_llm(EXTRACTION_PROMPT, response_json_schema=EXTRACTION_SCHEMA, max_tokens=1500, images=images, site="insurance_extraction")
     except Exception as err:
         log.exception("insurance extraction failed")
         raise HTTPException(status_code=502, detail=f"Extraction failed: {err}")

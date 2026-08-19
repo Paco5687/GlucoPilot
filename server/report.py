@@ -537,6 +537,7 @@ Write a concise, professional "quarter in review" for the care team. Reference t
                 "required": ["headline", "glucose_summary", "discussion_points", "evidence_item_ids"],
             },
             max_tokens=1500,
+            site="visit_narrative",
         )
         return link_generated_narrative(generated, evidence_reasoning)
     except Exception:

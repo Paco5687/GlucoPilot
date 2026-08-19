@@ -263,7 +263,7 @@ async def generate() -> dict[str, Any]:
     prompt = await _fitted_prompt(prompt_context)
     # Fast default model: the quality (27B) model is currently GPU-starved and
     # times out on a synthesis this size. The fast model handles it in seconds.
-    result = await invoke_llm(prompt, response_json_schema=SUMMARY_SCHEMA, max_tokens=SUMMARY_MAX_TOKENS)
+    result = await invoke_llm(prompt, response_json_schema=SUMMARY_SCHEMA, max_tokens=SUMMARY_MAX_TOKENS, site="health_summary")
     result = resolve_prompt_aliases(result, alias_to_id)
     return await _finish_summary(result, context, evidence_reasoning)
 
