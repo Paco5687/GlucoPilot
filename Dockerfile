@@ -1,8 +1,10 @@
 # Stage 1: build the React SPA
 FROM node:22-alpine AS frontend
 WORKDIR /fe
-COPY frontend/package.json ./
-RUN npm install --no-audit --no-fund
+COPY frontend/package.json frontend/package-lock.json ./
+# npm ci: install exactly the committed lockfile — a fresh resolve against the
+# registry is neither reproducible nor reliable (arborist crashed on 2026-09-17).
+RUN npm ci --no-audit --no-fund
 COPY frontend/ ./
 RUN npm run build
 
