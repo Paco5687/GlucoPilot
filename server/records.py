@@ -138,14 +138,36 @@ def _encode_images(paths: list[Path]) -> list[str]:
     return encoded
 
 
-async def _extract(images: list[str], page_numbers: list[int]) -> dict:
+async def _extract(images: list[str], page_numbers: list[int], repair_note: str = "") -> dict:
     numbered_prompt = (
         EXTRACTION_PROMPT
         + "\nThe supplied images are document pages "
         + ", ".join(str(page) for page in page_numbers)
         + ". Use those absolute document page numbers in source_page; do not restart numbering for this batch."
+        + repair_note
     )
     return await invoke_llm(numbered_prompt, response_json_schema=EXTRACTION_SCHEMA, max_tokens=6000, images=images, site="record_extraction")
+
+
+def _unnamed_result_count(part: dict) -> int:
+    """Extracted rows that carry a value but no usable test/measurement name.
+
+    Normalization drops these, so without repair the values would vanish
+    silently — the record must not be marked cleanly processed around them.
+    """
+    def present(row: dict, keys: tuple[str, ...]) -> bool:
+        return any(row.get(k) is not None and str(row.get(k)).strip() for k in keys)
+
+    count = 0
+    for row in part.get("lab_results") or []:
+        if isinstance(row, dict) and present(row, ("original_value", "value")) and not present(
+            row, ("original_test_name", "test_name", "name")
+        ):
+            count += 1
+    for row in part.get("measurements") or []:
+        if isinstance(row, dict) and present(row, ("value",)) and not present(row, ("name",)):
+            count += 1
+    return count
 
 
 def _absolute_source_pages(part: dict, page_numbers: list[int]) -> None:
@@ -185,6 +207,7 @@ async def _extract_document(page_paths: list[Path]) -> dict:
     }
     batches = [page_paths[i : i + PAGE_BATCH] for i in range(0, len(page_paths), PAGE_BATCH)]
     failed = 0
+    unnamed = 0
     last_err: Exception | None = None
     for idx, batch in enumerate(batches):
         page_numbers = list(range(idx * PAGE_BATCH + 1, idx * PAGE_BATCH + len(batch) + 1))
@@ -200,6 +223,26 @@ async def _extract_document(page_paths: list[Path]) -> dict:
         if part is None:
             failed += 1
             continue
+        # Repair pass: values without names get silently dropped downstream, so
+        # re-prompt the batch once with an explicit correction before accepting.
+        batch_unnamed = _unnamed_result_count(part)
+        if batch_unnamed:
+            log.warning("batch %d/%d returned %d unnamed result(s); re-prompting", idx + 1, len(batches), batch_unnamed)
+            note = (
+                f"\nIMPORTANT: your previous extraction of these pages returned {batch_unnamed} result(s) "
+                "with a value but no test name. Every lab result must include original_test_name and "
+                "test_name (and every measurement a name) exactly as printed next to the value on the page. "
+                "Re-read the pages and include the printed name for every value."
+            )
+            try:
+                repaired = await _extract(_encode_images(batch), page_numbers, repair_note=note)
+                _absolute_source_pages(repaired, page_numbers)
+                if _unnamed_result_count(repaired) < batch_unnamed:
+                    part = repaired
+                    batch_unnamed = _unnamed_result_count(repaired)
+            except Exception as err:  # noqa: BLE001 - keep the original batch on repair failure
+                log.warning("batch %d/%d name-repair extract failed: %s", idx + 1, len(batches), str(err)[:150])
+        unnamed += batch_unnamed
         if not merged["doc_type"] and part.get("doc_type"):
             merged["doc_type"] = part["doc_type"]
         if not merged["source_name"] and part.get("source_name"):
@@ -214,6 +257,7 @@ async def _extract_document(page_paths: list[Path]) -> dict:
         raise last_err or RuntimeError("extraction failed for every page batch")
     merged["_batches_failed"] = failed
     merged["_batches_total"] = len(batches)
+    merged["_unnamed_results"] = unnamed
     return merged
 
 
@@ -296,6 +340,69 @@ async def _upload(file: UploadFile):
         raise HTTPException(status_code=502, detail=f"Extraction failed: {err}")
 
 
+def _range_status(value, low, high) -> str | None:
+    """Deterministic value-vs-reference-range check; None when not evaluable."""
+    try:
+        value = float(value)
+        low = float(low) if low is not None else None
+        high = float(high) if high is not None else None
+    except (TypeError, ValueError):
+        return None
+    if low is None and high is None:
+        return None
+    if high is not None and value > high:
+        return "high"
+    if low is not None and value < low:
+        return "low"
+    return "in_range"
+
+
+def _num(value: float) -> str:
+    return f"{value:g}"
+
+
+def _computed_range_note(labs: list[dict]) -> tuple[str, int, int]:
+    """Code-computed '(N of M values out of range)' sentence for the summary.
+
+    The model writes the prose summary, but whether values sit inside their own
+    extracted reference ranges is arithmetic, not judgment — computing it here
+    and appending it means the stored summary can never claim 'all normal'
+    while the extracted numbers say otherwise. Returns (note, out, evaluated).
+    """
+    out_of_range: list[dict] = []
+    evaluated = 0
+    for lab in labs:
+        status = _range_status(lab.get("value"), lab.get("reference_low"), lab.get("reference_high"))
+        if status is None:
+            continue
+        evaluated += 1
+        if status != "in_range":
+            out_of_range.append(lab)
+    if not evaluated:
+        return "", 0, 0
+    if not out_of_range:
+        return (
+            f"[Computed from the extracted values: all {evaluated} results with reference ranges are within range.]",
+            0,
+            evaluated,
+        )
+    details = ", ".join(
+        f"{lab.get('test_name') or 'unnamed'} {_num(float(lab['value']))}"
+        + (f" {lab['unit']}" if lab.get("unit") else "")
+        + f" (ref {_num(float(lab['reference_low'])) if lab.get('reference_low') is not None else '—'}"
+        + f"–{_num(float(lab['reference_high'])) if lab.get('reference_high') is not None else '—'})"
+        for lab in out_of_range[:6]
+    )
+    if len(out_of_range) > 6:
+        details += ", …"
+    return (
+        f"[Computed from the extracted values: {len(out_of_range)} of {evaluated} results with "
+        f"reference ranges are OUT OF RANGE: {details}.]",
+        len(out_of_range),
+        evaluated,
+    )
+
+
 async def _extract_and_store(record: dict, stored: Path, suffix: str) -> dict:
     """Render, extract, audit, and refresh the compatibility LabResult view."""
     if suffix == ".pdf":
@@ -335,28 +442,48 @@ async def _extract_and_store(record: dict, stored: Path, suffix: str) -> dict:
 
     b_total = extracted.get("_batches_total", 1)
     record_date = extracted.get("record_date") or ""
-    current_lab_count = len(
-        db.query_entities(
-            "LabResult", {"record_id": record["id"], "owner_email": OWNER_EMAIL}
-        )
+    stored_labs = db.query_entities(
+        "LabResult", {"record_id": record["id"], "owner_email": OWNER_EMAIL}
     )
+
+    # The prose summary is model-written; the range verdict is arithmetic over
+    # the stored rows and always appended so the two can't silently disagree.
+    range_note, out_of_range_count, range_evaluated_count = _computed_range_note(stored_labs)
+    summary = (extracted.get("summary") or "").strip()
+    if range_note:
+        summary = f"{summary} {range_note}".strip()
+
+    unnamed = int(extracted.get("_unnamed_results") or 0)
+    undated = sum(1 for lab in stored_labs if not str(lab.get("collected_date") or "").strip())
+    issues = []
+    if b_failed:
+        issues.append(f"{b_failed}/{b_total} page-batches failed to read")
+    if unnamed:
+        issues.append(f"{unnamed} extracted value(s) had no test name even after a repair pass and were not stored")
+    if undated:
+        issues.append(f"{undated} stored result(s) have no collection date and no document date to fall back on")
+
     return db.update_entity(
         "MedicalRecord",
         record["id"],
         {
-            "status": "processed",
+            # Anonymous or undated results mean the extraction can't be trusted
+            # silently — surface the record for human review instead.
+            "status": "needs_review" if (unnamed or undated) else "processed",
             "doc_type": extracted.get("doc_type") or "other",
             "record_date": record_date,
-            "summary": extracted.get("summary") or "",
+            "summary": summary,
+            "out_of_range_count": out_of_range_count,
+            "range_evaluated_count": range_evaluated_count,
             "title": _make_title(extracted.get("source_name"), record_date, record.get("filename")),
             "page_count": len(page_paths),
-            "lab_count": current_lab_count,
+            "lab_count": len(stored_labs),
             "extraction_count": len(observations),
             "verified_results_preserved": preserved_count,
             "extraction_parser_version": lab_audit.PARSER_VERSION if audit_run_id else "legacy",
             "extraction_schema_version": lab_audit.SCHEMA_VERSION if audit_run_id else "legacy",
             # Note when some page-batches couldn't be read so the user can re-run.
-            "error": f"Partial: {b_failed}/{b_total} page-batches failed to read" if b_failed else "",
+            "error": "; ".join(issues),
             "partial": bool(b_failed),
         },
     )
