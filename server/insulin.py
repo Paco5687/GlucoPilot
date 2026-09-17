@@ -12,6 +12,10 @@ those for the authoritative TDD, then derive body-relative resistance proxies:
 Everything is an ESTIMATE/indicator, and it's only as current as the last day
 with complete pump data (Glooko-only stretches have no basal) — so we surface
 `data_through` prominently.
+
+Totals arrive pre-screened: the reconciler flags days whose reported total
+falls below the scheduled-basal floor as suspect_undercount and deselects
+them, so they never enter avg_tdd, the trend, or TDD/kg here.
 """
 
 import logging
@@ -338,6 +342,13 @@ def estimate() -> dict[str, Any]:
     for day in window_reported:
         source = day["pump_reported"]["selected"]["source"]
         window_reported_sources[source] = window_reported_sources.get(source, 0) + 1
+    # Suspect days carry no usable total, so they are absent from by_day and
+    # the window list — count them over the same date range instead.
+    window_suspect_dates = [
+        day["date"]
+        for day in reconciliation["days"]
+        if day.get("suspect_undercount") and day["date"] >= window[0]
+    ]
     estimate_reconciliation = {
         **reconciliation["summary"],
         "pump_reported_avg_tdd": round(
@@ -350,6 +361,8 @@ def estimate() -> dict[str, Any]:
         ) if window_calculated else None,
         "calculated_days": len(window_calculated),
         "calculated_source": "tandem_delivered" if window_calculated else None,
+        "suspect_undercount_days": len(window_suspect_dates),
+        "suspect_undercount_dates": window_suspect_dates,
         "analysis_window_days": len(window),
         "all_history_pump_reported_days": reconciliation["summary"]["pump_reported_days"],
         "all_history_calculated_days": reconciliation["summary"]["calculated_days"],

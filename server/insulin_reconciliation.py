@@ -13,6 +13,13 @@ complete per-day figure through its v3 graph API, and `glooko` maps it into a
 Daily Total row — which lands here as a pump_reported total rather than a
 calculated one. That distinction is the point: the number is authoritative
 because the pump vendor computed it, not because this module summed events.
+
+Authoritative is not the same as unchecked: in Aug 2026 the Glooko daily totals
+silently under-reported (a fraction of the real TDD), falling below what the
+programmed manual-mode basal schedule alone delivers. Each reported total is
+therefore cross-checked against a floor integrated from that day's
+scheduled_basals segments; totals under the floor (minus a suspend tolerance)
+are flagged ``suspect_undercount`` and excluded from selection and summaries.
 """
 
 from __future__ import annotations
@@ -26,9 +33,12 @@ from zoneinfo import ZoneInfo
 from .typed_treatments import parse_pump_daily_total
 
 
-RECONCILIATION_VERSION = "pump-insulin-reconciliation/1.0.0"
+RECONCILIATION_VERSION = "pump-insulin-reconciliation/1.1.0"
 DELIVERED_COVERAGE_THRESHOLD = 0.99
 BOLUS_DUPLICATE_WINDOW_SECONDS = 90
+# A pump-reported total may sit under the scheduled-basal floor by this
+# fraction before it is flagged — suspends legitimately trim some delivery.
+SUSPECT_UNDERCOUNT_TOLERANCE = 0.10
 _SOURCE_PRIORITY = {"tandem": 0, "nightscout": 1, "glooko": 2, "csv": 3, "legacy": 4}
 
 
@@ -352,6 +362,27 @@ def reconcile_treatments(
         daily_bolus = bolus.get(day, {"units": 0.0, "events": 0})
         calculated_total = round(delivered["units"] + float(daily_bolus["units"]), 3) if delivered_complete else None
         selected_report = report["selected"]
+        # Integrity floor (Aug 2026 Glooko regression): the v3 daily totals
+        # silently dropped below what the programmed manual-mode basal schedule
+        # alone would deliver, which is physically impossible.  The day's
+        # scheduled_basals segments (rate × duration, manual-mode hours only)
+        # give a hard lower bound; a vendor-reported total under that bound,
+        # beyond the suspend allowance, is flagged and never selected — the
+        # candidate stays visible for review instead of skewing averages.
+        suspect_undercount = None
+        if selected_report is not None and scheduled["units"] > 0:
+            floor_units = round(scheduled["units"] * (1 - SUSPECT_UNDERCOUNT_TOLERANCE), 3)
+            if selected_report["total_units"] < floor_units:
+                suspect_undercount = {
+                    "reported_total_units": selected_report["total_units"],
+                    "source": selected_report["source"],
+                    "scheduled_basal_units": scheduled["units"],
+                    "scheduled_basal_coverage_pct": scheduled["coverage_pct"],
+                    "floor_units": floor_units,
+                    "tolerance_pct": round(SUSPECT_UNDERCOUNT_TOLERANCE * 100),
+                }
+                selected_report = None
+                report = {**report, "selected": None}
         discrepancy = None
         if selected_report is not None and calculated_total is not None:
             difference = round(calculated_total - selected_report["total_units"], 3)
@@ -368,6 +399,8 @@ def reconcile_treatments(
             completeness = "complete_reported"
         elif delivered_complete:
             completeness = "complete_calculated"
+        elif suspect_undercount is not None:
+            completeness = "suspect_undercount"
         elif report["conflict"]:
             completeness = "conflicting_reported_totals"
         elif report["candidates"]:
@@ -404,6 +437,7 @@ def reconcile_treatments(
                     "coverage_pct": adjustments["coverage_pct"],
                     "conflict": adjustments["conflict"],
                 },
+                "suspect_undercount": suspect_undercount,
                 "discrepancy": discrepancy,
             }
         )
@@ -420,7 +454,14 @@ def reconcile_treatments(
         if day["pump_reported"]["selected"] is None and day["calculated"]["total_units"] is None
     ]
     activity_days = [day["date"] for day in reconciled_days if day["completeness"] != "no_insulin_data"]
+    suspect_days = [day for day in reconciled_days if day["suspect_undercount"]]
     limitations = []
+    if suspect_days:
+        limitations.append(
+            f"{len(suspect_days)} day(s) reported a daily insulin total below the scheduled-basal "
+            "floor, which is physically impossible; those totals are flagged suspect_undercount "
+            "and excluded from averages and trends."
+        )
     if any(day["scheduled_basal"]["coverage_pct"] > 0 for day in reconciled_days):
         limitations.append("Glooko basal records are scheduled/programmed rates, not confirmed delivery.")
         # An automated-mode pump delivers most insulin outside these events, so
@@ -482,6 +523,10 @@ def reconcile_treatments(
             "calculated_source": "tandem_delivered" if complete_calculated else None,
             "discrepancy_days": len(discrepancies),
             "discrepancies": discrepancies,
+            "suspect_undercount_days": len(suspect_days),
+            "suspect_undercounts": [
+                {"date": day["date"], **day["suspect_undercount"]} for day in suspect_days
+            ],
             "duplicates_suppressed": reported_duplicates + bolus_duplicates + basal_duplicates,
             "invalid_basal_segments": invalid_basal,
             "limitations": limitations,

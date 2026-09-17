@@ -378,6 +378,11 @@ export default function Insulin() {
                   sub={`${r.reconciliation?.calculated_days || 0} full delivered-basal day${r.reconciliation?.calculated_days === 1 ? "" : "s"}`}
                 />
               </div>
+              {r.reconciliation?.suspect_undercount_days > 0 && (
+                <p className="rounded-lg border border-rose-300 bg-rose-50 p-2 text-rose-800">
+                  {r.reconciliation.suspect_undercount_days} day{r.reconciliation.suspect_undercount_days === 1 ? "" : "s"} reported a daily total below what the programmed basal schedule alone would deliver — physically impossible, so those days are flagged as suspect undercounts and left out of the averages and trend above. See the pump total contradictions panel for the specifics.
+                </p>
+              )}
               {r.reconciliation?.discrepancy_days > 0 && (
                 <p className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-amber-800">
                   {r.reconciliation.discrepancy_days} day{r.reconciliation.discrepancy_days === 1 ? "" : "s"} differed by more than rounding between pump-reported and calculated TDD. The values are kept separate rather than silently combined.

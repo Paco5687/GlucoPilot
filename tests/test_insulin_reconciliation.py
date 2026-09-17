@@ -172,6 +172,181 @@ def test_visit_report_keeps_matching_sources_separate(pump_fixture, monkeypatch)
     assert output["calculated_avg_daily_basal"] == 24
 
 
+def _synthetic_scheduled_basal(day: str, start_hour: int, hours: float, rate: float) -> dict:
+    return {
+        "id": f"synthetic-floor-basal-{day}-{start_hour}",
+        "ns_id": f"glooko-floor-basal-{day}-{start_hour}",
+        "owner_email": "owner@glucopilot.local",
+        "source": "glooko",
+        "type": "tempbasal",
+        "event_type": "Temp Basal",
+        "timestamp": f"{day}T{start_hour:02d}:00:00Z",
+        "duration": hours * 60,
+        "absolute": rate,
+    }
+
+
+def _synthetic_daily_total(day: str, total: float, basal: float, bolus: float, source: str = "glooko") -> dict:
+    return {
+        "id": f"synthetic-floor-total-{day}-{source}",
+        "ns_id": f"{source}-dailytotal-{day}",
+        "owner_email": "owner@glucopilot.local",
+        "source": source,
+        "type": "insulin",
+        "event_type": "Daily Total",
+        "timestamp": f"{day}T12:00:00.000Z",
+        "notes": f"Bolus: {bolus}U | Basal: {basal}U | Total: {total}U",
+    }
+
+
+def test_reported_total_below_scheduled_floor_is_flagged_and_never_averaged():
+    """Aug 2026 Glooko regression: a daily total below the programmed
+    manual-mode basal delivery is physically impossible and must not skew
+    the average or trend."""
+    treatments = [
+        # Good day: 8 manual-mode hours at 2.0 U/h (16 U floor), plausible total.
+        _synthetic_scheduled_basal("2026-08-08", 0, 8, 2.0),
+        _synthetic_daily_total("2026-08-08", 38.0, 36.5, 1.5),
+        # Regression day: same schedule, but the vendor total collapsed to 6.5 U.
+        _synthetic_scheduled_basal("2026-08-09", 0, 8, 2.0),
+        _synthetic_daily_total("2026-08-09", 6.5, 6.0, 0.5),
+    ]
+    result = reconcile_treatments(treatments, ZoneInfo("UTC"))
+    good, bad = result["days"]
+
+    assert good["date"] == "2026-08-08"
+    assert good["suspect_undercount"] is None
+    assert good["completeness"] == "complete_reported"
+    assert good["pump_reported"]["selected"]["total_units"] == 38.0
+
+    assert bad["date"] == "2026-08-09"
+    assert bad["completeness"] == "suspect_undercount"
+    assert bad["pump_reported"]["selected"] is None
+    # The impossible value stays visible for review instead of vanishing.
+    assert bad["pump_reported"]["candidates"][0]["total_units"] == 6.5
+    assert bad["suspect_undercount"] == {
+        "reported_total_units": 6.5,
+        "source": "glooko",
+        "scheduled_basal_units": 16.0,
+        "scheduled_basal_coverage_pct": 33.3,
+        "floor_units": 14.4,
+        "tolerance_pct": 10,
+    }
+
+    summary = result["summary"]
+    assert summary["pump_reported_days"] == 1
+    assert summary["pump_reported_avg_tdd"] == 38.0
+    assert summary["suspect_undercount_days"] == 1
+    assert summary["suspect_undercounts"] == [{"date": "2026-08-09", **bad["suspect_undercount"]}]
+    assert any("suspect_undercount" in limitation for limitation in summary["limitations"])
+
+
+def test_totals_within_the_suspend_tolerance_of_the_floor_are_kept():
+    treatments = [
+        _synthetic_scheduled_basal("2026-08-10", 0, 8, 2.0),  # 16 U floor basis
+        _synthetic_daily_total("2026-08-10", 14.5, 14.0, 0.5),  # ≥ 14.4 U floor
+    ]
+    result = reconcile_treatments(treatments, ZoneInfo("UTC"))
+    day = result["days"][0]
+
+    assert day["suspect_undercount"] is None
+    assert day["completeness"] == "complete_reported"
+    assert day["pump_reported"]["selected"]["total_units"] == 14.5
+    assert result["summary"]["suspect_undercount_days"] == 0
+
+
+def test_day_without_scheduled_segments_has_no_floor_to_apply():
+    treatments = [_synthetic_daily_total("2026-08-11", 5.0, 4.5, 0.5)]
+    result = reconcile_treatments(treatments, ZoneInfo("UTC"))
+    day = result["days"][0]
+
+    assert day["suspect_undercount"] is None
+    assert day["completeness"] == "complete_reported"
+
+
+def test_suspect_day_falls_back_to_complete_delivered_calculation():
+    treatments = [
+        _synthetic_scheduled_basal("2026-08-12", 0, 8, 2.0),
+        _synthetic_daily_total("2026-08-12", 6.5, 6.0, 0.5),
+        {
+            "id": "synthetic-floor-tandem",
+            "owner_email": "owner@glucopilot.local",
+            "source": "tandem",
+            "type": "tempbasal",
+            "timestamp": "2026-08-12T00:00:00Z",
+            "duration": 1440,
+            "absolute": 1.0,
+        },
+    ]
+    result = reconcile_treatments(treatments, ZoneInfo("UTC"))
+    day = result["days"][0]
+
+    assert day["suspect_undercount"] is not None
+    assert day["pump_reported"]["selected"] is None
+    # Confirmed delivery is trustworthy even when the vendor total is not.
+    assert day["completeness"] == "complete_calculated"
+    assert day["calculated"]["total_units"] == 24.0
+    assert result["summary"]["calculated_days"] == 1
+    assert result["summary"]["pump_reported_days"] == 0
+
+
+def test_estimate_excludes_suspect_days_from_average_and_trend(monkeypatch):
+    from datetime import date, timedelta
+
+    from server import insulin
+
+    today = date(2026, 8, 15)
+    treatments = []
+    for offset in range(45, 0, -1):
+        day = (today - timedelta(days=offset)).isoformat()
+        treatments.append(_synthetic_scheduled_basal(day, 0, 8, 2.0))
+        if offset <= 5:
+            # The regression window: totals collapse below the 14.4 U floor.
+            treatments.append(_synthetic_daily_total(day, 6.5, 6.0, 0.5))
+        else:
+            treatments.append(_synthetic_daily_total(day, 38.0, 36.5, 1.5))
+
+    class _EmptyRepository:
+        def query(self, *args, **kwargs):
+            return []
+
+    class _Repositories:
+        treatments = _EmptyRepository()
+        glucose = _EmptyRepository()
+
+        def entity(self, name):
+            return _EmptyRepository()
+
+    class _FixedDatetime:
+        @staticmethod
+        def now(tz=None):
+            from datetime import datetime, time
+
+            return datetime.combine(today, time(12, 0), tzinfo=tz)
+
+    monkeypatch.setattr(insulin, "_all_treatments", lambda: treatments)
+    monkeypatch.setattr(insulin, "_app_timezone", lambda: ZoneInfo("UTC"))
+    monkeypatch.setattr(insulin, "_mode_split", lambda: None)
+    monkeypatch.setattr(insulin, "get_repositories", lambda: _Repositories())
+    monkeypatch.setattr(insulin, "datetime", _FixedDatetime)
+    monkeypatch.setattr(insulin.profile, "get_profile", lambda: {"weight_kg": 60.0})
+
+    result = insulin.estimate()
+
+    assert result["available"] is True
+    # Only the 40 plausible days count; without the guard the five 6.5 U days
+    # would have dragged the average down and faked a steep downward trend.
+    assert result["n_days"] == 40
+    assert result["avg_tdd"] == 38.0
+    assert result["trend"]["pct_change"] == 0
+    assert result["tdd_per_kg"] == round(38.0 / 60.0, 3)
+    # The page shows data only through the last trustworthy day.
+    assert result["data_through"] == (today - timedelta(days=6)).isoformat()
+    assert result["reconciliation"]["suspect_undercount_days"] == 5
+    assert len(result["reconciliation"]["suspect_undercount_dates"]) == 5
+    assert any("suspect_undercount" in limitation for limitation in result["quality"]["limitations"])
+
+
 def test_dst_day_uses_local_day_length_for_complete_coverage():
     treatments = [
         {

@@ -180,6 +180,39 @@ def detect_tdd_contradictions(reconciliation: dict[str, Any]) -> list[dict[str, 
                 )
             )
 
+        suspect = day.get("suspect_undercount")
+        if suspect:
+            detections.append(
+                _detection(
+                    "pump_tdd.reported_below_scheduled_floor",
+                    "pump_tdd",
+                    "blocking",
+                    "pump_day",
+                    date_label,
+                    "The pump-reported daily insulin total is below what the programmed manual-mode "
+                    "basal schedule alone would deliver, which is physically impossible; the day is "
+                    "flagged as a suspect undercount and excluded from insulin averages and trends.",
+                    {
+                        "label": "Pump-reported daily total",
+                        "source": suspect.get("source"),
+                        "value": suspect.get("reported_total_units"),
+                        "unit": "units/day",
+                    },
+                    {
+                        "label": "Scheduled basal floor",
+                        "source": "scheduled_basals",
+                        "value": suspect.get("floor_units"),
+                        "unit": "units/day",
+                    },
+                    {
+                        "date": date_label,
+                        "scheduled_basal_units": suspect.get("scheduled_basal_units"),
+                        "scheduled_basal_coverage_pct": suspect.get("scheduled_basal_coverage_pct"),
+                        "suspend_tolerance_pct": suspect.get("tolerance_pct"),
+                    },
+                )
+            )
+
         discrepancy = day.get("discrepancy") or {}
         selected = reported.get("selected")
         calculated = (day.get("calculated") or {}).get("total_units")

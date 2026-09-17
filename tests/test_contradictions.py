@@ -66,6 +66,54 @@ def test_rules_are_deterministic_and_preserve_both_sides(contradiction_fixture):
     assert glucose["context"]["threshold_is_review_signal_not_device_accuracy_claim"] is True
 
 
+def test_suspect_undercount_day_raises_a_blocking_pump_tdd_contradiction():
+    """The Aug 2026 Glooko regression pattern: a reported daily total below the
+    scheduled-basal floor must surface as a blocking pump_tdd contradiction."""
+    from zoneinfo import ZoneInfo
+
+    from server.insulin_reconciliation import reconcile_treatments
+
+    treatments = [
+        {
+            "id": "synthetic-floor-basal",
+            "ns_id": "glooko-floor-basal-1",
+            "owner_email": "owner@glucopilot.local",
+            "source": "glooko",
+            "type": "tempbasal",
+            "event_type": "Temp Basal",
+            "timestamp": "2026-08-09T00:00:00Z",
+            "duration": 480,
+            "absolute": 2.0,
+        },
+        {
+            "id": "synthetic-floor-total",
+            "ns_id": "glooko-dailytotal-2026-08-09",
+            "owner_email": "owner@glucopilot.local",
+            "source": "glooko",
+            "type": "insulin",
+            "event_type": "Daily Total",
+            "timestamp": "2026-08-09T12:00:00.000Z",
+            "notes": "Bolus: 0.5U | Basal: 6.0U | Total: 6.5U",
+        },
+    ]
+    reconciliation = reconcile_treatments(treatments, ZoneInfo("UTC"))
+
+    detections = contradictions.detect_tdd_contradictions(reconciliation)
+
+    assert [row["rule_id"] for row in detections] == ["pump_tdd.reported_below_scheduled_floor"]
+    detection = detections[0]
+    assert detection["domain"] == "pump_tdd"
+    assert detection["severity"] == "blocking"
+    assert detection["subject_key"] == "2026-08-09"
+    assert detection["left"]["value"] == 6.5
+    assert detection["left"]["source"] == "glooko"
+    assert detection["right"]["value"] == 14.4
+    assert detection["right"]["source"] == "scheduled_basals"
+    assert detection["context"]["scheduled_basal_units"] == 16.0
+    assert detection["context"]["suspend_tolerance_pct"] == 10
+    assert detection["detection_key"].startswith("sha256:")
+
+
 def test_hormone_rule_requires_an_explicit_source_timing_declaration(contradiction_fixture):
     snapshot = deepcopy(contradiction_fixture["snapshot"])
     snapshot["labs"][0].pop("expected_cycle_phase")
