@@ -15,6 +15,9 @@ async function invokeImplementation(_name, body) {
         weight_kg: 70,
         avg_tdd: 35,
         n_days: 30,
+        basal_pct: 60,
+        est_isf_mgdl_per_u: 51,
+        est_carb_ratio_g_per_u: 14.3,
         quality: {},
         reconciliation: {},
         per_phase_tdd_per_kg: {},
@@ -74,25 +77,48 @@ afterEach(() => {
   apiMocks.invoke.mockReset();
 });
 
-describe("Insulin response events", () => {
-  it("shows clean/default counts, explicit reasons, strata, and noncausal assumptions", async () => {
+describe("Insulin page", () => {
+  it("leads with the headline numbers in plain language", async () => {
     render(<Insulin />);
 
-    expect(await screen.findByText("Observed insulin response events")).toBeTruthy();
-    expect(screen.getByText("12")).toBeTruthy();
-    expect(screen.getByText("8")).toBeTruthy();
-    expect(screen.getByText(/carbohydrate in response window \(3\)/i)).toBeTruthy();
-    expect(screen.getByText(/23 mg\/dL\/U · n=4/i)).toBeTruthy();
-    expect(screen.getByText(/does not establish insulin causation, resistance, or absorption/i)).toBeTruthy();
-    expect(screen.getByText(/not pump-reported IOB/i)).toBeTruthy();
-    expect(screen.getByText(/does not diagnose biologic insulin resistance/i)).toBeTruthy();
+    expect(await screen.findByText("How much you use")).toBeTruthy();
+    expect(screen.getByText("35")).toBeTruthy(); // avg TDD
+    expect(screen.getByText(/60% basal · 40% bolus/)).toBeTruthy();
+    expect(screen.getByText("What one unit does")).toBeTruthy();
+    expect(screen.getByText("51")).toBeTruthy(); // estimated correction
+    expect(screen.getByText("24")).toBeTruthy(); // measured correction median
+    expect(screen.getByText(/median drop across 8 real correction doses/i)).toBeTruthy();
     expect(apiMocks.invoke).toHaveBeenCalledWith(
       "insulin",
       { action: "absorption", include_events: false },
     );
   });
 
-  it("keeps response events visible when complete TDD is unavailable", async () => {
+  it("moves method, counts, and limits into the collapsible details", async () => {
+    const { container } = render(<Insulin />);
+    await screen.findByText("How much you use");
+
+    const details = container.querySelector("details");
+    expect(details).toBeTruthy();
+    expect(details.textContent).toMatch(/How these numbers are computed/);
+    // Pipeline counts and caveats live inside details, not in the main flow.
+    expect(details.textContent).toMatch(/12 candidate windows/);
+    expect(details.textContent).toMatch(/carbohydrate in response window \(3\)/i);
+    expect(details.textContent).toMatch(/does not establish insulin causation, resistance, or absorption/i);
+    expect(details.textContent).toMatch(/not pump-reported IOB/i);
+    expect(details.textContent).toMatch(/does not diagnose biologic insulin resistance/i);
+    const outsideDetails = container.textContent.replace(details.textContent, "");
+    expect(outsideDetails).not.toMatch(/does not establish insulin causation/i);
+    expect(outsideDetails).not.toMatch(/algorithm insulin-response/i);
+  });
+
+  it("shows measured-response strata as a pattern card", async () => {
+    render(<Insulin />);
+    expect(await screen.findByText(/Measured correction drop by time of day/i)).toBeTruthy();
+    expect(screen.getByText(/23 mg\/dL\/U · n=4/i)).toBeTruthy();
+  });
+
+  it("keeps measured response visible when complete TDD is unavailable", async () => {
     apiMocks.invoke.mockImplementation(async (_name, body) => {
       if (body.action === "resistance") {
         return { data: { available: false, reason: "No complete TDD.", quality: {} } };
@@ -100,10 +126,9 @@ describe("Insulin response events", () => {
       return invokeImplementation(_name, body);
     });
 
-    render(<Insulin />);
+    const { container } = render(<Insulin />);
 
     expect(await screen.findByText("No complete TDD.")).toBeTruthy();
-    expect(screen.getByText("Observed insulin response events")).toBeTruthy();
-    expect(screen.getByText("12")).toBeTruthy();
+    expect(container.querySelector("details").textContent).toMatch(/12 candidate windows/);
   });
 });
