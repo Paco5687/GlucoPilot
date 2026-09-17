@@ -84,6 +84,7 @@ describe("Insulin page", () => {
     expect(await screen.findByText("How much you use")).toBeTruthy();
     expect(screen.getByText("35")).toBeTruthy(); // avg TDD
     expect(screen.getByText(/60% basal · 40% bolus/)).toBeTruthy();
+    expect(screen.getByText(/at 154 lb/)).toBeTruthy(); // 70 kg shown in pounds
     expect(screen.getByText("What one unit does")).toBeTruthy();
     expect(screen.getByText("51")).toBeTruthy(); // estimated correction
     expect(screen.getByText("24")).toBeTruthy(); // measured correction median

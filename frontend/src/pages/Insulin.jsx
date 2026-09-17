@@ -131,7 +131,7 @@ export default function Insulin() {
                 <div className="text-[10px] uppercase tracking-wide text-muted-foreground">For your body weight</div>
                 <div className={`text-3xl font-bold mt-1 ${cat.cls}`}>{cat.label}</div>
                 <div className="text-sm text-muted-foreground mt-1">
-                  <b className="tabular-nums">{r.tdd_per_kg}</b> U per kg per day{r.weight_kg && <> at {r.weight_kg} kg</>}
+                  <b className="tabular-nums">{r.tdd_per_kg}</b> U per kg per day{r.weight_kg && <> at {Math.round(r.weight_kg * 2.20462)} lb</>}
                 </div>
                 <div className="text-[11px] text-muted-foreground mt-2">Under 0.4 counts as sensitive; over 0.8 as resistant.</div>
               </div>
