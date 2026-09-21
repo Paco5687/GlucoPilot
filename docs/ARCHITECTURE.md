@@ -47,10 +47,11 @@ uploaded records, and config. One owner per deployment.
 | `glucose_reconciliation.py` | pure, versioned CGM/fingerstick pair derivation, contextual strata, directional-bias sample gates, and checked-low semantics |
 | `lab_audit.py` | audited medical-record extraction, validation, verification, correction history, and compatibility projection |
 | `contradictions.py` | deterministic cross-domain contradiction rules, typed ledger, attributed resolution workflow, and API |
-| `auth.py` | first-run setup, login, **admin vs. read-only provider role**, `require_admin` |
+| `auth.py` | first-run setup, login, **admin vs. read-only provider role**, single-use hashed provider invites, security-question password resets with lockout, `require_admin` |
+| `care_notes.py` | shared care-team notes (protocols, routines, prescription instructions) — provider-writable, author-attributed, woven into Companion context |
 | `entities.py` | generic entity REST API (writes gated to admin) |
 | `settings_api.py` | in-app settings & secrets (DB-stored, override env) |
-| `llm.py` | provider-agnostic `invoke_llm(...)`; Anthropic + local; vision + `tier="quality"` routing |
+| `llm.py` | provider-agnostic `invoke_llm(...)`; Anthropic, OpenAI, local, Breeze; vision routing, optional quality tier, per-site hybrid routing |
 | `companion_evidence.py` | bounded question-ranked Evidence Bundle retrieval, statement classification, citation validation, and change comparison |
 | `hypotheses.py` | guarded patient/algorithm/clinician hypothesis ledger, evidence revisions, attributable confidence, and clinician-gated decisions |
 | `episodes.py` | canonical health and medication-exposure intervals, append-only temporal membership revisions, non-causal semantics, and guarded decisions |
@@ -179,12 +180,21 @@ nav and control visibility. Built to `frontend/dist` and served by the backend.
 
 ## LLM layer
 
-`invoke_llm(prompt, response_json_schema=?, images=?, tier=?)`:
+`invoke_llm(prompt, response_json_schema=?, images=?, tier=?, site=?)`:
 
-- **provider** = `anthropic` | `local` (Settings page).
-- **images** → routes to a vision-capable model (lab extraction).
-- **tier="quality"** + text-only + a configured report model → routes to a larger
-  local model (the Visit Report narrative); everything else uses the fast default.
+- **provider** = `anthropic` | `openai` | `local` | `breeze` (Settings page).
+- **images** → always routes to a vision-capable model (lab extraction); images
+  never leave the local vision path regardless of provider.
+- **tier="quality"** + text-only + a configured second local model → backs the
+  Companion's optional **Deep** toggle (the toggle only renders when such a
+  model is configured). The Visit Report and all other narratives use the
+  default model.
+- **site** names the call site. With the `breeze` provider, a deterministic
+  pre-dispatch check routes a small allowlist of short text calls (companion
+  query distillation, record title backfill, memory extraction) to a
+  TensorBreeze router over a Unix socket when they fit the discovered context
+  budget; everything else stays local. No retry or fallback after dispatch, and
+  never a silent cloud fallback. See [BREEZE_CONNECTOR.md](BREEZE_CONNECTOR.md).
 
 See [LOCAL_MODELS.md](LOCAL_MODELS.md).
 

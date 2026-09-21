@@ -35,14 +35,14 @@ no health data ever leaves the machine.
 | **Dexcom API v3** | historical glucose + events | official API, ~1 h delay |
 | **Nightscout** | glucose + treatments + profile | if you run one |
 | **Tandem Source** | pump boluses / basal / suspends | t:slim X2 & Mobi, via `tconnectsync` |
-| **Glooko** | pump treatments | Tandem & Omnipod 5 fallback |
+| **Glooko** | pump treatments + daily insulin totals | first-class for Omnipod 5 — authoritative TDD incl. Automated Mode, pod site changes, pump-mode periods; also a Tandem fallback |
 | **Oura Ring** | sleep / readiness / HRV / HR / SpO₂ / temperature | OAuth |
 | **Fitbit / Google Health** | steps / heart rate (near-real-time) / sleep / SpO₂ / breathing rate | OAuth; Google Health is Fitbit's successor API |
 | **CSV / Base44 export** | bulk import | glucose, treatments, Oura, cycle |
 
 **Talk to your data**
 
-- **Companion** — a health chat grounded in bounded, source-linked Evidence Bundles across glucose, labs, cycle, wearables, medications, and symptoms. It classifies personal observations/calculations/correlations/hypotheses, keeps general medical references and user memory separate, and provides **Show evidence**, **What argues against this?**, and **What changed?** controls. It remembers what you tell it across conversations, keeps multiple threads, and lets you switch between a quick local model and a deeper one. Not a doctor: it surfaces patterns and questions for your care team — never diagnoses or dosing.
+- **Companion** — a health chat grounded in bounded, source-linked Evidence Bundles across glucose, labs, cycle, wearables, medications, and symptoms. It classifies personal observations/calculations/correlations/hypotheses, keeps general medical references and user memory separate, and provides **Show evidence**, **What argues against this?**, and **What changed?** controls. It remembers what you tell it across conversations and keeps multiple threads; configure an optional second, larger model and a Fast/Deep toggle appears for picking depth per message. Not a doctor: it surfaces patterns and questions for your care team — never diagnoses or dosing.
 - **Overview** — a cross-domain AI health summary that spots connections across your whole picture, not just glucose.
 - **Records** — upload lab reports and imaging (PDF/photo); a local vision model extracts values into **per-analyte trend charts**.
 - **Visit Report** — a printable 90-day clinical summary (AGP, TIR, per-phase metrics, labs, conditions, medications, symptoms) with an AI "quarter in review" narrative.
@@ -64,7 +64,7 @@ no health data ever leaves the machine.
 - **Explorer** — a zoomable/pannable canvas chart of glucose with insulin, basal bands, and IOB estimation.
 - **Patterns** — statistical + AI detection of recurring highs/lows, post-meal spikes, dawn phenomenon, etc.
 - **Insights** — cross-domain correlations: glucose × sleep × readiness × activity × cycle.
-- **Insulin** — total daily dose, estimated insulin resistance, and correction-response/absorption stats.
+- **Insulin** — daily totals with basal/bolus split, weight-adjusted resistance context, estimated vs **measured** correction response, time-in-range by pump mode, and a management-effort ledger.
 - **Cycle** — menstrual phases **inferred automatically from Oura nightly temperature**, tied to glucose/insulin.
 - **Wearables** — sleep, activity, HR/HRV, and SpO₂ deep-dives with glucose overlays.
 - **Symptom journal** — a nightly check-in (severity, duration, notes) that feeds the Companion, the analytics, and the report.
@@ -76,7 +76,7 @@ no health data ever leaves the machine.
 **Your clinical picture**
 
 - **Conditions, medications & allergies, profile** — entered once in Settings, woven into the AI's context and printed on the Visit Report.
-- **Provider login** — a read-only second account to share with a clinician.
+- **Provider access** — email a clinician a single-use invite link; they set their own read-only login (security-question resets, no email required). Providers get their own Companion threads and can leave **care-team notes** — protocols, routines, prescription instructions — which feed the Companion's context, attributed by author.
 
 ## Try the demo
 
@@ -105,7 +105,9 @@ Never enable `DEMO_MODE` on an instance holding real data — it skips login.
 
 - **Backend** — FastAPI + SQLite. A generic JSON entity store, session auth with
   a read-only provider role, per-source sync modules, a background scheduler, and
-  a pluggable LLM layer (Anthropic API or any local OpenAI-compatible server).
+  a pluggable LLM layer — Anthropic, OpenAI, any local OpenAI-compatible
+  server, or a self-hosted TensorBreeze GPU router over a Unix socket
+  ([`docs/BREEZE_CONNECTOR.md`](docs/BREEZE_CONNECTOR.md)).
 - **Frontend** — React + Vite + Tailwind (shadcn/ui), built and served by the backend.
 - **One container**, `docker compose up`. State lives in a single Docker volume.
 
