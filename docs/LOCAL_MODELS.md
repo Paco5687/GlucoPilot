@@ -10,8 +10,8 @@ models. Two roles:
 
 | Role | Used for | Needs |
 |---|---|---|
-| **Default local model** | lab-report extraction, everyday text | must be **vision-capable** (reads document images) |
-| **Report model** (optional) | Visit Report narrative only | text-only; a larger model improves prose |
+| **Default local model** | everything — lab-report extraction, the Companion, narratives, the Visit Report | must be **vision-capable** (reads document images) |
+| **Deep model** (optional) | the Companion's **Deep** toggle (which only appears once this is configured) | text-only; a larger, slower model for focused questions |
 
 Any OpenAI-compatible server works — [vLLM](https://docs.vllm.ai),
 [Ollama](https://ollama.com), LM Studio, llama.cpp's server, etc. Point the
@@ -41,16 +41,16 @@ WantedBy=sockets.target
 ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:11435
 ```
 
-Then set **Report server URL** = `unix:///run/glucopilot/ollama.sock` and
-**Report model name** = e.g. `gemma3:27b`. The app auto-appends `/v1`.
+Then set **Deep model server URL** = `unix:///run/glucopilot/ollama.sock` and
+**Deep model name** = e.g. `gemma3:27b`. The app auto-appends `/v1`.
 
 Plain `http://host:port` URLs also work if the container can reach them
 (e.g. via `host.docker.internal`, already added to compose).
 
-## Graceful loading of a big report model
+## Graceful loading of a big deep model
 
-The report is generated on demand and infrequently, so a large model shouldn't
-occupy GPU memory the rest of the time. **Ollama** handles this automatically —
+Deep answers are requested on demand and infrequently, so a large model
+shouldn't occupy GPU memory the rest of the time. **Ollama** handles this automatically —
 it loads a model on request and unloads it after an idle timeout:
 
 ```ini
@@ -67,9 +67,9 @@ ExecStart=/usr/local/bin/ollama serve
 ollama pull gemma3:27b
 ```
 
-With `KEEP_ALIVE=60s`, the report model is resident only around generation
-(cold-load ~20–30s the first time, then instant while warm), leaving the GPU
-free for other work.
+With `KEEP_ALIVE=60s`, the deep model is resident only around use (cold-load
+~20–30s the first time, then instant while warm), leaving the GPU free for
+other work.
 
 ## Notes
 
@@ -79,4 +79,8 @@ free for other work.
 - Prefer clean, aligned instruct models for the medical narrative — avoid
   "abliterated"/uncensored variants, which are a poor fit for careful,
   non-prescriptive clinical summaries.
-- If you leave the Report model blank, the report uses the default local model.
+- If you leave the Deep model blank, the Companion simply doesn't show the
+  Fast/Deep toggle — everything uses the default model.
+- Running a [TensorBreeze](BREEZE_CONNECTOR.md) router? The `breeze` provider
+  can take over a small set of short text calls while the local model keeps
+  everything else, including all vision work.

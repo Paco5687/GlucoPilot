@@ -234,13 +234,14 @@ export default function Settings() {
               </p>
             </div>
             <div className="border-t border-border pt-3 mt-1 space-y-3">
-              <p className="text-xs font-medium">Report model (optional, higher quality)</p>
+              <p className="text-xs font-medium">Deep model (optional, higher quality)</p>
               <p className="text-[11px] text-muted-foreground -mt-2">
-                A larger text model used only for the Visit Report narrative. Loaded on demand and unloaded when idle,
-                so it doesn't hold GPU memory the rest of the time. Leave blank to use the model above.
+                An optional larger text model that adds a Fast/Deep toggle to the Companion. Loaded on demand and
+                unloaded when idle, so it doesn't hold GPU memory the rest of the time. Leave blank to hide the toggle
+                and use the model above for everything.
               </p>
               <div>
-                <Label htmlFor="quality_llm_url" className="text-xs">Report server URL</Label>
+                <Label htmlFor="quality_llm_url" className="text-xs">Deep model server URL</Label>
                 <Input
                   id="quality_llm_url"
                   className="mt-1 font-mono text-xs"
@@ -250,7 +251,7 @@ export default function Settings() {
                 />
               </div>
               <div>
-                <Label htmlFor="quality_llm_model" className="text-xs">Report model name</Label>
+                <Label htmlFor="quality_llm_model" className="text-xs">Deep model name</Label>
                 <Input
                   id="quality_llm_model"
                   className="mt-1 font-mono text-xs"
@@ -260,7 +261,7 @@ export default function Settings() {
                 />
               </div>
               <div>
-                <Label htmlFor="quality_llm_context" className="text-xs">Report model context window (tokens)</Label>
+                <Label htmlFor="quality_llm_context" className="text-xs">Deep model context window (tokens)</Label>
                 <Input
                   id="quality_llm_context"
                   className="mt-1 font-mono text-xs"
