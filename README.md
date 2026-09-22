@@ -43,7 +43,7 @@ no health data ever leaves the machine.
 **Talk to your data**
 
 - **Companion** — a health chat grounded in bounded, source-linked Evidence Bundles across glucose, labs, cycle, wearables, medications, and symptoms. It classifies personal observations/calculations/correlations/hypotheses, keeps general medical references and user memory separate, and provides **Show evidence**, **What argues against this?**, and **What changed?** controls. It remembers what you tell it across conversations and keeps multiple threads; configure an optional second, larger model and a Fast/Deep toggle appears for picking depth per message. Not a doctor: it surfaces patterns and questions for your care team — never diagnoses or dosing.
-- **Overview** — a cross-domain AI health summary that spots connections across your whole picture, not just glucose.
+- **Overview** — a cross-domain AI health summary plus detected patterns (recurring highs/lows, post-meal spikes, dawn phenomenon) and correlations across glucose × sleep × readiness × activity × cycle.
 - **Records** — upload lab reports and imaging (PDF/photo); a local vision model extracts values into **per-analyte trend charts**.
 - **Visit Report** — a printable 90-day clinical summary (AGP, TIR, per-phase metrics, labs, conditions, medications, symptoms) with an AI "quarter in review" narrative.
 - **Share-safe exports** — preview and download role-appropriate private,
@@ -62,8 +62,6 @@ no health data ever leaves the machine.
 
 - **Dashboard** — real-time glucose, TIR/GMI/CV metrics, AGP, treatment timeline, live heart rate, wearable overlays.
 - **Explorer** — a zoomable/pannable canvas chart of glucose with insulin, basal bands, and IOB estimation.
-- **Patterns** — statistical + AI detection of recurring highs/lows, post-meal spikes, dawn phenomenon, etc.
-- **Insights** — cross-domain correlations: glucose × sleep × readiness × activity × cycle.
 - **Insulin** — daily totals with basal/bolus split, weight-adjusted resistance context, estimated vs **measured** correction response, time-in-range by pump mode, and a management-effort ledger.
 - **Cycle** — menstrual phases **inferred automatically from Oura nightly temperature**, tied to glucose/insulin.
 - **Wearables** — sleep, activity, HR/HRV, and SpO₂ deep-dives with glucose overlays.
@@ -96,10 +94,10 @@ Never enable `DEMO_MODE` on an instance holding real data — it skips login.
 | Explorer — zoomable glucose + insulin | Visit Report — printable clinician summary |
 |:---:|:---:|
 | [![Explorer](docs/screenshots/explorer.png)](docs/screenshots/explorer.png) | [![Visit Report](docs/screenshots/visit-report.png)](docs/screenshots/visit-report.png) |
-| **Insights** — cross-domain correlations | **Cycle** — phases inferred from Oura temperature |
-| [![Insights](docs/screenshots/insights.png)](docs/screenshots/insights.png) | [![Cycle](docs/screenshots/cycle.png)](docs/screenshots/cycle.png) |
-| **Patterns** — statistical + AI detection | **Records** — lab trends from uploaded reports |
-| [![Patterns](docs/screenshots/patterns.png)](docs/screenshots/patterns.png) | [![Records](docs/screenshots/records.png)](docs/screenshots/records.png) |
+| **Insulin** — daily dose, what one unit does, TIR by pump mode | **Overview** — AI summary, patterns & correlations |
+| [![Insulin](docs/screenshots/insulin.png)](docs/screenshots/insulin.png) | [![Overview](docs/screenshots/overview.png)](docs/screenshots/overview.png) |
+| **Cycle** — phases inferred from Oura temperature | **Records** — lab trends from uploaded reports |
+| [![Cycle](docs/screenshots/cycle.png)](docs/screenshots/cycle.png) | [![Records](docs/screenshots/records.png)](docs/screenshots/records.png) |
 
 ## Architecture
 

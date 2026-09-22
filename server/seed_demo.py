@@ -20,13 +20,16 @@ from .readings import persist_readings_deduped
 from .repositories import get_repositories
 
 RNG = random.Random(20260718)
-NOW = datetime(2026, 7, 18, 20, 0, tzinfo=timezone.utc)
+# Content is deterministic (fixed RNG); the window is evergreen so the demo
+# always shows "now" instead of the day the seeder was written.
+NOW = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
 DAYS = 90
 CYCLE_LEN = 28  # days, for the temperature/phase model
 
 SEED_TYPES = (
     "GlucoseReading", "Treatment", "OuraDaily", "OuraHeartRate", "FitbitDaily",
     "PeriodLog", "MedicalRecord", "LabResult", "Pattern", "Insight", "AIConversation",
+    "HealthProfile", "CareTeamNote",
 )
 
 
@@ -258,6 +261,64 @@ def _seed_patterns_and_insights() -> None:
         })
 
 
+def _seed_pump_daily_and_modes() -> None:
+    """Pump-reported daily insulin totals plus mode periods, so the Insulin
+    page (TDD, basal/bolus split, TIR by pump mode) looks alive."""
+    treatments = []
+    start = NOW - timedelta(days=DAYS)
+    for d in range(DAYS):
+        day = (start + timedelta(days=d)).replace(hour=0, minute=0, second=0, microsecond=0)
+        basal = round(RNG.uniform(21.0, 26.0), 1)
+        bolus = round(RNG.uniform(11.0, 16.5), 1)
+        total = round(basal + bolus, 1)
+        treatments.append({
+            "type": "insulin", "event_type": "Daily Total",
+            "timestamp": _iso(day.replace(hour=12)),
+            "notes": f"Bolus: {bolus}U | Basal: {basal}U | Total: {total}U",
+            "source": "demo", "owner_email": OWNER_EMAIL,
+        })
+        # Modes tile the day: a long automated stretch, manual around meals.
+        auto_hours = RNG.randint(14, 19)
+        treatments.append({
+            "type": "pump_mode", "event_type": "Pump Mode", "mode": "automatic",
+            "timestamp": _iso(day), "duration": float(auto_hours * 60),
+            "source": "demo", "owner_email": OWNER_EMAIL,
+        })
+        treatments.append({
+            "type": "pump_mode", "event_type": "Pump Mode", "mode": "manual",
+            "timestamp": _iso(day + timedelta(hours=auto_hours)),
+            "duration": float((24 - auto_hours) * 60),
+            "source": "demo", "owner_email": OWNER_EMAIL,
+        })
+        if d % 3 == 0:
+            treatments.append({
+                "type": "note", "event_type": "Site Change",
+                "timestamp": _iso(day.replace(hour=9)),
+                "source": "demo", "owner_email": OWNER_EMAIL,
+            })
+    db.bulk_create_entities("Treatment", treatments)
+
+
+def _seed_profile_and_care_notes() -> None:
+    db.create_entity("HealthProfile", {
+        "weight_kg": 68.0, "height_cm": 168.0, "date_of_birth": "1992-04-12",
+        "sex": "female", "owner_email": OWNER_EMAIL,
+    })
+    for kind, title, body, pinned in (
+        ("protocol", "Overnight low protocol",
+         "If CGM reads under 70 overnight: 12g fast carbs, recheck in 15 minutes. "
+         "Do not rage-bolus a rebound above 150 within 2 hours of a low.", True),
+        ("prescription", "Levothyroxine timing",
+         "Take on an empty stomach, 30-60 minutes before breakfast. "
+         "Separate from calcium or iron supplements by 4 hours.", False),
+    ):
+        db.create_entity("CareTeamNote", {
+            "kind": kind, "title": title, "body": body, "pinned": pinned,
+            "author": "provider:dr-demo", "author_name": "dr-demo",
+            "owner_email": OWNER_EMAIL,
+        })
+
+
 def _seed_chat() -> None:
     msgs = [
         {"role": "user", "content": "How did my mornings look this week?"},
@@ -280,6 +341,8 @@ def seed(force: bool = False) -> dict:
     if force:
         _wipe()
     r, t = _seed_glucose_and_treatments()
+    _seed_pump_daily_and_modes()
+    _seed_profile_and_care_notes()
     _seed_oura_and_fitbit()
     _seed_cycle()
     _seed_labs()
