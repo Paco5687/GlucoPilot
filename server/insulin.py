@@ -145,6 +145,70 @@ def _mode_split() -> dict[str, Any] | None:
     return {"window_days": MODE_SPLIT_DAYS, "modes": modes}
 
 
+def _weight_points() -> list[tuple[date, float]]:
+    """Dated WeightLog points, sorted — the resistance trend divides by the
+    weight the body actually had that week, not today's."""
+    points = []
+    for row in get_repositories().entity("WeightLog").query(
+        {"owner_email": OWNER_EMAIL}, "date", 1000
+    ):
+        try:
+            day = date.fromisoformat(str(row.get("date"))[:10])
+            weight = float(row.get("weight_kg"))
+        except (TypeError, ValueError):
+            continue
+        if weight > 0:
+            points.append((day, weight))
+    points.sort()
+    return points
+
+
+def _weight_on(day: date, points: list[tuple[date, float]], fallback: float | None) -> float | None:
+    if not points:
+        return fallback
+    if day <= points[0][0]:
+        return points[0][1]
+    if day >= points[-1][0]:
+        return points[-1][1]
+    for (d0, w0), (d1, w1) in zip(points, points[1:]):
+        if d0 <= day <= d1:
+            span = max((d1 - d0).days, 1)
+            return w0 + (w1 - w0) * (day - d0).days / span
+    return fallback
+
+
+def _weekly_series(
+    window: list[str], by_day: dict[str, dict[str, float]], profile_weight: float | None
+) -> list[dict[str, Any]]:
+    """Weekly TDD, basal/bolus split, and TDD/kg over the window. Weeks are
+    anchored to the newest complete day; buckets with under 3 days are omitted
+    rather than shown as confident points."""
+    if not window:
+        return []
+    points = _weight_points()
+    end = date.fromisoformat(window[-1])
+    series = []
+    for k in range(WINDOW_DAYS // 7, -1, -1):
+        bucket_end = end - timedelta(days=7 * k)
+        bucket_start = bucket_end - timedelta(days=6)
+        days = [d for d in window if bucket_start <= date.fromisoformat(d) <= bucket_end]
+        if len(days) < 3:
+            continue
+        total = mean(by_day[d]["total"] for d in days)
+        basals = [by_day[d]["basal"] for d in days if by_day[d]["basal"] is not None]
+        boluses = [by_day[d]["bolus"] for d in days if by_day[d]["bolus"] is not None]
+        weight = _weight_on(bucket_end - timedelta(days=3), points, profile_weight)
+        series.append({
+            "date": bucket_end.isoformat(),
+            "tdd_per_kg": round(total / weight, 3) if weight else None,
+            "avg_tdd": round(total, 1),
+            "avg_basal": round(mean(basals), 1) if basals else None,
+            "avg_bolus": round(mean(boluses), 1) if boluses else None,
+            "days": len(days),
+        })
+    return series
+
+
 def _category(tdd_per_kg: float | None) -> str:
     if tdd_per_kg is None:
         return "unknown"
@@ -231,6 +295,8 @@ def estimate() -> dict[str, Any]:
             trend = {"recent_tdd": round(recent, 1), "prior_tdd": round(prior, 1),
                      "pct_change": round((recent - prior) / prior * 100)}
 
+    series = _weekly_series(window, by_day, weight)
+
     data_through = days_sorted[-1]
     latest_activity = reconciliation["summary"]["latest_activity_date"]
     age_days = (datetime.now(_app_timezone()).date() - date.fromisoformat(data_through)).days
@@ -273,6 +339,7 @@ def estimate() -> dict[str, Any]:
         "est_carb_ratio_g_per_u": round(500 / avg_tdd, 1) if avg_tdd else None,  # 500 rule
         "per_phase_tdd_per_kg": per_phase,
         "trend": trend,
+        "series": series,
         "n_days": len(window),
         "data_through": data_through,
         "latest_insulin_activity": latest_activity,
