@@ -6,7 +6,7 @@ import ContradictionPanel from "@/components/ContradictionPanel";
 import ManagementBurdenCard from "@/components/insulin/ManagementBurdenCard";
 import { Syringe, Loader2, TrendingUp, TrendingDown, AlertTriangle, ChevronRight } from "lucide-react";
 import {
-  ResponsiveContainer, LineChart, Line, AreaChart, Area, XAxis, YAxis, Tooltip, ReferenceArea, CartesianGrid,
+  ResponsiveContainer, LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceArea, CartesianGrid, Legend,
 } from "recharts";
 
 const CAT = {
@@ -56,78 +56,117 @@ function shortDate(iso) {
   return `${Number(m)}/${Number(d)}`;
 }
 
-function ResistanceTrend({ series }) {
-  const points = (series || [])
-    .filter((p) => p.tdd_per_kg != null)
-    .map((p) => ({ ...p, weight_lb: p.weight_kg != null ? Math.round(p.weight_kg * 2.20462) : null }));
-  if (points.length < 3) return null;
-  const maxKg = Math.max(0.9, ...points.map((p) => p.tdd_per_kg)) + 0.05;
-  const weights = points.map((p) => p.weight_lb).filter((w) => w != null);
-  const showWeight = new Set(weights).size >= 2;
-  const weightPad = 5;
-  const first = points[0].date;
+const METHOD = { temp_basal: { label: "temp basal", color: "hsl(var(--primary))" }, bolus: { label: "bolus", color: "#f59e0b" } };
+
+// Hollow dot for weeks with too few corrections to trust the median.
+function ConfidenceDot({ cx, cy, payload, stroke }) {
+  if (cx == null || cy == null) return null;
+  return <circle cx={cx} cy={cy} r={3} stroke={stroke} strokeWidth={1.5} fill={payload?.confident ? stroke : "hsl(var(--card))"} />;
+}
+
+function DeliveredPanel({ points }) {
   return (
-    <div className="bg-card rounded-xl border border-border p-4">
-      <h3 className="text-sm font-semibold">Over time <span className="font-normal text-muted-foreground">· weekly averages since {shortDate(first)}</span></h3>
-      <div className="text-[10px] uppercase tracking-wide text-muted-foreground mt-2">Insulin per kg (resistance proxy)</div>
-      <div className="h-36">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={points} margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-            <ReferenceArea y1={0} y2={0.4} fill={BAND_COLORS.low} fillOpacity={0.05} stroke="none" />
-            <ReferenceArea y1={0.4} y2={0.6} fill={BAND_COLORS.typical} fillOpacity={0.05} stroke="none" />
-            <ReferenceArea y1={0.6} y2={0.8} fill={BAND_COLORS.elevated} fillOpacity={0.05} stroke="none" />
-            <ReferenceArea y1={0.8} y2={maxKg} fill={BAND_COLORS.high} fillOpacity={0.05} stroke="none" />
-            <XAxis dataKey="date" hide />
-            <YAxis domain={[0, maxKg]} tick={{ fontSize: 10 }} tickFormatter={(v) => v.toFixed(1)} width={40} />
-            <Tooltip
-              labelFormatter={(v) => `week ending ${shortDate(v)}`}
-              formatter={(v) => [`${v} U/kg`, "insulin per kg"]}
-              contentStyle={{ fontSize: 12, borderRadius: 8 }}
-            />
-            <Line type="monotone" dataKey="tdd_per_kg" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
+    <>
       <div className="text-[10px] uppercase tracking-wide text-muted-foreground mt-2">Insulin delivered (U/day, basal + bolus)</div>
       <div className="h-28">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={points} margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-            <XAxis dataKey="date" tickFormatter={shortDate} tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+            <XAxis dataKey="date" hide />
             <YAxis tick={{ fontSize: 10 }} width={40} />
-            <Tooltip
-              labelFormatter={(v) => `week ending ${shortDate(v)}`}
-              formatter={(v, name) => [`${v} U/day`, name]}
-              contentStyle={{ fontSize: 12, borderRadius: 8 }}
-            />
+            <Tooltip labelFormatter={(v) => `week ending ${shortDate(v)}`} formatter={(v, name) => [`${v} U/day`, name]} contentStyle={{ fontSize: 12, borderRadius: 8 }} />
             <Area type="monotone" dataKey="avg_basal" name="basal" stackId="d" stroke="hsl(var(--primary))" fill="hsl(var(--primary))" fillOpacity={0.28} strokeWidth={1.5} />
             <Area type="monotone" dataKey="avg_bolus" name="bolus" stackId="d" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.28} strokeWidth={1.5} />
           </AreaChart>
         </ResponsiveContainer>
       </div>
-      {showWeight && (
+    </>
+  );
+}
+
+function ResistanceTrend({ series, corrections, summary }) {
+  const points = (series || []).filter((p) => p.tdd_per_kg != null);
+  const correctionPoints = (corrections || []).filter((p) => p.drop_per_unit != null);
+  const hasCorrections = correctionPoints.length >= 3;
+  if (!hasCorrections && points.length < 3) return null;
+  const first = (hasCorrections ? correctionPoints : points)[0].date;
+  const maxKg = Math.max(0.9, ...points.map((p) => p.tdd_per_kg)) + 0.05;
+  const tip = { contentStyle: { fontSize: 12, borderRadius: 8 }, labelFormatter: (v) => `week ending ${shortDate(v)}` };
+  return (
+    <div className="bg-card rounded-xl border border-border p-4">
+      <h3 className="text-sm font-semibold">Over time <span className="font-normal text-muted-foreground">· weekly since {shortDate(first)}</span></h3>
+
+      {hasCorrections ? (
         <>
-          <div className="text-[10px] uppercase tracking-wide text-muted-foreground mt-2">Body weight (lb)</div>
-          <div className="h-20">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground mt-2">Glucose drop per correction unit (mg/dL per U)</div>
+          <div className="h-40">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={correctionPoints} margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                <XAxis dataKey="date" hide />
+                <YAxis tick={{ fontSize: 10 }} width={40} />
+                <Tooltip {...tip} formatter={(v, name, item) => [`${v} mg/dL/U · n=${item?.payload?.[`n_${name === "temp basal" ? "temp_basal" : "bolus"}`] ?? "?"} · start ${item?.payload?.median_start_glucose} mg/dL`, name]} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                {Object.entries(METHOD).map(([key, m]) => (
+                  <Line key={key} type="monotone" dataKey={`drop_per_unit_${key}`} name={m.label} stroke={m.color} strokeWidth={2}
+                    connectNulls dot={<ConfidenceDot stroke={m.color} />} activeDot={{ r: 4 }} />
+                ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+          {summary?.n_clean > 0 && (
+            <div className="text-[11px] text-muted-foreground mt-1 tabular-nums">
+              {summary.n_clean} corrections measured · median start <b>{summary.median_start_glucose} mg/dL</b>
+              {summary.drop_per_unit_from_high != null && <> · started ≥150: <b>{summary.drop_per_unit_from_high}</b> mg/dL/U</>}
+              {summary.drop_per_unit_from_low != null && <> · started &lt;150: <b>{summary.drop_per_unit_from_low}</b> mg/dL/U</>}
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground mt-2">Insulin per kg (resistance proxy)</div>
+          <div className="h-36">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={points} margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                <ReferenceArea y1={0} y2={0.4} fill={BAND_COLORS.low} fillOpacity={0.05} stroke="none" />
+                <ReferenceArea y1={0.4} y2={0.6} fill={BAND_COLORS.typical} fillOpacity={0.05} stroke="none" />
+                <ReferenceArea y1={0.6} y2={0.8} fill={BAND_COLORS.elevated} fillOpacity={0.05} stroke="none" />
+                <ReferenceArea y1={0.8} y2={maxKg} fill={BAND_COLORS.high} fillOpacity={0.05} stroke="none" />
                 <XAxis dataKey="date" hide />
-                <YAxis domain={[Math.min(...weights) - weightPad, Math.max(...weights) + weightPad]} tick={{ fontSize: 10 }} width={40} />
-                <Tooltip
-                  labelFormatter={(v) => `week ending ${shortDate(v)}`}
-                  formatter={(v) => [`${v} lb`, "weight"]}
-                  contentStyle={{ fontSize: 12, borderRadius: 8 }}
-                />
-                <Line type="monotone" dataKey="weight_lb" stroke="hsl(var(--muted-foreground))" strokeWidth={1.5} strokeDasharray="4 3" dot={false} />
+                <YAxis domain={[0, maxKg]} tick={{ fontSize: 10 }} tickFormatter={(v) => v.toFixed(1)} width={40} />
+                <Tooltip {...tip} formatter={(v) => [`${v} U/kg`, "insulin per kg"]} />
+                <Line type="monotone" dataKey="tdd_per_kg" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} />
               </LineChart>
             </ResponsiveContainer>
           </div>
         </>
       )}
+
+      {points.length >= 3 && <DeliveredPanel points={points} />}
+
+      {hasCorrections && (
+        <>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground mt-2">Corrections per week, by method</div>
+          <div className="h-24">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={correctionPoints} margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                <XAxis dataKey="date" tickFormatter={shortDate} tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                <YAxis tick={{ fontSize: 10 }} width={40} allowDecimals={false} />
+                <Tooltip {...tip} formatter={(v, name, item) => [`${v} (${item?.payload?.[`units_${name === "temp basal" ? "temp_basal" : "bolus"}`] ?? 0} U)`, name]} />
+                <Bar dataKey="n_temp_basal" name="temp basal" stackId="c" fill={METHOD.temp_basal.color} fillOpacity={0.7} />
+                <Bar dataKey="n_bolus" name="bolus" stackId="c" fill={METHOD.bolus.color} fillOpacity={0.7} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </>
+      )}
+
       <p className="text-[11px] text-muted-foreground mt-1.5">
-        Insulin per kg is delivered insulin divided by that week's logged weight, on the same sensitive/typical/resistant scale as the card above. Where the top two lines move together, dosing changed; where they separate, weight did — the same insulin on a lighter body is a higher dose per kg.
+        {hasCorrections
+          ? "A correction is a temp-basal increase or a standalone bolus (no carbs within 45 min). Its response is how far glucose fell in the next 3 hours per extra unit — an observed effect, not a pump setting. Corrections started near range can't fall far, so the starting glucose travels with every number; hollow dots mark weeks with fewer than 5 corrections."
+          : "Insulin per kg is delivered insulin divided by that week's logged weight, on the same sensitive/typical/resistant scale as the card above. Where the lines move together, dosing changed; where they separate, weight did."}
       </p>
     </div>
   );
@@ -223,7 +262,7 @@ export default function Insulin() {
                 <div className="text-[11px] text-muted-foreground mt-2">Under 0.4 counts as sensitive; over 0.8 as resistant.</div>
               </div>
             </div>
-            <ResistanceTrend series={r.series} />
+            <ResistanceTrend series={r.series} corrections={r.correction_series} summary={r.correction_summary} />
           </Section>
         </>
       )}

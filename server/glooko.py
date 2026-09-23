@@ -327,6 +327,32 @@ def _map_basal(r: dict) -> dict | None:
     return mapped
 
 
+def _map_temporary_basal(r: dict) -> dict | None:
+    """Omnipod manual-mode temp basal: the raised rate, the multiplier it was
+    set with (1.95 = +95%), and the duration. Distinguished from scheduled
+    segments by carrying `multiplier`."""
+    ts = _parse_ts(_first(r, "pumpTimestamp", "timestamp"))
+    rate = _num(r.get("rate"))
+    multiplier = _num(r.get("percentage"))
+    seconds = _num(r.get("duration"))
+    if ts is None or rate is None or not multiplier or not seconds:
+        return None
+    mapped = {
+        "type": "tempbasal",
+        "event_type": "Temp Basal",
+        "timestamp": _iso(ts),
+        "absolute": rate,
+        "multiplier": multiplier,
+        "duration": seconds / 60,
+        "source": "glooko",
+        "owner_email": OWNER_EMAIL,
+    }
+    guid = _first(r, "guid", "id")
+    if guid:
+        mapped["ns_id"] = f"glooko-tempbasal-{guid}"
+    return mapped
+
+
 def _map_reading(r: dict) -> dict | None:
     ts = _parse_ts(_first(r, "pumpTimestamp", "timestamp", "deviceTimestamp", "displayTime", "updatedAt"))
     value = _num(_first(r, "value", "glucose", "sgv"))
@@ -587,6 +613,7 @@ async def _sync(days: int, include_cgm: bool) -> dict[str, Any]:
 
         boluses = await _fetch_list(client, "/api/v2/pumps/normal_boluses", "normalBoluses", since)
         basals = await _fetch_list(client, "/api/v2/pumps/scheduled_basals", "scheduledBasals", since)
+        temp_basals = await _fetch_list(client, "/api/v2/pumps/temporary_basals", "temporaryBasals", since)
         foods = await _fetch_list(client, "/api/v2/foods", "foods", since)
         insulins = await _fetch_list(client, "/api/v2/insulins", "insulins", since)
         readings = (
@@ -605,6 +632,7 @@ async def _sync(days: int, include_cgm: bool) -> dict[str, Any]:
         m
         for m in (
             [_map_basal(r) for r in basals]
+            + [_map_temporary_basal(r) for r in temp_basals]
             + [_map_food(r) for r in foods]
             + [_map_insulin(r) for r in insulins]
             + [_map_daily_total(r) for r in daily_totals]

@@ -27,6 +27,12 @@ async function invokeImplementation(_name, body) {
           { date: "2026-09-13", tdd_per_kg: 0.47, weight_kg: 83.0, avg_tdd: 39.2, avg_basal: 25.8, avg_bolus: 13.4, days: 7 },
           { date: "2026-09-20", tdd_per_kg: 0.49, weight_kg: 80.0, avg_tdd: 39.0, avg_basal: 26.0, avg_bolus: 13.0, days: 7 },
         ],
+        correction_series: [
+          { date: "2026-08-30", n: 9, n_temp_basal: 9, n_bolus: 0, units_temp_basal: 24.1, units_bolus: 0, drop_per_unit: 4.0, drop_per_unit_temp_basal: 4.0, drop_per_unit_bolus: null, median_start_glucose: 118, confident: true },
+          { date: "2026-09-06", n: 12, n_temp_basal: 11, n_bolus: 1, units_temp_basal: 30.2, units_bolus: 1.5, drop_per_unit: 7.0, drop_per_unit_temp_basal: 7.0, drop_per_unit_bolus: 20.0, median_start_glucose: 121, confident: true },
+          { date: "2026-09-13", n: 15, n_temp_basal: 13, n_bolus: 2, units_temp_basal: 35.0, units_bolus: 3.0, drop_per_unit: 10.0, drop_per_unit_temp_basal: 9.5, drop_per_unit_bolus: 18.0, median_start_glucose: 124, confident: true },
+        ],
+        correction_summary: { n_total: 40, n_clean: 36, n_confounded: 4, n_temp_basal: 33, n_bolus: 3, drop_per_unit_temp_basal: 6.0, drop_per_unit_bolus: 19.0, drop_per_unit_from_high: 21.0, drop_per_unit_from_low: 5.0, median_start_glucose: 120 },
       },
     };
   }
@@ -77,9 +83,9 @@ vi.mock("recharts", () => {
   const Box = ({ children }) => <div>{children}</div>;
   const Nothing = () => null;
   return {
-    ResponsiveContainer: Box, LineChart: Box, AreaChart: Box,
-    Line: Nothing, Area: Nothing, XAxis: Nothing, YAxis: Nothing,
-    Tooltip: Nothing, ReferenceArea: Nothing, CartesianGrid: Nothing,
+    ResponsiveContainer: Box, LineChart: Box, AreaChart: Box, BarChart: Box,
+    Line: Nothing, Area: Nothing, Bar: Nothing, XAxis: Nothing, YAxis: Nothing,
+    Tooltip: Nothing, ReferenceArea: Nothing, CartesianGrid: Nothing, Legend: Nothing,
   };
 });
 vi.mock("@/components/ContradictionPanel", () => ({ default: () => null }));
@@ -133,16 +139,32 @@ describe("Insulin page", () => {
     render(<Insulin />);
     await screen.findByText("How much you use");
     expect(screen.getByText(/Over time/)).toBeTruthy();
-    expect(screen.getByText(/Insulin per kg \(resistance proxy\)/)).toBeTruthy();
+    expect(screen.getByText(/Glucose drop per correction unit/)).toBeTruthy();
     expect(screen.getByText(/Insulin delivered \(U\/day, basal \+ bolus\)/)).toBeTruthy();
-    expect(screen.getByText(/Body weight \(lb\)/)).toBeTruthy();
-    expect(screen.getByText(/weekly averages since 8\/30/)).toBeTruthy();
+    expect(screen.getByText(/Corrections per week, by method/)).toBeTruthy();
+    expect(screen.getByText(/36 corrections measured/)).toBeTruthy();
+    expect(screen.getByText(/weekly since 8\/30/)).toBeTruthy();
+    // Corrections available -> the weight-only proxy steps aside.
+    expect(screen.queryByText(/Insulin per kg \(resistance proxy\)/)).toBeNull();
+  });
+
+  it("falls back to the per-kg proxy when there are no measured corrections", async () => {
+    apiMocks.invoke.mockImplementation(async (_name, body) => {
+      const base = await invokeImplementation(_name, body);
+      if (body.action === "resistance") { base.data.correction_series = []; base.data.correction_summary = {}; }
+      return base;
+    });
+    render(<Insulin />);
+    await screen.findByText("How much you use");
+    expect(screen.getByText(/Insulin per kg \(resistance proxy\)/)).toBeTruthy();
+    expect(screen.queryByText(/Corrections per week/)).toBeNull();
   });
 
   it("hides the trend when under three weekly points have a per-kg value", async () => {
     apiMocks.invoke.mockImplementation(async (_name, body) => {
       const base = await invokeImplementation(_name, body);
       if (body.action === "resistance") {
+        base.data.correction_series = [];
         base.data.series = [
           { date: "2026-09-13", tdd_per_kg: 0.47, avg_tdd: 39.2, avg_basal: 25.8, avg_bolus: 13.4, days: 7 },
           { date: "2026-09-20", tdd_per_kg: null, avg_tdd: 39.0, avg_basal: 26.0, avg_bolus: 13.0, days: 7 },

@@ -290,6 +290,23 @@ def _seed_pump_daily_and_modes() -> None:
             "duration": float((24 - auto_hours) * 60),
             "source": "demo", "owner_email": OWNER_EMAIL,
         })
+        # Corrections: a +95% temp basal most days, and a standalone bolus
+        # every third evening, so both methods have a measured response.
+        if RNG.random() < 0.8:
+            # Away from seeded meals, so the response window isn't confounded.
+            t = day.replace(hour=RNG.choice((3, 9, 22)), minute=RNG.randint(0, 50))
+            treatments.append({
+                "type": "tempbasal", "event_type": "Temp Basal", "timestamp": _iso(t),
+                "absolute": 1.66, "multiplier": 1.95, "duration": 90.0,
+                "source": "demo", "owner_email": OWNER_EMAIL,
+            })
+        if d % 3 == 1:
+            t = day.replace(hour=21, minute=5)
+            treatments.append({
+                "type": "insulin", "event_type": "Bolus", "timestamp": _iso(t),
+                "amount": 1.5, "insulin_type": "rapid", "notes": "correction",
+                "source": "demo", "owner_email": OWNER_EMAIL,
+            })
         if d % 3 == 0:
             treatments.append({
                 "type": "note", "event_type": "Site Change",

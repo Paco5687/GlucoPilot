@@ -214,6 +214,27 @@ def _weekly_series(
     return series
 
 
+def _correction_trend(window: list[str]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Weekly correction response (temp basal and bolus) over the same weeks
+    as the TDD series, so the panels share one time axis."""
+    from . import correction_response as cr
+
+    if not window:
+        return [], {}
+    repositories = get_repositories()
+    since = f"{window[0]}T00:00:00.000Z"
+    treatments = repositories.treatments.query(
+        {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}}, "timestamp", 200000
+    )
+    readings = repositories.glucose.query(
+        {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}}, "timestamp", 200000
+    )
+    episodes = cr.build_correction_episodes(treatments, readings)
+    end = date.fromisoformat(window[-1])
+    weeks = (end - date.fromisoformat(window[0])).days // 7 + 1
+    return cr.weekly_correction_series(episodes, end, weeks), cr.summarize(episodes)
+
+
 def _category(tdd_per_kg: float | None) -> str:
     if tdd_per_kg is None:
         return "unknown"
@@ -301,6 +322,7 @@ def estimate() -> dict[str, Any]:
                      "pct_change": round((recent - prior) / prior * 100)}
 
     series = _weekly_series(days_sorted[-SERIES_DAYS:], by_day, weight)
+    correction_series, correction_summary = _correction_trend(days_sorted[-SERIES_DAYS:])
 
     data_through = days_sorted[-1]
     latest_activity = reconciliation["summary"]["latest_activity_date"]
@@ -345,6 +367,8 @@ def estimate() -> dict[str, Any]:
         "per_phase_tdd_per_kg": per_phase,
         "trend": trend,
         "series": series,
+        "correction_series": correction_series,
+        "correction_summary": correction_summary,
         "n_days": len(window),
         "data_through": data_through,
         "latest_insulin_activity": latest_activity,
