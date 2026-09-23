@@ -51,7 +51,7 @@ def _iso(value: datetime) -> str:
 def _temp_basal_episodes(treatments: list[dict]) -> list[dict]:
     rows = []
     for t in treatments:
-        if t.get("event_type") != "Temp Basal" or not t.get("multiplier"):
+        if t.get("type") != "tempbasal_correction" or not t.get("multiplier"):
             continue
         start = _ts(t.get("timestamp"))
         rate = t.get("absolute")

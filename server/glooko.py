@@ -338,7 +338,11 @@ def _map_temporary_basal(r: dict) -> dict | None:
     if ts is None or rate is None or not multiplier or not seconds:
         return None
     mapped = {
-        "type": "tempbasal",
+        # Its own type: the reconciler integrates `tempbasal` rows as scheduled
+        # delivery (which already reflects the raised rate), and the sync's
+        # time-tolerance dedup would collapse these into the scheduled segment
+        # that starts at the same instant. A correction is neither.
+        "type": "tempbasal_correction",
         "event_type": "Temp Basal",
         "timestamp": _iso(ts),
         "absolute": rate,
