@@ -122,3 +122,53 @@ def test_open_or_fresh_mode_periods_are_not_stored():
         "pumpTimestamp": (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
         "endTimestamp": (now - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
         "duration": 5400}) is None
+
+
+class TestDailyTotalUpsert:
+    """Glooko settles a day's total days late; a stored value must follow it."""
+
+    @pytest.fixture
+    def database(self, tmp_path, monkeypatch):
+        from server import db
+        from server.migrations import run_migrations
+
+        path = tmp_path / "data" / "app.sqlite3"
+        path.parent.mkdir()
+        run_migrations(path)
+        monkeypatch.setattr(db, "DB_PATH", path)
+        return path
+
+    def _total(self, date: str, total: float, basal: float) -> dict:
+        return glooko._map_daily_total({"date": date, "total": total, "basal": basal, "bolus": round(total - basal, 2)})
+
+    def test_changed_daily_total_is_updated_in_place(self, database):
+        from server import db
+        from server.config import OWNER_EMAIL
+
+        first = self._total("2026-09-18", 5.5, 5.5)  # the lagging first upload
+        assert glooko._persist_treatments([first]) == (1, 0, 0)
+
+        settled = self._total("2026-09-18", 42.5, 42.5)
+        assert glooko._persist_treatments([settled]) == (0, 0, 1)
+
+        rows = [t for t in db.query_entities("Treatment", {"owner_email": OWNER_EMAIL}, "timestamp", 10)
+                if t.get("event_type") == "Daily Total"]
+        assert len(rows) == 1  # updated, not duplicated
+        assert rows[0]["notes"] == settled["notes"]
+        assert rows[0]["ns_id"] == "glooko-dailytotal-2026-09-18"
+
+    def test_unchanged_daily_total_is_skipped_not_rewritten(self, database):
+        same = self._total("2026-09-18", 42.5, 42.5)
+        assert glooko._persist_treatments([same]) == (1, 0, 0)
+        assert glooko._persist_treatments([same]) == (0, 1, 0)
+
+    def test_other_duplicates_still_skip(self, database):
+        bolus = {
+            "type": "insulin", "event_type": "Bolus", "timestamp": "2026-09-18T12:00:00.000Z",
+            "amount": 2.0, "notes": "first", "source": "glooko", "ns_id": "glooko-bolus-1",
+            "owner_email": __import__("server.config", fromlist=["OWNER_EMAIL"]).OWNER_EMAIL,
+        }
+        assert glooko._persist_treatments([bolus]) == (1, 0, 0)
+        changed = {**bolus, "notes": "second"}
+        # Non-total treatments keep the original never-update contract.
+        assert glooko._persist_treatments([changed]) == (0, 1, 0)
