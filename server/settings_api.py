@@ -20,6 +20,7 @@ SECRET_KEYS = ("anthropic_api_key", "openai_api_key", "oura_client_secret", "dex
 PLAIN_KEYS = (
     "llm_provider",
     "companion_web_grounding",
+    "food_barcode_lookup",
     "web_search_provider",
     "ncbi_api_key",
     "anthropic_model",
@@ -50,6 +51,7 @@ PLAIN_DEFAULTS = {
     "quality_llm_model": "gemma3:27b",
     "app_timezone": "America/New_York",
     "sync_enabled": "true",
+    "food_barcode_lookup": "true",
     "github_repo": "Paco5687/GlucoPilot",
 }
 
