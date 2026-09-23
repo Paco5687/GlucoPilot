@@ -66,6 +66,7 @@ WEB_ORIGINS = {
     "ca": "https://ca.my.glooko.com",
 }
 
+DAILY_TOTALS_LOOKBACK_DAYS = 14  # Glooko settles a day's total up to ~a week late
 DEVICE_INFO = {
     "applicationType": "logbook",
     "os": "ios",
@@ -347,9 +348,17 @@ def _map_reading(r: dict) -> dict | None:
 # ── persistence with cross-source dedup ─────────────────────────────────
 
 
-def _persist_treatments(mapped: list[dict]) -> tuple[int, int]:
+def _persist_treatments(mapped: list[dict]) -> tuple[int, int, int]:
+    """Create new treatments, skip duplicates — and for pump Daily Totals,
+    update a stored day whose reported value changed. Glooko's totals settle
+    days late; freezing the first value seen turned every late upload into a
+    false cliff in the TDD trend. Returns (created, skipped, updated)."""
     existing = db.query_entities("Treatment", {"owner_email": OWNER_EMAIL}, "-timestamp", 1000000)
     existing_ns_ids = {t.get("ns_id") for t in existing if t.get("ns_id")}
+    existing_daily_totals = {
+        t["ns_id"]: t for t in existing
+        if t.get("ns_id") and t.get("event_type") == "Daily Total"
+    }
     by_type: dict[str, list[float]] = {}
     for t in existing:
         ts = _parse_ts(t.get("timestamp"))
@@ -367,9 +376,17 @@ def _persist_treatments(mapped: list[dict]) -> tuple[int, int]:
             0 <= j < len(lst) and abs(lst[j] - epoch) <= TREATMENT_TOLERANCE for j in (i - 1, i)
         )
 
-    created = skipped = 0
+    created = skipped = updated = 0
     for m in sorted(mapped, key=lambda x: x["timestamp"]):
         epoch = _parse_ts(m["timestamp"]).timestamp()
+        stored_total = existing_daily_totals.get(m.get("ns_id")) if m.get("event_type") == "Daily Total" else None
+        if stored_total is not None:
+            if stored_total.get("notes") != m.get("notes"):
+                db.update_entity("Treatment", stored_total["id"], {"notes": m["notes"]})
+                updated += 1
+            else:
+                skipped += 1
+            continue
         if (m.get("ns_id") and m["ns_id"] in existing_ns_ids) or near(m["type"], epoch):
             skipped += 1
             continue
@@ -378,7 +395,7 @@ def _persist_treatments(mapped: list[dict]) -> tuple[int, int]:
             existing_ns_ids.add(m["ns_id"])
         bisect.insort(by_type.setdefault(m["type"], []), epoch)
         created += 1
-    return created, skipped
+    return created, skipped, updated
 
 
 def _persist_readings(mapped: list[dict]) -> tuple[int, int]:
@@ -576,8 +593,11 @@ async def _sync(days: int, include_cgm: bool) -> dict[str, Any]:
             await _fetch_list(client, "/api/v2/cgm/readings", "readings", since) if include_cgm else []
         )
         # The v2 streams miss Automated Mode delivery entirely; these totals are
-        # the only complete picture of the day's insulin.
-        daily_totals = await _fetch_daily_insulin_totals(client, days)
+        # the only complete picture of the day's insulin. They also settle days
+        # after the fact (the pump uploads late, Glooko recomputes), so they are
+        # re-fetched over a longer window than the event streams and any stored
+        # day whose value changed is updated in place by _persist_treatments.
+        daily_totals = await _fetch_daily_insulin_totals(client, max(days, DAILY_TOTALS_LOOKBACK_DAYS))
         pump_events = await _fetch_list(client, "/api/v2/pumps/events", "events", since)
         pump_modes = await _fetch_list(client, "/api/v2/pumps/modes", "modes", since)
 
@@ -593,7 +613,7 @@ async def _sync(days: int, include_cgm: bool) -> dict[str, Any]:
         )
         if m
     ]
-    t_created, t_skipped = _persist_treatments(treatments)
+    t_created, t_skipped, t_updated = _persist_treatments(treatments)
 
     r_created = r_skipped = 0
     if readings:
@@ -604,6 +624,7 @@ async def _sync(days: int, include_cgm: bool) -> dict[str, Any]:
         "ok": True,
         "treatments_synced": t_created,
         "treatments_skipped": t_skipped,
+        "treatments_updated": t_updated,
         "readings_synced": r_created,
         "readings_skipped": r_skipped,
         "fetched": {
