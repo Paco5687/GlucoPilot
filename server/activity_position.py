@@ -27,6 +27,7 @@ from .analytics_confidence import mean_confidence
 from .auth import current_user, require_admin, require_login, session_role
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .data_contracts import DEPLOYMENT_OWNER_ID
+from . import walking_response
 from .insulin_response import build_response_events
 from .repositories import get_repositories
 
@@ -581,6 +582,9 @@ def build_analysis(
             ),
         },
         "range": {"start": _iso(start), "end": _iso(end)},
+        "walking_response": walking_response.analyze(
+            active, glucose, start=start, end=end, timezone_name=timezone_name
+        ),
         "counts": {
             "intervals": len(resolved),
             "effective_intervals": len(

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from "recharts";
 import { Activity, Loader2, Plus, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
@@ -310,6 +311,111 @@ export default function ActivityPositionAnalysis({ days = 90, readOnly = false }
           ))}
         </div>
       )}
+      <WalkingResponse data={data?.walking_response} />
     </section>
+  );
+}
+
+const BAND_LABEL = { under_120: "Started ≤120", "120_to_170": "Started 120–170", over_170: "Started >170" };
+const DURATION_LABEL = { under_15: "<15 min", "15_to_30": "15–30 min", "30_to_60": "30–60 min", over_60: ">60 min" };
+const fmtDelta = (v) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v}`);
+
+function WalkingResponse({ data }) {
+  if (!data || !data.walks_measured) return null;
+  const bands = data.bands || {};
+  const mid = bands["120_to_170"]?.walking;
+  const curve = [15, 30, 60, 90, 120].map((m) => ({
+    minute: m,
+    ...Object.fromEntries(Object.entries(bands).map(([k, v]) => [k, v?.walking?.[`delta_${m}`] ?? null])),
+    sitting: bands["120_to_170"]?.sitting?.[`delta_${m}`] ?? null,
+  }));
+  return (
+    <div className="bg-card rounded-xl border border-border p-4 space-y-3">
+      <div>
+        <h3 className="text-sm font-semibold">Walking response</h3>
+        <p className="text-xs text-muted-foreground">
+          {data.walks_measured} walks measured (median {data.median_walk_minutes} min) against {data.controls} sitting controls. Deltas are mg/dL from the reading at the walk's start.
+        </p>
+      </div>
+
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Glucose after a walk starts, by starting glucose</div>
+      <div className="h-36">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={curve} margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+            <XAxis dataKey="minute" tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}m`} />
+            <YAxis tick={{ fontSize: 10 }} width={40} />
+            <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} labelFormatter={(v) => `${v} min after start`} formatter={(v, n) => [fmtDelta(v), n]} />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Line type="monotone" dataKey="over_170" name=">170" stroke="#f43f5e" strokeWidth={2} dot={false} connectNulls />
+            <Line type="monotone" dataKey="120_to_170" name="120–170" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} connectNulls />
+            <Line type="monotone" dataKey="under_120" name="≤120" stroke="#3b82f6" strokeWidth={2} dot={false} connectNulls />
+            <Line type="monotone" dataKey="sitting" name="sitting (120–170)" stroke="hsl(var(--muted-foreground))" strokeWidth={1.5} strokeDasharray="4 3" dot={false} connectNulls />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead><tr className="text-muted-foreground text-left"><th className="py-1 pr-3">Starting glucose</th><th className="pr-3">Walks</th><th className="pr-3">At 2 h</th><th className="pr-3">Lowest</th><th className="pr-3">Went below 70</th><th className="pr-3">Sitting instead: 2 h · below 70</th></tr></thead>
+          <tbody>
+            {Object.entries(bands).map(([key, v]) => (
+              <tr key={key} className="border-t border-border">
+                <td className="py-1 pr-3">{BAND_LABEL[key] || key}</td>
+                <td className="pr-3 tabular-nums">{v?.walking?.n ?? "—"}</td>
+                <td className="pr-3 tabular-nums">{fmtDelta(v?.walking?.delta_120)}</td>
+                <td className="pr-3 tabular-nums">{fmtDelta(v?.walking?.nadir_delta)}</td>
+                <td className="pr-3 tabular-nums">{v?.walking ? `${v.walking.went_low_pct}%` : "—"}</td>
+                <td className="pr-3 tabular-nums">{v?.sitting ? `${fmtDelta(v.sitting.delta_120)} · ${v.sitting.went_low_pct}%` : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {mid && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Walk length (started 120–170)</div>
+            <table className="w-full text-xs">
+              <thead><tr className="text-muted-foreground text-left"><th className="py-1 pr-2">Length</th><th className="pr-2">n</th><th className="pr-2">At 2 h</th><th className="pr-2">Below 70</th></tr></thead>
+              <tbody>
+                {Object.entries(data.durations_120_to_170 || {}).map(([key, v]) => (
+                  <tr key={key} className="border-t border-border">
+                    <td className="py-1 pr-2">{DURATION_LABEL[key] || key}</td>
+                    <td className="pr-2 tabular-nums">{v?.n ?? "—"}</td>
+                    <td className="pr-2 tabular-nums">{fmtDelta(v?.delta_120)}</td>
+                    <td className="pr-2 tabular-nums">{v ? `${v.went_low_pct}%` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">After the walk ends (started 120–170)</div>
+            <table className="w-full text-xs">
+              <thead><tr className="text-muted-foreground text-left"><th className="py-1 pr-2">Length</th><th className="pr-2">At stop</th><th className="pr-2">Further fall</th><th className="pr-2">Below 70 after</th></tr></thead>
+              <tbody>
+                {Object.entries(data.durations_120_to_170 || {}).map(([key, v]) => (
+                  <tr key={key} className="border-t border-border">
+                    <td className="py-1 pr-2">{DURATION_LABEL[key] || key}</td>
+                    <td className="pr-2 tabular-nums">{fmtDelta(v?.at_stop_delta)}</td>
+                    <td className="pr-2 tabular-nums">{fmtDelta(v?.after_stop_delta)}</td>
+                    <td className="pr-2 tabular-nums">{v?.went_low_after_stop_pct != null ? `${v.went_low_after_stop_pct}%` : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {mid && (
+        <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs">
+          Read on your own numbers: from 120–170, a walk has typically moved glucose <b>{fmtDelta(mid.at_stop_delta)}</b> by the time it ends and <b>{fmtDelta(mid.after_stop_delta)}</b> more in the two hours after — the walk keeps working after you stop. Longer walks in the table above show whether extra minutes add effect or only risk.
+        </div>
+      )}
+      <p className="text-[11px] text-muted-foreground">{data.semantics?.association}</p>
+    </div>
   );
 }
