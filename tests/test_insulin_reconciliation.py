@@ -189,3 +189,68 @@ def test_dst_day_uses_local_day_length_for_complete_coverage():
     assert day["calculated"]["delivered_basal_coverage_pct"] == 100
     assert day["calculated"]["delivered_basal_units"] == 23
     assert day["calculated"]["total_units"] == 23
+
+
+class TestWeeklyResistanceSeries:
+    def test_series_uses_dated_weights_and_omits_thin_buckets(self):
+        from datetime import date, timedelta
+
+        from server.insulin import _weekly_series
+
+        end = date(2026, 9, 20)
+        # Four full weeks of totals, then a "week" with only 2 days.
+        window, by_day = [], {}
+        for offset in range(28):
+            day = (end - timedelta(days=offset)).isoformat()
+            window.append(day)
+            by_day[day] = {"total": 40.0, "basal": 26.0, "bolus": 14.0}
+        for offset in (33, 34):  # thin bucket: 2 days only
+            day = (end - timedelta(days=offset)).isoformat()
+            window.append(day)
+            by_day[day] = {"total": 40.0, "basal": 26.0, "bolus": 14.0}
+        window.sort()
+
+        # Weight fell 100 -> 80 across the window; the series must divide each
+        # week by that week's interpolated weight, not today's.
+        points = [(date(2026, 8, 24), 100.0), (date(2026, 9, 21), 80.0)]
+        import server.insulin as insulin_module
+
+        original = insulin_module._weight_points
+        insulin_module._weight_points = lambda: points
+        try:
+            series = _weekly_series(window, by_day, 80.0)
+        finally:
+            insulin_module._weight_points = original
+
+        assert [row["days"] for row in series] == [7, 7, 7, 7]
+        assert all(row["avg_tdd"] == 40.0 for row in series)
+        assert all(row["avg_basal"] == 26.0 and row["avg_bolus"] == 14.0 for row in series)
+        # Same insulin on a shrinking body -> rising U/kg across the series.
+        per_kg = [row["tdd_per_kg"] for row in series]
+        assert per_kg == sorted(per_kg)
+        assert per_kg[0] < 0.45 < per_kg[-1] < 0.52
+
+    def test_series_without_any_weight_keeps_delivery_but_no_per_kg(self):
+        from datetime import date, timedelta
+
+        from server.insulin import _weekly_series
+        import server.insulin as insulin_module
+
+        end = date(2026, 9, 20)
+        window, by_day = [], {}
+        for offset in range(7):
+            day = (end - timedelta(days=offset)).isoformat()
+            window.append(day)
+            by_day[day] = {"total": 38.0, "basal": 24.0, "bolus": 14.0}
+        window.sort()
+
+        original = insulin_module._weight_points
+        insulin_module._weight_points = lambda: []
+        try:
+            series = _weekly_series(window, by_day, None)
+        finally:
+            insulin_module._weight_points = original
+
+        assert len(series) == 1
+        assert series[0]["tdd_per_kg"] is None
+        assert series[0]["avg_tdd"] == 38.0

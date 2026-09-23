@@ -5,6 +5,9 @@ import DataQualityNote from "@/components/DataQualityNote";
 import ContradictionPanel from "@/components/ContradictionPanel";
 import ManagementBurdenCard from "@/components/insulin/ManagementBurdenCard";
 import { Syringe, Loader2, TrendingUp, TrendingDown, AlertTriangle, ChevronRight } from "lucide-react";
+import {
+  ResponsiveContainer, LineChart, Line, AreaChart, Area, XAxis, YAxis, Tooltip, ReferenceArea, CartesianGrid,
+} from "recharts";
 
 const CAT = {
   low: { label: "Insulin-sensitive", cls: "text-blue-600", bg: "bg-blue-500/10" },
@@ -44,6 +47,64 @@ function Section({ title, children }) {
 function daysAgo(iso) {
   if (!iso) return null;
   return Math.round((Date.now() - new Date(iso + "T12:00:00").getTime()) / 86400000);
+}
+
+const BAND_COLORS = { low: "#3b82f6", typical: "#10b981", elevated: "#f59e0b", high: "#f43f5e" };
+
+function shortDate(iso) {
+  const [, m, d] = String(iso).split("-");
+  return `${Number(m)}/${Number(d)}`;
+}
+
+function ResistanceTrend({ series }) {
+  const points = (series || []).filter((p) => p.tdd_per_kg != null);
+  if (points.length < 3) return null;
+  const maxKg = Math.max(0.9, ...points.map((p) => p.tdd_per_kg)) + 0.05;
+  return (
+    <div className="bg-card rounded-xl border border-border p-4">
+      <h3 className="text-sm font-semibold">Over time <span className="font-normal text-muted-foreground">· weekly averages</span></h3>
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground mt-2">Insulin per kg (resistance proxy)</div>
+      <div className="h-36">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={points} margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+            <ReferenceArea y1={0} y2={0.4} fill={BAND_COLORS.low} fillOpacity={0.05} stroke="none" />
+            <ReferenceArea y1={0.4} y2={0.6} fill={BAND_COLORS.typical} fillOpacity={0.05} stroke="none" />
+            <ReferenceArea y1={0.6} y2={0.8} fill={BAND_COLORS.elevated} fillOpacity={0.05} stroke="none" />
+            <ReferenceArea y1={0.8} y2={maxKg} fill={BAND_COLORS.high} fillOpacity={0.05} stroke="none" />
+            <XAxis dataKey="date" hide />
+            <YAxis domain={[0, maxKg]} tick={{ fontSize: 10 }} tickFormatter={(v) => v.toFixed(1)} width={40} />
+            <Tooltip
+              labelFormatter={(v) => `week ending ${shortDate(v)}`}
+              formatter={(v) => [`${v} U/kg`, "insulin per kg"]}
+              contentStyle={{ fontSize: 12, borderRadius: 8 }}
+            />
+            <Line type="monotone" dataKey="tdd_per_kg" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground mt-2">Insulin delivered (U/day, basal + bolus)</div>
+      <div className="h-28">
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={points} margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+            <XAxis dataKey="date" tickFormatter={shortDate} tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+            <YAxis tick={{ fontSize: 10 }} width={40} />
+            <Tooltip
+              labelFormatter={(v) => `week ending ${shortDate(v)}`}
+              formatter={(v, name) => [`${v} U/day`, name]}
+              contentStyle={{ fontSize: 12, borderRadius: 8 }}
+            />
+            <Area type="monotone" dataKey="avg_basal" name="basal" stackId="d" stroke="hsl(var(--primary))" fill="hsl(var(--primary))" fillOpacity={0.28} strokeWidth={1.5} />
+            <Area type="monotone" dataKey="avg_bolus" name="bolus" stackId="d" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.28} strokeWidth={1.5} />
+          </AreaChart>
+        </ResponsiveContainer>
+      </div>
+      <p className="text-[11px] text-muted-foreground mt-1.5">
+        Top: weekly insulin per kg of body weight, on the same sensitive/typical/resistant scale as the card above, using your logged weight for each week. Bottom: what the pump actually delivered — stacked, so the top edge is the daily total.
+      </p>
+    </div>
+  );
 }
 
 export default function Insulin() {
@@ -136,6 +197,7 @@ export default function Insulin() {
                 <div className="text-[11px] text-muted-foreground mt-2">Under 0.4 counts as sensitive; over 0.8 as resistant.</div>
               </div>
             </div>
+            <ResistanceTrend series={r.series} />
           </Section>
         </>
       )}
