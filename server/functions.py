@@ -7,7 +7,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from . import companion, cycle_inference, dexcom, dexcom_share, fingerstick, fitbit, glooko, google_health, health_summary, insights, insulin, nightscout, oura, patterns, tandem
+from . import companion, cycle_inference, dexcom, dexcom_share, fingerstick, fitbit, food, glooko, google_health, health_summary, insights, insulin, nightscout, oura, patterns, tandem
 from .auth import require_admin, require_login, session_actor
 from .connector_provenance import run_connector
 
@@ -65,6 +65,8 @@ async def _dispatch(name: str, body: dict[str, Any], actor: str = "owner") -> An
         return await fingerstick.handle(body)
     if name == "insulin":
         return await insulin.handle(body)
+    if name == "food":
+        return await food.handle(body)
     if name == "companion":
         return await companion.handle(body, actor=actor)
     if name == "analyzeInsights":

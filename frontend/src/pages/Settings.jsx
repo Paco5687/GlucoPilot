@@ -296,6 +296,17 @@ export default function Settings() {
           Always uses free NIH sources (MedlinePlus + PubMed, no key needed). Optionally add a web-search
           provider below for broader coverage, restricted to reputable medical domains.
         </p>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={(values.food_barcode_lookup ?? "true") !== "false"}
+            onChange={(e) => setValue("food_barcode_lookup", e.target.checked ? "true" : "false")}
+          />
+          Look up scanned food barcodes on Open Food Facts
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Only the barcode is sent — never anything about you. Turn off to keep food logging fully offline (label photos and presets still work).
+        </p>
         {(values.companion_web_grounding || "") === "true" && (
           <div className="space-y-3 pt-1">
             <div>

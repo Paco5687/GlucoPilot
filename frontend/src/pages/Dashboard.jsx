@@ -14,6 +14,7 @@ import OuraPanel from "../components/dashboard/OuraPanel";
 import WearablesPanel from "../components/dashboard/WearablesPanel";
 import LiveHeartRate from "../components/dashboard/LiveHeartRate";
 import FingerstickLogger from "../components/dashboard/FingerstickLogger";
+import FoodLogger from "../components/food/FoodLogger";
 import SymptomNudge from "../components/dashboard/SymptomNudge";
 import GlucoseOuraOverlay from "../components/dashboard/GlucoseOuraOverlay";
 import CorrelationCards from "../components/dashboard/CorrelationCards";
@@ -172,6 +173,8 @@ export default function Dashboard() {
       <GlucoseChart readings={filteredReadings.length ? filteredReadings : readings.slice(0, 288)} treatments={filteredTreatments} periodLogs={periodLogs} fingersticks={fingersticks} />
 
       {wearables.length > 0 && <LiveHeartRate />}
+
+      {!isViewingShared && <FoodLogger onLogged={load} />}
 
       {!isViewingShared && <FingerstickLogger onAdded={loadFingersticks} />}
 
