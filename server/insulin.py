@@ -37,6 +37,7 @@ log = logging.getLogger("glucopilot.insulin")
 ABS_WINDOW_DAYS = 120
 
 WINDOW_DAYS = 90
+SERIES_DAYS = 365  # the trend chart spans up to a year; summaries stay 90-day
 CURRENT_DATA_DAYS = 14
 
 
@@ -180,15 +181,18 @@ def _weight_on(day: date, points: list[tuple[date, float]], fallback: float | No
 def _weekly_series(
     window: list[str], by_day: dict[str, dict[str, float]], profile_weight: float | None
 ) -> list[dict[str, Any]]:
-    """Weekly TDD, basal/bolus split, and TDD/kg over the window. Weeks are
-    anchored to the newest complete day; buckets with under 3 days are omitted
-    rather than shown as confident points."""
+    """Weekly TDD, basal/bolus split, TDD/kg, and the weight used, over the
+    given days. Weeks are anchored to the newest complete day; buckets with
+    under 3 days are omitted rather than shown as confident points. Spanning
+    well beyond the 90-day summary window is the point: per-kg and delivered
+    insulin only separate when weight changes, which takes months to show."""
     if not window:
         return []
     points = _weight_points()
     end = date.fromisoformat(window[-1])
+    start = date.fromisoformat(window[0])
     series = []
-    for k in range(WINDOW_DAYS // 7, -1, -1):
+    for k in range((end - start).days // 7, -1, -1):
         bucket_end = end - timedelta(days=7 * k)
         bucket_start = bucket_end - timedelta(days=6)
         days = [d for d in window if bucket_start <= date.fromisoformat(d) <= bucket_end]
@@ -201,12 +205,34 @@ def _weekly_series(
         series.append({
             "date": bucket_end.isoformat(),
             "tdd_per_kg": round(total / weight, 3) if weight else None,
+            "weight_kg": round(weight, 1) if weight else None,
             "avg_tdd": round(total, 1),
             "avg_basal": round(mean(basals), 1) if basals else None,
             "avg_bolus": round(mean(boluses), 1) if boluses else None,
             "days": len(days),
         })
     return series
+
+
+def _correction_trend(window: list[str]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Weekly correction response (temp basal and bolus) over the same weeks
+    as the TDD series, so the panels share one time axis."""
+    from . import correction_response as cr
+
+    if not window:
+        return [], {}
+    repositories = get_repositories()
+    since = f"{window[0]}T00:00:00.000Z"
+    treatments = repositories.treatments.query(
+        {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}}, "timestamp", 200000
+    )
+    readings = repositories.glucose.query(
+        {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": since}}, "timestamp", 200000
+    )
+    episodes = cr.build_correction_episodes(treatments, readings)
+    end = date.fromisoformat(window[-1])
+    weeks = (end - date.fromisoformat(window[0])).days // 7 + 1
+    return cr.weekly_correction_series(episodes, end, weeks), cr.summarize(episodes)
 
 
 def _category(tdd_per_kg: float | None) -> str:
@@ -295,7 +321,8 @@ def estimate() -> dict[str, Any]:
             trend = {"recent_tdd": round(recent, 1), "prior_tdd": round(prior, 1),
                      "pct_change": round((recent - prior) / prior * 100)}
 
-    series = _weekly_series(window, by_day, weight)
+    series = _weekly_series(days_sorted[-SERIES_DAYS:], by_day, weight)
+    correction_series, correction_summary = _correction_trend(days_sorted[-SERIES_DAYS:])
 
     data_through = days_sorted[-1]
     latest_activity = reconciliation["summary"]["latest_activity_date"]
@@ -340,6 +367,8 @@ def estimate() -> dict[str, Any]:
         "per_phase_tdd_per_kg": per_phase,
         "trend": trend,
         "series": series,
+        "correction_series": correction_series,
+        "correction_summary": correction_summary,
         "n_days": len(window),
         "data_through": data_through,
         "latest_insulin_activity": latest_activity,
