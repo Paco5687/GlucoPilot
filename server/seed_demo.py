@@ -296,7 +296,7 @@ def _seed_pump_daily_and_modes() -> None:
             # Away from seeded meals, so the response window isn't confounded.
             t = day.replace(hour=RNG.choice((3, 9, 22)), minute=RNG.randint(0, 50))
             treatments.append({
-                "type": "tempbasal", "event_type": "Temp Basal", "timestamp": _iso(t),
+                "type": "tempbasal_correction", "event_type": "Temp Basal", "timestamp": _iso(t),
                 "absolute": 1.66, "multiplier": 1.95, "duration": 90.0,
                 "source": "demo", "owner_email": OWNER_EMAIL,
             })

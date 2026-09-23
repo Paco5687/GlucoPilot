@@ -22,7 +22,7 @@ def _cgm(start_value=150, drop_per_point=1.0, hours=4):
 
 
 def _temp(minutes_offset=0, rate=4.58, multiplier=1.95, duration=90):
-    return {"event_type": "Temp Basal", "type": "tempbasal", "timestamp": _iso(BASE + timedelta(minutes=minutes_offset)),
+    return {"event_type": "Temp Basal", "type": "tempbasal_correction", "timestamp": _iso(BASE + timedelta(minutes=minutes_offset)),
             "absolute": rate, "multiplier": multiplier, "duration": duration}
 
 
@@ -47,9 +47,12 @@ def test_contiguous_temp_segments_merge_into_one_episode():
     assert episodes[0]["units"] == pytest.approx(3 * 4.58 * (1 - 1 / 1.95) * 0.5, abs=0.01)
 
 
-def test_scheduled_segments_without_multiplier_are_not_corrections():
-    scheduled = {**_temp(), "multiplier": None}
+def test_scheduled_segments_are_not_corrections():
+    # A scheduled segment at a raised rate looks like a temp basal but is not one.
+    scheduled = {**_temp(), "type": "tempbasal", "multiplier": None}
     assert cr.build_correction_episodes([scheduled], _cgm()) == []
+    still_scheduled = {**_temp(), "type": "tempbasal"}
+    assert cr.build_correction_episodes([still_scheduled], _cgm()) == []
 
 
 def test_standalone_bolus_is_a_correction_but_meal_bolus_is_not():
@@ -87,7 +90,48 @@ def test_glooko_temporary_basal_maps_with_multiplier_and_minutes():
     mapped = glooko._map_temporary_basal({
         "pumpTimestamp": "2026-09-19T07:50:43.000Z", "duration": 5400, "percentage": 1.95, "rate": 4.58, "guid": "abc",
     })
-    assert mapped["event_type"] == "Temp Basal"
+    assert mapped["event_type"] == "Temp Basal" and mapped["type"] == "tempbasal_correction"
     assert mapped["multiplier"] == 1.95 and mapped["absolute"] == 4.58
     assert mapped["duration"] == 90.0
     assert mapped["ns_id"] == "glooko-tempbasal-abc"
+
+
+class TestCorrectionRowsStayOutOfBasalAccounting:
+    @pytest.fixture
+    def database(self, tmp_path, monkeypatch):
+        from server import db
+        from server.migrations import run_migrations
+
+        path = tmp_path / "data" / "app.sqlite3"
+        path.parent.mkdir()
+        run_migrations(path)
+        monkeypatch.setattr(db, "DB_PATH", path)
+        return path
+
+    def test_correction_is_not_deduped_against_a_scheduled_segment_at_the_same_instant(self, database):
+        from server.config import OWNER_EMAIL
+
+        at = "2026-09-19T07:50:43.000Z"
+        scheduled = {"type": "tempbasal", "event_type": "Temp Basal", "timestamp": at, "absolute": 4.55,
+                     "duration": 90.0, "source": "glooko", "ns_id": "glooko-seg-1", "owner_email": OWNER_EMAIL}
+        correction = glooko._map_temporary_basal({"pumpTimestamp": at, "duration": 5400, "percentage": 1.95,
+                                                  "rate": 4.58, "guid": "tb-1"})
+        assert glooko._persist_treatments([scheduled]) == (1, 0, 0)
+        # Before the type split this was (0, 1, 0): the correction vanished.
+        assert glooko._persist_treatments([correction]) == (1, 0, 0)
+
+    def test_reconciler_ignores_correction_rows(self):
+        from zoneinfo import ZoneInfo
+
+        from server.insulin_reconciliation import _basal_segments
+
+        tz = ZoneInfo("America/New_York")
+        rows = [
+            {"type": "tempbasal", "timestamp": "2026-09-19T12:00:00.000Z", "duration": 60.0, "absolute": 2.35, "source": "glooko"},
+            {"type": "tempbasal_correction", "timestamp": "2026-09-19T12:00:00.000Z", "duration": 60.0, "absolute": 4.58,
+             "multiplier": 1.95, "source": "glooko"},
+        ]
+        segments, _, _ = _basal_segments(rows, tz)
+        day = next(iter(segments))
+        rates = [rate for cls in segments[day].values() for (_, _, rate) in cls]
+        assert rates == [2.35]  # the correction never enters delivered/scheduled basal
