@@ -230,6 +230,31 @@ class TestWeeklyResistanceSeries:
         assert per_kg == sorted(per_kg)
         assert per_kg[0] < 0.45 < per_kg[-1] < 0.52
 
+    def test_series_spans_the_days_given_and_reports_weight_used(self):
+        from datetime import date, timedelta
+
+        from server.insulin import _weekly_series
+        import server.insulin as insulin_module
+
+        end = date(2026, 9, 20)
+        window, by_day = [], {}
+        for offset in range(200):  # well past the 90-day summary window
+            day = (end - timedelta(days=offset)).isoformat()
+            window.append(day)
+            by_day[day] = {"total": 40.0, "basal": 26.0, "bolus": 14.0}
+        window.sort()
+        points = [(date(2026, 3, 1), 100.0), (date(2026, 9, 20), 80.0)]
+        original = insulin_module._weight_points
+        insulin_module._weight_points = lambda: points
+        try:
+            series = _weekly_series(window, by_day, 80.0)
+        finally:
+            insulin_module._weight_points = original
+        assert len(series) >= 28
+        assert series[0]["weight_kg"] > series[-1]["weight_kg"]
+        # Sampled mid-week (bucket end - 3 days), so slightly above the endpoint.
+        assert 80.0 <= series[-1]["weight_kg"] <= 81.0
+
     def test_series_without_any_weight_keeps_delivery_but_no_per_kg(self):
         from datetime import date, timedelta
 

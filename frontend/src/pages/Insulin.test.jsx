@@ -22,10 +22,10 @@ async function invokeImplementation(_name, body) {
         reconciliation: {},
         per_phase_tdd_per_kg: {},
         series: [
-          { date: "2026-08-30", tdd_per_kg: 0.42, avg_tdd: 38.1, avg_basal: 25.0, avg_bolus: 13.1, days: 7 },
-          { date: "2026-09-06", tdd_per_kg: 0.45, avg_tdd: 38.9, avg_basal: 25.4, avg_bolus: 13.5, days: 7 },
-          { date: "2026-09-13", tdd_per_kg: 0.47, avg_tdd: 39.2, avg_basal: 25.8, avg_bolus: 13.4, days: 7 },
-          { date: "2026-09-20", tdd_per_kg: 0.49, avg_tdd: 39.0, avg_basal: 26.0, avg_bolus: 13.0, days: 7 },
+          { date: "2026-08-30", tdd_per_kg: 0.42, weight_kg: 90.0, avg_tdd: 38.1, avg_basal: 25.0, avg_bolus: 13.1, days: 7 },
+          { date: "2026-09-06", tdd_per_kg: 0.45, weight_kg: 86.0, avg_tdd: 38.9, avg_basal: 25.4, avg_bolus: 13.5, days: 7 },
+          { date: "2026-09-13", tdd_per_kg: 0.47, weight_kg: 83.0, avg_tdd: 39.2, avg_basal: 25.8, avg_bolus: 13.4, days: 7 },
+          { date: "2026-09-20", tdd_per_kg: 0.49, weight_kg: 80.0, avg_tdd: 39.0, avg_basal: 26.0, avg_bolus: 13.0, days: 7 },
         ],
       },
     };
@@ -135,6 +135,8 @@ describe("Insulin page", () => {
     expect(screen.getByText(/Over time/)).toBeTruthy();
     expect(screen.getByText(/Insulin per kg \(resistance proxy\)/)).toBeTruthy();
     expect(screen.getByText(/Insulin delivered \(U\/day, basal \+ bolus\)/)).toBeTruthy();
+    expect(screen.getByText(/Body weight \(lb\)/)).toBeTruthy();
+    expect(screen.getByText(/weekly averages since 8\/30/)).toBeTruthy();
   });
 
   it("hides the trend when under three weekly points have a per-kg value", async () => {

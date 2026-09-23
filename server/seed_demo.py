@@ -29,7 +29,7 @@ CYCLE_LEN = 28  # days, for the temperature/phase model
 SEED_TYPES = (
     "GlucoseReading", "Treatment", "OuraDaily", "OuraHeartRate", "FitbitDaily",
     "PeriodLog", "MedicalRecord", "LabResult", "Pattern", "Insight", "AIConversation",
-    "HealthProfile", "CareTeamNote",
+    "HealthProfile", "CareTeamNote", "WeightLog",
 )
 
 
@@ -304,6 +304,13 @@ def _seed_profile_and_care_notes() -> None:
         "weight_kg": 68.0, "height_cm": 168.0, "date_of_birth": "1992-04-12",
         "sex": "female", "owner_email": OWNER_EMAIL,
     })
+    # A gentle weight drift so the Insulin trend's weight panel has a shape.
+    for d in range(0, DAYS, 14):
+        day = NOW - timedelta(days=DAYS - d)
+        db.create_entity("WeightLog", {
+            "date": day.date().isoformat(), "weight_kg": round(70.5 - 2.5 * d / DAYS, 1),
+            "owner_email": OWNER_EMAIL,
+        })
     for kind, title, body, pinned in (
         ("protocol", "Overnight low protocol",
          "If CGM reads under 70 overnight: 12g fast carbs, recheck in 15 minutes. "

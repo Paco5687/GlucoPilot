@@ -57,12 +57,18 @@ function shortDate(iso) {
 }
 
 function ResistanceTrend({ series }) {
-  const points = (series || []).filter((p) => p.tdd_per_kg != null);
+  const points = (series || [])
+    .filter((p) => p.tdd_per_kg != null)
+    .map((p) => ({ ...p, weight_lb: p.weight_kg != null ? Math.round(p.weight_kg * 2.20462) : null }));
   if (points.length < 3) return null;
   const maxKg = Math.max(0.9, ...points.map((p) => p.tdd_per_kg)) + 0.05;
+  const weights = points.map((p) => p.weight_lb).filter((w) => w != null);
+  const showWeight = new Set(weights).size >= 2;
+  const weightPad = 5;
+  const first = points[0].date;
   return (
     <div className="bg-card rounded-xl border border-border p-4">
-      <h3 className="text-sm font-semibold">Over time <span className="font-normal text-muted-foreground">· weekly averages</span></h3>
+      <h3 className="text-sm font-semibold">Over time <span className="font-normal text-muted-foreground">· weekly averages since {shortDate(first)}</span></h3>
       <div className="text-[10px] uppercase tracking-wide text-muted-foreground mt-2">Insulin per kg (resistance proxy)</div>
       <div className="h-36">
         <ResponsiveContainer width="100%" height="100%">
@@ -100,8 +106,28 @@ function ResistanceTrend({ series }) {
           </AreaChart>
         </ResponsiveContainer>
       </div>
+      {showWeight && (
+        <>
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground mt-2">Body weight (lb)</div>
+          <div className="h-20">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={points} margin={{ top: 6, right: 8, left: -18, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                <XAxis dataKey="date" hide />
+                <YAxis domain={[Math.min(...weights) - weightPad, Math.max(...weights) + weightPad]} tick={{ fontSize: 10 }} width={40} />
+                <Tooltip
+                  labelFormatter={(v) => `week ending ${shortDate(v)}`}
+                  formatter={(v) => [`${v} lb`, "weight"]}
+                  contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                />
+                <Line type="monotone" dataKey="weight_lb" stroke="hsl(var(--muted-foreground))" strokeWidth={1.5} strokeDasharray="4 3" dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </>
+      )}
       <p className="text-[11px] text-muted-foreground mt-1.5">
-        Top: weekly insulin per kg of body weight, on the same sensitive/typical/resistant scale as the card above, using your logged weight for each week. Bottom: what the pump actually delivered — stacked, so the top edge is the daily total.
+        Insulin per kg is delivered insulin divided by that week's logged weight, on the same sensitive/typical/resistant scale as the card above. Where the top two lines move together, dosing changed; where they separate, weight did — the same insulin on a lighter body is a higher dose per kg.
       </p>
     </div>
   );
