@@ -62,7 +62,7 @@ def test_fixture_is_explicitly_synthetic_and_public_safe(golden):
     )
 
 
-def test_source_parsers_match_the_golden_normalization_contract(golden):
+def test_source_parsers_match_the_golden_normalization_contract(monkeypatch, golden):
     fixture = golden["parser"]
     for case in fixture["glooko_readings"]:
         mapped = glooko._map_reading(case["input"])
@@ -73,11 +73,14 @@ def test_source_parsers_match_the_golden_normalization_contract(golden):
             assert mapped["source"] == "glooko"
             assert mapped["timestamp"].endswith("Z")
 
+    # Pump stamps are read as local wall-clock; pin the zone so the expected
+    # UTC value (13:00 EST -> 18:00Z) is deterministic regardless of host env.
+    monkeypatch.setattr(glooko, "_pump_tz", lambda: ZoneInfo("America/New_York"))
     bolus = glooko._map_bolus(fixture["glooko_bolus"]["input"])
     assert len(bolus) == 2
     for actual, expected in zip(bolus, fixture["glooko_bolus"]["expected"], strict=True):
         assert {key: actual[key] for key in expected} == expected
-        assert actual["timestamp"] == "2026-01-15T13:00:00.000Z"
+        assert actual["timestamp"] == "2026-01-15T18:00:00.000Z"  # pump 13:00 EST -> UTC
 
     basal = glooko._map_basal(fixture["glooko_basal"]["input"])
     expected_basal = fixture["glooko_basal"]["expected"]

@@ -49,7 +49,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from . import db
-from .config import OWNER_EMAIL
+from .config import APP_TIMEZONE, OWNER_EMAIL
 from .connector_provenance import can_advance_freshness, capture_records, latest_observed, source_failure
 from .db import config_value, set_config_value
 
@@ -123,8 +123,7 @@ def _iso(dt: datetime) -> str:
 
 
 def _parse_ts(value: Any) -> datetime | None:
-    # Glooko v2 timestamps are UTC; naive values are treated as UTC. Verify
-    # against real payloads on first live sync.
+    """Genuine UTC instants (syncTimestamp, updatedAt, our own stored rows)."""
     if value is None:
         return None
     try:
@@ -132,6 +131,73 @@ def _parse_ts(value: Any) -> datetime | None:
     except (ValueError, TypeError):
         return None
     return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+
+
+PUMP_CLOCK_MARKER = "local"
+
+
+def _pump_tz() -> ZoneInfo:
+    try:
+        return ZoneInfo(config_value("app_timezone", APP_TIMEZONE))
+    except Exception:  # unit tests without a database, or a bad setting
+        return ZoneInfo(APP_TIMEZONE)
+
+
+def _parse_pump_ts(value: Any) -> datetime | None:
+    """Pump-stream timestamps (`pumpTimestamp`, `endTimestamp`) are the pump's
+    LOCAL wall clock that Glooko labels "Z" with pumpTimestampUtcOffset +00:00.
+    Verified against a bolus given at 10:03 Eastern that arrived as
+    2026-09-25T10:03:19Z, and against 295 temp basals whose starting glucose
+    only reaches the correction threshold four hours after the labeled time.
+    The wall-clock digits are re-read in the app's timezone (DST-aware)."""
+    if value is None:
+        return None
+    try:
+        naive = datetime.fromisoformat(str(value).replace("Z", "")).replace(tzinfo=None)
+    except (ValueError, TypeError):
+        return None
+    return naive.replace(tzinfo=_pump_tz()).astimezone(timezone.utc)
+
+
+def pump_local_to_utc(stored_iso: str, tz: ZoneInfo) -> str | None:
+    """Re-read a stored "Z" timestamp's wall-clock digits as local time."""
+    try:
+        naive = datetime.fromisoformat(str(stored_iso).replace("Z", "")).replace(tzinfo=None)
+    except (ValueError, TypeError):
+        return None
+    return _iso(naive.replace(tzinfo=tz).astimezone(timezone.utc))
+
+
+def fix_stored_pump_clock() -> dict[str, int]:
+    """One-time, idempotent repair of rows stored before the pump-clock
+    finding: every Glooko pump-stream treatment (all but the date-anchored
+    daily totals) is shifted from mislabeled-local to true UTC and marked, so
+    it is never shifted twice. Rows the current mapper writes carry the mark
+    from birth."""
+    tz = _pump_tz()
+    shifted = skipped = 0
+    for row in db.query_entities("Treatment", {"owner_email": OWNER_EMAIL, "source": "glooko"}, "timestamp", 1000000):
+        ns_id = str(row.get("ns_id") or "")
+        if row.get("pump_clock") == PUMP_CLOCK_MARKER or ns_id.startswith("glooko-dailytotal-"):
+            skipped += 1
+            continue
+        corrected = pump_local_to_utc(row.get("timestamp"), tz)
+        if corrected is None:
+            skipped += 1
+            continue
+        db.update_entity("Treatment", row["id"], {"timestamp": corrected, "pump_clock": PUMP_CLOCK_MARKER})
+        shifted += 1
+    return {"shifted": shifted, "skipped": skipped}
+
+
+def ensure_pump_clock_fixed() -> dict[str, int] | None:
+    """Run the repair once per database, before a sync can write new rows."""
+    if db.get_setting("glooko_pump_clock_fixed") == "1":
+        return None
+    result = fix_stored_pump_clock()
+    db.set_setting("glooko_pump_clock_fixed", "1")
+    log.info("glooko pump clock repaired: %s", result)
+    return result
 
 
 def _first(record: dict, *keys) -> Any:
@@ -214,7 +280,7 @@ async def _fetch_list(client: httpx.AsyncClient, path: str, key: str, since: dat
 
 
 def _map_bolus(r: dict) -> list[dict]:
-    ts = _parse_ts(_first(r, "pumpTimestamp", "timestamp", "deviceTimestamp", "displayTime"))
+    ts = _parse_pump_ts(_first(r, "pumpTimestamp", "timestamp", "deviceTimestamp", "displayTime"))
     amount = _num(_first(r, "insulinDelivered", "totalInsulinDelivered", "units", "amount", "value"))
     if ts is None or not amount:
         return []
@@ -225,6 +291,7 @@ def _map_bolus(r: dict) -> list[dict]:
         "amount": amount,
         "insulin_type": "rapid",
         "source": "glooko",
+        "pump_clock": PUMP_CLOCK_MARKER,
         "owner_email": OWNER_EMAIL,
     }
     iob = _num(r.get("insulinOnBoard"))
@@ -260,7 +327,7 @@ def _map_bolus(r: dict) -> list[dict]:
 
 
 def _map_food(r: dict) -> dict | None:
-    ts = _parse_ts(_first(r, "pumpTimestamp", "timestamp", "deviceTimestamp", "displayTime"))
+    ts = _parse_pump_ts(_first(r, "pumpTimestamp", "timestamp", "deviceTimestamp", "displayTime"))
     carbs = _num(_first(r, "carbs", "carbsCount", "value"))
     if ts is None or not carbs:
         return None
@@ -270,6 +337,7 @@ def _map_food(r: dict) -> dict | None:
         "timestamp": _iso(ts),
         "amount": carbs,
         "source": "glooko",
+        "pump_clock": PUMP_CLOCK_MARKER,
         "owner_email": OWNER_EMAIL,
     }
     guid = _first(r, "guid", "id")
@@ -279,7 +347,7 @@ def _map_food(r: dict) -> dict | None:
 
 
 def _map_insulin(r: dict) -> dict | None:
-    ts = _parse_ts(_first(r, "pumpTimestamp", "timestamp", "deviceTimestamp", "displayTime"))
+    ts = _parse_pump_ts(_first(r, "pumpTimestamp", "timestamp", "deviceTimestamp", "displayTime"))
     amount = _num(_first(r, "units", "value", "amount"))
     if ts is None or not amount:
         return None
@@ -291,6 +359,7 @@ def _map_insulin(r: dict) -> dict | None:
         "amount": amount,
         "insulin_type": "long" if "long" in kind or "basal" in kind else "rapid",
         "source": "glooko",
+        "pump_clock": PUMP_CLOCK_MARKER,
         "owner_email": OWNER_EMAIL,
     }
     guid = _first(r, "guid", "id")
@@ -300,7 +369,7 @@ def _map_insulin(r: dict) -> dict | None:
 
 
 def _map_basal(r: dict) -> dict | None:
-    ts = _parse_ts(_first(r, "pumpTimestamp", "timestamp", "deviceTimestamp", "displayTime"))
+    ts = _parse_pump_ts(_first(r, "pumpTimestamp", "timestamp", "deviceTimestamp", "displayTime"))
     rate = _num(_first(r, "rate", "value", "units"))
     if ts is None or rate is None:
         return None
@@ -317,6 +386,7 @@ def _map_basal(r: dict) -> dict | None:
         "timestamp": _iso(ts),
         "absolute": rate,
         "source": "glooko",
+        "pump_clock": PUMP_CLOCK_MARKER,
         "owner_email": OWNER_EMAIL,
     }
     if duration:
@@ -331,7 +401,7 @@ def _map_temporary_basal(r: dict) -> dict | None:
     """Omnipod manual-mode temp basal: the raised rate, the multiplier it was
     set with (1.95 = +95%), and the duration. Distinguished from scheduled
     segments by carrying `multiplier`."""
-    ts = _parse_ts(_first(r, "pumpTimestamp", "timestamp"))
+    ts = _parse_pump_ts(_first(r, "pumpTimestamp", "timestamp"))
     rate = _num(r.get("rate"))
     multiplier = _num(r.get("percentage"))
     seconds = _num(r.get("duration"))
@@ -349,6 +419,7 @@ def _map_temporary_basal(r: dict) -> dict | None:
         "multiplier": multiplier,
         "duration": seconds / 60,
         "source": "glooko",
+        "pump_clock": PUMP_CLOCK_MARKER,
         "owner_email": OWNER_EMAIL,
     }
     guid = _first(r, "guid", "id")
@@ -520,7 +591,7 @@ _EVENT_TREATMENTS = {
 
 def _map_pump_event(r: dict) -> dict | None:
     mapping = _EVENT_TREATMENTS.get(str(r.get("type") or "").lower())
-    ts = _parse_ts(_first(r, "pumpTimestamp", "timestamp"))
+    ts = _parse_pump_ts(_first(r, "pumpTimestamp", "timestamp"))
     if mapping is None or ts is None:
         return None
     event_type, note = mapping
@@ -530,6 +601,7 @@ def _map_pump_event(r: dict) -> dict | None:
         "timestamp": _iso(ts),
         "notes": note,
         "source": "glooko",
+        "pump_clock": PUMP_CLOCK_MARKER,
         "owner_email": OWNER_EMAIL,
     }
     if r.get("guid"):
@@ -546,7 +618,7 @@ def _map_mode(r: dict) -> dict | None:
     endTimestamp); stored in minutes like every other Treatment duration.
     """
     mode = str(r.get("type") or "").lower()
-    ts = _parse_ts(_first(r, "pumpTimestamp", "timestamp"))
+    ts = _parse_pump_ts(_first(r, "pumpTimestamp", "timestamp"))
     duration = _num(r.get("duration"))
     if not mode or ts is None or not duration:
         return None
@@ -557,9 +629,10 @@ def _map_mode(r: dict) -> dict | None:
         "mode": mode,
         "duration": duration / 60,
         "source": "glooko",
+        "pump_clock": PUMP_CLOCK_MARKER,
         "owner_email": OWNER_EMAIL,
     }
-    end = _parse_ts(r.get("endTimestamp"))
+    end = _parse_pump_ts(r.get("endTimestamp"))
     # Dedup is create-once by guid, so only settled periods are stored: an open
     # period grows between syncs and would be frozen at its first-seen length.
     # Two hours past its end is comfortably beyond Glooko's ~1h feed lag.
@@ -714,6 +787,7 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "profile": bool(profile_data), "login": bool(login_data)}
 
     if action in ("sync", "backfill"):
+        ensure_pump_clock_fixed()
         days = min(int(body.get("days") or (30 if action == "backfill" else 2)), 90)
         include_cgm = bool(body.get("include_cgm"))
         async with _sync_lock:

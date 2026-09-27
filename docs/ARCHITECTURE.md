@@ -203,7 +203,7 @@ See [LOCAL_MODELS.md](LOCAL_MODELS.md).
 The scheduler polls each connected source on its own interval. Glucose inserts
 from every source pass through a global ±4-minute dedup (`readings.py`) so
 overlapping feeds (Share + official API + Nightscout) never double-store a
-reading. Treatments dedup by source id and per-type time windows.
+reading. Treatments dedup by source id and per-type time windows. Glooko pump-stream timestamps are the pump's local wall clock mislabeled as UTC; the sync re-reads them in the app's configured timezone, so **set the timezone in Settings before connecting Glooko** (a one-time repair shifts rows stored before this was known).
 
 See the [data platform audit](data-platform/README.md) for the complete entity
 catalog, source lineage, query inventory, production baseline, and migration
