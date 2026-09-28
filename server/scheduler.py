@@ -38,22 +38,25 @@ CYCLE_INFERENCE_INTERVAL = 24 * 3600
 TANDEM_INTERVAL = 10 * 60
 GLOOKO_INTERVAL = 6 * 3600  # the pump uploads to Glooko ~once a night; 4×/day catches it without hammering the API
 
-_last_run = {
-    "dexcom_share": 0.0,
-    "dexcom": 0.0,
-    "nightscout": 0.0,
-    "nightscout_profile": 0.0,
-    "oura": 0.0,
-    "tandem": 0.0,
-    "glooko": 0.0,
-    "fitbit": 0.0,
-    "google_health": 0.0,
-    "google_health_hr": 0.0,
-    "cycle_inference": 0.0,
-    "health_summary": 0.0,
-    "patterns": 0.0,
-    "insights": 0.0,
-}
+# "Never run" is -inf, not 0.0: time.monotonic() counts from host boot, so a
+# 0.0 start made every job wait one full interval after a reboot (the 6-hour
+# Glooko sync sat idle for the first 6 hours of uptime).
+_last_run = {key: float("-inf") for key in (
+    "dexcom_share",
+    "dexcom",
+    "nightscout",
+    "nightscout_profile",
+    "oura",
+    "tandem",
+    "glooko",
+    "fitbit",
+    "google_health",
+    "google_health_hr",
+    "cycle_inference",
+    "health_summary",
+    "patterns",
+    "insights",
+)}
 
 HEALTH_SUMMARY_INTERVAL = 7 * 24 * 3600  # weekly, tracked by wall-clock (survives restarts)
 HEALTH_SUMMARY_RETRY = 3600  # in-process throttle so a failing run doesn't hammer the 27B model

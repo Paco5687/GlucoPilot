@@ -21,11 +21,14 @@ def database(tmp_path, monkeypatch):
 
 @pytest.fixture
 def only_weekly(monkeypatch):
-    """Silence every other scheduler job so _tick exercises just the weekly ones."""
+    """Silence every other scheduler job so _tick exercises just the weekly ones,
+    on a simulated freshly booted host (monotonic clock near zero)."""
     last = {key: float("inf") for key in scheduler._last_run}
-    last["patterns"] = 0.0
-    last["insights"] = 0.0
+    last["patterns"] = scheduler._last_run["patterns"]
+    last["insights"] = scheduler._last_run["insights"]
     monkeypatch.setattr(scheduler, "_last_run", last)
+    clock = {"now": 10.0}
+    monkeypatch.setattr(scheduler.time, "monotonic", lambda: clock["now"])
     calls = []
 
     def job(name, fail=False):
@@ -103,3 +106,9 @@ def test_health_summary_keeps_its_behaviour(database):
     assert not scheduler._health_summary_due()
     _stamp("health_summary_last_run", 7.1)
     assert scheduler._health_summary_due()
+
+
+def test_every_job_is_eligible_on_a_freshly_booted_host():
+    # A 0.0 start would compare against a monotonic clock that restarts at
+    # boot, holding each job back for one full interval after a reboot.
+    assert all(value == float("-inf") for value in scheduler._last_run.values())
