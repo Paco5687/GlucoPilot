@@ -29,7 +29,20 @@ describe("buildChartData", () => {
     expect(byDesc["tempbasal_correction:glooko"].multiplier).toBe(1.95);
     expect(byDesc["tempbasal:tandem"].description).toBe("Temporary basal");
     // The correction knows the scheduled rate it raised, for the IOB delta.
-    expect(byDesc["tempbasal_correction:glooko"].scheduledRate).toBe(2.35);
+    expect(byDesc["tempbasal_correction:glooko"].scheduledRate).toBeCloseTo(2.35, 1);
+  });
+
+  it("takes a percentage temp basal's baseline from the temp itself, not a 0-rate gap row", () => {
+    const data = buildChartData([{ timestamp: at(25, 1), value: 120 }], [
+      { type: "tempbasal", source: "glooko", timestamp: at(25, 0, 52), absolute: 1.3, duration: 2 },
+      { type: "tempbasal", source: "glooko", timestamp: at(25, 1, 30), absolute: 0, duration: 2 },
+      { type: "tempbasal_correction", source: "glooko", timestamp: at(25, 1, 33), absolute: 2.53, multiplier: 1.95, duration: 27 },
+      { type: "tempbasal", source: "tandem", timestamp: at(25, 3), absolute: 2.0, duration: 30 },
+    ], NOW);
+    const correction = data.basalEvents.find((e) => e.type === "tempbasal_correction");
+    expect(correction.scheduledRate).toBeCloseTo(1.3, 2);
+    // Without a multiplier, fall back to the schedule in force (here the 0 row).
+    expect(data.basalEvents.find((e) => e.source === "tandem").scheduledRate).toBe(0);
   });
 
   it("extends the range to now and survives large datasets", () => {

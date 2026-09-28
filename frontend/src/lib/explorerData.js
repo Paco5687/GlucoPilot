@@ -63,11 +63,15 @@ export function buildChartData(readings, treatments, now = Date.now()) {
     })
     .sort((a, b) => a.ms - b.ms);
   // Each temp/suspend carries the scheduled rate in force when it began, so
-  // IOB can take the delta without rescanning the schedule every frame.
+  // IOB can take the delta without rescanning the schedule every frame. A
+  // percentage temp basal states its own baseline exactly (rate ÷
+  // multiplier); the schedule lookup is only the fallback, because the pump
+  // logs brief 0-rate segments between temps that would otherwise count a
+  // correction's whole rate as extra insulin.
   let scheduledRate = null;
   for (const e of basalEvents) {
     if (e.description === "Scheduled basal") scheduledRate = e.amount;
-    else e.scheduledRate = scheduledRate;
+    else e.scheduledRate = e.multiplier > 0 ? e.amount / e.multiplier : scheduledRate;
   }
 
   const alarms = byType("note")
