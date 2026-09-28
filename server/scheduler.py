@@ -19,7 +19,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from . import cycle_inference, db, dexcom, dexcom_share, fitbit, glooko, google_health, health_summary, nightscout, oura, tandem
+from . import cycle_inference, db, dexcom, dexcom_share, fitbit, glooko, google_health, health_summary, insights, nightscout, oura, patterns, tandem
 from .config import OWNER_EMAIL, env_bool
 from .connector_provenance import run_connector
 
@@ -38,34 +38,61 @@ CYCLE_INFERENCE_INTERVAL = 24 * 3600
 TANDEM_INTERVAL = 10 * 60
 GLOOKO_INTERVAL = 6 * 3600  # the pump uploads to Glooko ~once a night; 4×/day catches it without hammering the API
 
-_last_run = {
-    "dexcom_share": 0.0,
-    "dexcom": 0.0,
-    "nightscout": 0.0,
-    "nightscout_profile": 0.0,
-    "oura": 0.0,
-    "tandem": 0.0,
-    "glooko": 0.0,
-    "fitbit": 0.0,
-    "google_health": 0.0,
-    "google_health_hr": 0.0,
-    "cycle_inference": 0.0,
-    "health_summary": 0.0,
-}
+# "Never run" is -inf, not 0.0: time.monotonic() counts from host boot, so a
+# 0.0 start made every job wait one full interval after a reboot (the 6-hour
+# Glooko sync sat idle for the first 6 hours of uptime).
+_last_run = {key: float("-inf") for key in (
+    "dexcom_share",
+    "dexcom",
+    "nightscout",
+    "nightscout_profile",
+    "oura",
+    "tandem",
+    "glooko",
+    "fitbit",
+    "google_health",
+    "google_health_hr",
+    "cycle_inference",
+    "health_summary",
+    "patterns",
+    "insights",
+)}
 
 HEALTH_SUMMARY_INTERVAL = 7 * 24 * 3600  # weekly, tracked by wall-clock (survives restarts)
 HEALTH_SUMMARY_RETRY = 3600  # in-process throttle so a failing run doesn't hammer the 27B model
+WEEKLY_INTERVAL = HEALTH_SUMMARY_INTERVAL
+WEEKLY_RETRY = HEALTH_SUMMARY_RETRY
+
+# Weekly analyses: (in-process throttle key, persistent cursor, job). The
+# cursor is also stamped when the Overview page runs the same analysis by
+# hand, so a manual refresh restarts the week instead of being redone.
+WEEKLY_ANALYSES = (
+    ("patterns", "patterns_last_run", patterns.analyze),
+    ("insights", "insights_last_run", insights.analyze),
+)
 
 
-def _health_summary_due() -> bool:
-    last = db.config_value("health_summary_last_run")
+def _weekly_due(cursor: str) -> bool:
+    last = db.config_value(cursor)
     if not last:
-        return True  # bootstrap the first summary
+        return True  # bootstrap the first run
     try:
         last_dt = datetime.fromisoformat(last.replace("Z", "+00:00"))
     except ValueError:
         return True
-    return (datetime.now(timezone.utc) - last_dt).total_seconds() >= HEALTH_SUMMARY_INTERVAL
+    return (datetime.now(timezone.utc) - last_dt).total_seconds() >= WEEKLY_INTERVAL
+
+
+def _health_summary_due() -> bool:
+    return _weekly_due("health_summary_last_run")
+
+
+def mark_weekly_run(cursor: str) -> None:
+    db.set_config_value(cursor, datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"))
+
+
+def _has_glucose() -> bool:
+    return bool(db.query_entities("GlucoseReading", {"owner_email": OWNER_EMAIL}, "-timestamp", 1))
 
 
 def _has_summary_data() -> bool:
@@ -234,6 +261,16 @@ async def _tick() -> None:
             log.info("health summary regenerated")
         except Exception as err:
             log.warning("health summary failed: %s", err)
+
+    for name, cursor, job in WEEKLY_ANALYSES:
+        if now - _last_run[name] >= WEEKLY_RETRY and _weekly_due(cursor) and _has_glucose():
+            _last_run[name] = now
+            try:
+                await job()
+                mark_weekly_run(cursor)
+                log.info("%s regenerated (weekly)", name)
+            except Exception as err:
+                log.warning("%s weekly run failed: %s", name, err)
 
 
 def _sync_enabled() -> bool:

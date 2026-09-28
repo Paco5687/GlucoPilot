@@ -7,7 +7,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from . import companion, cycle_inference, dexcom, dexcom_share, fingerstick, fitbit, food, glooko, google_health, health_summary, insights, insulin, nightscout, oura, patterns, tandem
+from . import companion, cycle_inference, dexcom, dexcom_share, fingerstick, fitbit, food, glooko, google_health, health_summary, insights, insulin, nightscout, oura, patterns, scheduler, tandem
 from .auth import require_admin, require_login, session_actor
 from .connector_provenance import run_connector
 
@@ -58,7 +58,9 @@ async def _dispatch(name: str, body: dict[str, Any], actor: str = "owner") -> An
     if name == "googleHealth":
         return await dispatch_connector(lambda: google_health.handle(body))
     if name == "analyzePatterns":
-        return await patterns.analyze()
+        result = await patterns.analyze()
+        scheduler.mark_weekly_run("patterns_last_run")
+        return result
     if name == "healthSummary":
         return await health_summary.handle(body)
     if name == "fingerstick":
@@ -70,7 +72,9 @@ async def _dispatch(name: str, body: dict[str, Any], actor: str = "owner") -> An
     if name == "companion":
         return await companion.handle(body, actor=actor)
     if name == "analyzeInsights":
-        return await insights.analyze()
+        result = await insights.analyze()
+        scheduler.mark_weekly_run("insights_last_run")
+        return result
     if name == "inferCycles":
         return await cycle_inference.infer()
     return {"error": f"Unknown function: {name}", "_status": 404}
