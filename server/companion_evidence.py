@@ -17,6 +17,7 @@ from .clinical_reviews import companion_context as clinical_review_context
 
 CONTRACT_VERSION = "companion-evidence-context/1.0.0"
 MAX_PROMPT_CONTEXT_CHARS = 48_000
+MAX_INTENT_CHARS = 500  # EvidenceBundleQuery.question_intent max_length
 _CITATION_RE = re.compile(r"\[([EMGC])(\d+)\]", re.IGNORECASE)
 # The local model often cites as "(E3)", "(M2, M5)" or "[ E3 ]" instead of the
 # exact "[E3]" it was asked for. A bracket or paren group made only of aliases is
@@ -188,6 +189,8 @@ def _selected_scopes(question: str) -> tuple[Scope, ...]:
 
 
 def _scope_intent(scope: Scope, question: str) -> str:
+    """Append the scope's retrieval hint, trimming the question so the result
+    stays within EvidenceBundleQuery's question_intent limit."""
     hints = {
         "metabolic": "glucose insulin treatment",
         "wellness": "wearable daily cycle period",
@@ -208,7 +211,8 @@ def _scope_intent(scope: Scope, question: str) -> str:
         token in lower for token in ("document", "imaging", "record", "report")
     ):
         hints["labs_records"] = "medical record source document"
-    return f"{question} {hints[scope.name]}"
+    hint = hints[scope.name]
+    return f"{question[:MAX_INTENT_CHARS - len(hint) - 1].rstrip()} {hint}"
 
 
 def _bundle_items(bundle: dict[str, Any]) -> list[dict[str, Any]]:
@@ -346,7 +350,7 @@ def build_context(
     refresh: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Build a content-addressed, question-ranked portfolio for one reply."""
-    intent = " ".join(str(question or "").split())[:500] or "whole person health context"
+    intent = " ".join(str(question or "").split())[:MAX_INTENT_CHARS] or "whole person health context"
     as_of = as_of or datetime.now(timezone.utc).date()
     if refresh:
         refresh_contradictions()

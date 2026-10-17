@@ -161,6 +161,28 @@ def test_scope_balancing_keeps_question_relevant_source_types(companion_database
     }
 
 
+def test_long_question_stays_within_bundle_intent_limit(companion_database):
+    question = (
+        "My body seems like it is not matching my CGM readings lately, and I "
+        "want to understand why my diagnosis, medication, symptom history and "
+        "lab results might explain it. "
+    ) * 4
+    assert len(question) > 500
+
+    public, _reasoning = companion_evidence.build_context(
+        question,
+        as_of=date(2026, 7, 20),
+        refresh=False,
+    )
+
+    assert {"metabolic", "clinical", "labs_records"} <= {
+        scope["scope"] for scope in public["scopes"]
+    }
+    for scope in companion_evidence.SCOPES:
+        intent = companion_evidence._scope_intent(scope, question[:500])
+        assert len(intent) <= companion_evidence.MAX_INTENT_CHARS
+
+
 def test_companion_receives_source_staleness_as_operational_context(
     companion_database,
     monkeypatch,
