@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from . import care_notes as care_notes_module
-from . import companion_evidence, insulin, research
+from . import companion_evidence, companion_safety, insulin, research
 from .auth import require_login, session_actor
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .db import config_value
@@ -59,39 +59,39 @@ def _strip_signoff(text: str) -> str:
     return _SIGNOFF_RE.sub("", text).rstrip()
 
 SYSTEM = (
-    "You are Emily's personal health companion — warm, grounded, honest, and genuinely curious about her WHOLE "
-    "health, not just one part of it. Emily lives with Type 1 diabetes, but that is only one thread of her story: "
-    "her thyroid, hormones and menstrual cycle, inflammation and immune markers, gut health, sleep, energy, mood "
-    "and stress, medications and supplements, and everything she tells you about her life all matter just as much. "
-    "Do NOT funnel every conversation back to glucose or diabetes — follow the evidence and her actual question "
-    "wherever they lead, and focus on the parts of her data that are relevant to what she asked.\n"
-    "Ground factual claims in her real data: cite specific numbers, dates, and trends rather than generalities, and "
-    "say plainly when the data is old or missing. Every sentence that makes a personal-data observation, calculation, "
-    "correlation, or hypothesis MUST end with one or more exact [E#] aliases copied from the supplied evidence items. "
-    "Write every alias in its own square brackets, like [E3] [M2], never in parentheses like (E3). "
-    "Never invent or alter an evidence alias.Cite lived-experience memory only with its exact [M#] alias, and keep "
-    "general medical information separate from personal inference, using [G#] only for supplied trusted references. "
-    "When relaying a care-team note (a routine, protocol, or prescription instruction), cite its exact [C#] alias "
-    "and attribute it to its author. "
-    "When she shares how she's feeling or what's happening in her life, take it seriously and connect it to what you see.\n"
-    "When the evidence context contains an unresolved contradiction, show both sides and call it unresolved. Never choose a "
-    "side silently, and never use a blocking contradiction as the basis for a definitive claim.\n"
-    "The clinical_reviews block is authoritative about review semantics: only entries under clinician_confirmed_facts may "
-    "be described as clinician-confirmed. Provider annotations are attributed notes, not confirmed facts. Items under "
-    "owner_disputed_reviews remain disputed even though their immutable clinician history is retained.\n"
-    "SHARE YOUR ACTUAL ANALYSIS. Connect the dots, name the patterns you see, and give your real interpretation of "
-    "what they could mean — including which conditions, mechanisms, or explanations the evidence is consistent with, and "
-    "how her medications or cycle might be driving what she's feeling. Offer these as hypotheses to explore, not "
-    "verdicts. Do NOT hide behind vague hedging, boilerplate disclaimers, or refuse to weigh in — Emily wants your "
-    "honest read, and withholding a useful insight helps no one.\n"
-    "Two real limits, stated plainly and not belabored: you are not her doctor, so what you offer is insight to "
-    "confirm with her care team rather than a formal diagnosis; and you don't tell her to start, stop, or change the "
-    "dose of a medication (you can absolutely discuss how her meds may be affecting her). Be concise and human — a "
-    "few focused paragraphs, not an exhaustive report, and never repeat yourself. If you truly lack the data to "
-    "answer, say so plainly. Write as a natural chat message: do NOT sign off, add a signature, or close with a line "
-    "like '— Emily's Health Companion'. Machine-extracted lab evidence with clinically_verified=false must always be "
-    "called unverified; parser confidence is never clinical verification."
+    "You are Emily's personal health companion: warm, steady, and honest. Emily lives with Type 1 diabetes, and her "
+    "thyroid, hormones and cycle, immune markers, gut, sleep, energy, mood, medications, and daily life all matter as "
+    "much as glucose. Follow her actual question wherever it leads instead of steering back to diabetes.\n"
+    "HOW TO ANSWER: Answer her question directly in the first one or two sentences. Then give the few facts from her "
+    "data that bear on it, with numbers and dates. Keep the whole reply under 250 words: short paragraphs, at most "
+    "five bullets, no headings, and never repeat yourself. Write as a natural chat message with no sign-off.\n"
+    "CITATIONS: Every sentence that states something about her own data MUST end with one or more exact [E#] aliases "
+    "copied from the supplied evidence items. Write every alias in its own square brackets, like [E3] [M2], never in "
+    "parentheses like (E3). Never invent or alter an alias. Cite things she told you only with their exact [M#] alias, "
+    "care-team notes with their exact [C#] alias (and name the author), and general references only with supplied "
+    "[G#] aliases. Machine-extracted lab evidence with clinically_verified=false must always be called unverified.\n"
+    "BE CALIBRATED: Separate what her data shows from what it cannot show. Call a lab value high or low only when "
+    "its flag or reference range in the evidence says so. If you offer a possible explanation, give "
+    "at most two, call them possibilities, and say what test or record would check each one. Never call something "
+    "likely, classic, or unmistakable, and never present a diagnosis; diagnoses belong to her care team. If a lab or "
+    "record is not in the evidence you were given, say you don't see it in the records you were given, rather than "
+    "claiming it was never done. When the evidence holds an unresolved contradiction, show both sides and call it unresolved. "
+    "The clinical_reviews block is authoritative: only entries under clinician_confirmed_facts may be described as "
+    "clinician-confirmed; provider annotations are attributed notes, and owner_disputed_reviews stay disputed.\n"
+    "BE STEADYING: She is often frightened about her health. Use calm, plain language and no alarming metaphors "
+    "(nothing like under siege, hijacked, broken, toxic, or damaged). When her data shows a feared outcome has not "
+    "happened, say so with the numbers. Do not build explanations on contested ideas such as leaky gut, adrenal "
+    "fatigue, or toxins; if her records contain such a label you may mention that it is in her records.\n"
+    "NO TREATMENT CHANGES: Never suggest starting, stopping, or changing a medication, insulin dose, temp basal, "
+    "supplement, herb, or diet, and never recommend a practitioner outside her care team. You can explain how her "
+    "medications may be affecting her and suggest questions or tests to raise with her care team.\n"
+    "SAFETY: If she says she wants to die, hurt herself, or sees no point in going on, stop analyzing: respond with "
+    "care and urge her to call or text 988, contact her therapist, or call 911 if she might act on it. 988 is only "
+    "for those thoughts, never for blood sugar. If she describes a low happening now, tell her to treat it first and "
+    "recheck; a low she cannot treat herself is a 911 emergency. If she describes vomiting, high ketones, or trouble "
+    "breathing, tell her to get urgent care."
 )
+
 
 MEMORY_SCHEMA = {
     "type": "object",
@@ -605,6 +605,58 @@ async def _finalize_grounded_reply(
     return reply, evidence
 
 
+async def _safe_grounded_reply(
+    raw_reply: str,
+    public_evidence: dict[str, Any],
+    memories: list[dict[str, Any]],
+    sources: list[dict[str, Any]],
+    *,
+    tier: str = "default",
+    care_notes: list[dict[str, Any]] | None = None,
+    user_msg: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """Ground the reply, with the treatment-change guard applied before and
+    after so neither the draft nor its grounding repair can slip one through."""
+    raw_reply, guarded = companion_safety.guard_reply(raw_reply, user_msg)
+    reply, evidence = await _finalize_grounded_reply(
+        raw_reply,
+        public_evidence,
+        memories,
+        sources,
+        tier=tier,
+        care_notes=care_notes,
+    )
+    reply, guarded_after = companion_safety.guard_reply(reply, user_msg)
+    evidence["safety_guard"] = {"guarded_lines": guarded + guarded_after}
+    return reply, evidence
+
+
+def _save_assistant_message(
+    thread_id: str,
+    actor: str,
+    content: str,
+    *,
+    evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    with unit_of_work() as work:
+        message = work.repositories.entity("ChatMessage").create(
+            {
+                "role": "assistant",
+                "content": content,
+                "thread_id": thread_id,
+                "actor": actor,
+                "evidence": evidence,
+                "created_date": _now(),
+                "owner_email": OWNER_EMAIL,
+            }
+        )
+        work.repositories.entity("CompanionThread").update(
+            thread_id, {"updated_date": _now()}
+        )
+        work.commit()
+    return message
+
+
 def _grounding(
     user_msg: str,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -656,31 +708,30 @@ async def _distill_query(user_msg: str) -> str | None:
     return q
 
 
-async def _extract_memories(user_msg: str, reply: str, existing: list) -> list[dict]:
+async def _extract_memories(user_msg: str, existing: list) -> list[dict]:
+    """Facts come only from Emily's own words. The Companion's reply is left out
+    on purpose: the small extractor kept turning the reply's speculation into
+    "Reports ..." memories she never said."""
     known = "\n".join(f"- {m.get('content', '')}" for m in existing) or "(none)"
     prompt = (
-        "You maintain a long-term memory about Emily. From the exchange below, extract any NEW, durable facts about "
-        "her LIVED EXPERIENCE worth remembering — symptoms, how she's feeling, life events/stressors, treatment or "
-        "routine changes, goals, preferences. Only concrete lasting facts, in the third person.\n"
-        "IMPORTANT: Emily often shares how she's feeling WHILE asking a question (e.g. 'I've been run down and my "
-        "joints ache — does my data explain it?'). Extract the symptom/feeling/event she mentions even when it is "
-        "wrapped in a question; you are recording the fact she reported, not the question itself.\n"
-        "Do NOT restate her numeric lab/glucose data (that's already tracked), skip pure small talk, and skip "
-        "anything already known.\n\n"
+        "You maintain a long-term memory about Emily. From her message below, extract any NEW, durable facts about "
+        "her LIVED EXPERIENCE that she states herself: symptoms, how she's feeling, life events or stressors, "
+        "treatment or routine changes, goals, preferences. Use her own words as closely as possible, in the third "
+        "person. Never add a diagnosis, cause, lab value, or detail she did not say.\n"
+        "Emily often shares how she's feeling WHILE asking a question (e.g. 'I've been run down and my joints ache. "
+        "Does my data explain it?'). Record the fact she reported, not the question itself.\n"
+        "Skip questions with no new fact, small talk, numeric lab or glucose data, and anything already known. "
+        "An empty list is the right answer for most messages.\n\n"
         "EXAMPLE\n"
         "Emily said: Work has been brutal this month and I'm barely sleeping. Also my hands feel puffy in the "
-        "mornings — is that related to anything?\n"
-        'Output: {"memories": [{"content": "Reports high work stress and poor sleep this month.", "category": "life_context"}, '
-        '{"content": "Reports morning hand puffiness/swelling.", "category": "symptom"}]}\n\n'
+        "mornings. Is that related to anything?\n"
+        'Output: {"memories": [{"content": "Reports brutal work stress this month and barely sleeping.", "category": "life_context"}, '
+        '{"content": "Reports puffy hands in the mornings.", "category": "symptom"}]}\n\n'
         f"ALREADY KNOWN:\n{known}\n\n"
-        f"Emily said: {user_msg}\nCompanion replied: {reply}\n\nReturn the new memories (empty list if none)."
+        f"Emily said: {user_msg}\n\nReturn the new memories (empty list if none)."
     )
-    res = await invoke_llm(prompt, response_json_schema=MEMORY_SCHEMA, max_tokens=500, site="companion_memory_extract")
-    mems = (res or {}).get("memories", []) if isinstance(res, dict) else []
-    if not mems:  # small local model is noisy on this task — one retry before giving up
-        res = await invoke_llm(prompt, response_json_schema=MEMORY_SCHEMA, max_tokens=500, site="companion_memory_extract")
-        mems = (res or {}).get("memories", []) if isinstance(res, dict) else []
-    return mems
+    res = await invoke_llm(prompt, response_json_schema=MEMORY_SCHEMA, max_tokens=300, site="companion_memory_extract")
+    return (res or {}).get("memories", []) if isinstance(res, dict) else []
 
 
 async def handle(body: dict[str, Any], actor: str = "owner") -> dict[str, Any]:
@@ -809,6 +860,16 @@ async def handle(body: dict[str, Any], actor: str = "owner") -> dict[str, Any]:
                 "owner_email": OWNER_EMAIL,
             }
         )
+        if actor == "owner" and companion_safety.crisis_signal(text):
+            log.info("companion crisis support reply sent")
+            message = _save_assistant_message(tid, actor, companion_safety.CRISIS_REPLY)
+            return {
+                "reply": companion_safety.CRISIS_REPLY,
+                "evidence": None,
+                "message_id": message["id"],
+                "remembered": [],
+                "thread_id": tid,
+            }
         history = _thread_history(tid)
         memories = _memories() if actor == "owner" else []
         prompt_memories = memories[:PROMPT_MEMORY_LIMIT]
@@ -824,13 +885,14 @@ async def handle(body: dict[str, Any], actor: str = "owner") -> dict[str, Any]:
                 audience=_audience_note(actor),
                 care_notes=notes,
             )
-            reply, evidence = await _finalize_grounded_reply(
+            reply, evidence = await _safe_grounded_reply(
                 raw_reply,
                 public_evidence,
                 prompt_memories,
                 [],
                 tier=body.get("tier", "default"),
                 care_notes=notes,
+                user_msg=text,
             )
         except Exception as err:
             log.exception("companion reply failed")
@@ -852,7 +914,7 @@ async def handle(body: dict[str, Any], actor: str = "owner") -> dict[str, Any]:
                 tid, {"updated_date": _now()}
             )
             work.commit()
-        remembered = await _store_new_memories(text, reply, memories) if actor == "owner" else []
+        remembered = await _store_new_memories(text, memories) if actor == "owner" else []
         return {
             "reply": reply,
             "evidence": evidence,
@@ -864,19 +926,44 @@ async def handle(body: dict[str, Any], actor: str = "owner") -> dict[str, Any]:
     return {"error": "Unknown action", "_status": 400}
 
 
-async def _store_new_memories(text: str, reply: str, memories: list) -> list[str]:
+MEMORY_CATEGORIES = {"symptom", "life_context", "treatment", "goal", "observation", "preference"}
+MAX_MEMORIES_PER_MESSAGE = 3
+MIN_MEMORY_SOURCE_WORDS = 4  # "Please" or "thanks" carries no fact to remember
+
+
+def _only_questions(text: str) -> bool:
+    """Questions alone ("How is my thyroid? Is my dose right?") report nothing to
+    remember; facts arrive as statements, often before the question."""
+    sentences = [part for part in re.split(r"(?<=[.!?])\s+", text.strip()) if part]
+    return bool(sentences) and all(sentence.rstrip().endswith("?") for sentence in sentences)
+
+
+async def _store_new_memories(text: str, memories: list) -> list[str]:
     remembered: list[str] = []
+    if (
+        len(text.split()) < MIN_MEMORY_SOURCE_WORDS
+        or _only_questions(text)
+        or companion_safety.crisis_signal(text)
+    ):
+        return remembered
+    known = [e.get("content", "") for e in memories]
     try:
-        for m in await _extract_memories(text, reply, memories):
+        for m in await _extract_memories(text, memories):
+            if len(remembered) >= MAX_MEMORIES_PER_MESSAGE:
+                break
             c = (m.get("content") or "").strip()
             if not c:
                 continue
-            if any(c.lower() in e.get("content", "").lower() or e.get("content", "").lower() in c.lower() for e in memories):
-                continue  # dedupe against what we already know
+            if not companion_safety.grounded_memory(c, text):
+                log.info("companion memory rejected: not grounded in the message")
+                continue
+            if companion_safety.near_duplicate(c, known + remembered):
+                continue
+            category = str(m.get("category") or "").strip().lower()
             _entity("HealthMemory").create(
                 {
                     "content": c,
-                    "category": m.get("category") or "observation",
+                    "category": category if category in MEMORY_CATEGORIES else "observation",
                     "source": "companion",
                     "created_date": _now(),
                     "owner_email": OWNER_EMAIL,
@@ -918,6 +1005,13 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
             "owner_email": OWNER_EMAIL,
         }
     )
+    if actor == "owner" and companion_safety.crisis_signal(text):
+        # Never routed to the model, never mined for memories.
+        log.info("companion crisis support reply sent")
+        _save_assistant_message(thread_id, actor, companion_safety.CRISIS_REPLY)
+        yield json.dumps({"delta": companion_safety.CRISIS_REPLY}) + "\n"
+        yield json.dumps({"done": True, "remembered": [], "thread_id": thread_id}) + "\n"
+        return
     history = _thread_history(thread_id)
     memories = _memories() if actor == "owner" else []
     prompt_memories = memories[:PROMPT_MEMORY_LIMIT]
@@ -955,8 +1049,16 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
         yield json.dumps({"error": f"Companion evidence is unavailable: {err}"}) + "\n"
         return
     parts: list[str] = []
+    stream_meta: dict[str, Any] = {}
     try:
-        async for chunk in invoke_llm_stream(prompt, max_tokens=REPLY_MAX_TOKENS, tier=tier, stop=SIGNOFF_STOP, site="companion_reply"):
+        async for chunk in invoke_llm_stream(
+            prompt,
+            max_tokens=REPLY_MAX_TOKENS,
+            tier=tier,
+            stop=SIGNOFF_STOP,
+            site="companion_reply",
+            meta=stream_meta,
+        ):
             if not chunk:
                 continue
             parts.append(chunk)
@@ -966,16 +1068,20 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
         return
 
     reply = _strip_signoff("".join(parts).strip())
+    if stream_meta.get("finish_reason") == "length":
+        log.info("companion reply hit the token cap; trimmed to the last full sentence")
+        reply = companion_safety.trim_cut_off(reply)
     if not reply:
         yield json.dumps({"error": "Companion returned an empty response."}) + "\n"
         return
-    reply, evidence = await _finalize_grounded_reply(
+    reply, evidence = await _safe_grounded_reply(
         reply,
         public_evidence,
         prompt_memories,
         sources,
         tier=tier,
         care_notes=notes,
+        user_msg=text,
     )
     if not reply:
         yield json.dumps({"error": "Companion returned no supported response."}) + "\n"
@@ -1003,7 +1109,7 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
         "evidence": evidence,
         "message_id": message["id"],
     }) + "\n"
-    remembered = await _store_new_memories(text, reply, memories) if actor == "owner" else []
+    remembered = await _store_new_memories(text, memories) if actor == "owner" else []
     yield json.dumps({"done": True, "remembered": remembered, "thread_id": thread_id}) + "\n"
 
 

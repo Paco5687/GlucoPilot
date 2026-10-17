@@ -312,7 +312,7 @@ class TestEndToEndDispatch:
     def test_stream_local_site_uses_real_local_streaming(self, router, monkeypatch):
         _use_breeze_provider(monkeypatch)
 
-        async def fake_local_stream(prompt, max_tokens, url_override=None, model_override=None, stop=None):
+        async def fake_local_stream(prompt, max_tokens, url_override=None, model_override=None, stop=None, meta=None):
             for piece in ("tok1 ", "tok2"):
                 yield piece
 

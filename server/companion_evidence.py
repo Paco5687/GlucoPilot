@@ -322,6 +322,11 @@ def _public_item(alias: str, item: dict[str, Any]) -> dict[str, Any]:
         "source_ids": _source_ids(item),
         "source_links": item.get("source_links") or [],
         "claim": item.get("claim"),
+        "flag": (
+            str(data.get("flag") or "").strip().lower() or None
+            if item.get("entity_type") == "LabResult"
+            else None
+        ),
     }
 
 
@@ -677,6 +682,28 @@ def _uncited_personal_claim(text: str, classification: str) -> bool:
     return bool(claim and (personal or definite or numeric_personal))
 
 
+_LAB_JUDGEMENT = re.compile(
+    r"\b(is|are|was|were|both|came\s+back|looks?|reads?|remains?|remained|stays?|stayed)\s+"
+    r"(?:\w+\s+){0,2}?(low|high|elevated|deficient|abnormal|below\s+normal|above\s+normal)\b",
+    re.IGNORECASE,
+)
+_NEGATION = re.compile(r"\b(not|never|no)\b|n't", re.IGNORECASE)
+_NORMAL_FLAGS = {"", "n", "normal", "none"}
+
+
+def _unflagged_lab_judgement(line: str, evidence_items: list[dict[str, Any]]) -> bool:
+    """A line that calls labs low or high while citing only labs the lab itself
+    did not flag. The small model reads low-normal values as "low"."""
+    labs = [item for item in evidence_items if item.get("entity_type") == "LabResult"]
+    if not labs or len(labs) != len(evidence_items):
+        return False
+    if not any(
+        not _NEGATION.search(match.group(0)) for match in _LAB_JUDGEMENT.finditer(line)
+    ):
+        return False
+    return all((item.get("flag") or "").strip().lower() in _NORMAL_FLAGS for item in labs)
+
+
 def _qualify_unverified(text: str) -> str:
     lower = text.lower()
     if any(
@@ -684,6 +711,9 @@ def _qualify_unverified(text: str) -> str:
         for phrase in ("unverified", "machine-extracted", "not clinically verified", "not yet verified")
     ):
         return text
+    # A heading or bold-only line reads badly with a prefix; mark it at the end.
+    if re.match(r"^\s*(?:[-*+]\s+)?(?:#{1,6}\s+.*|\*\*[^*]+\*\*(?:\s*\[[EMGC]\d+\])*)\s*$", text):
+        return f"{text.rstrip()} (unverified lab)"
     match = re.match(r"^(\s*(?:[-*+]\s+|#{1,6}\s+)?)", text)
     prefix = match.group(1) if match else ""
     return f"{prefix}Unverified machine-extracted lab evidence: {text[len(prefix):]}"
@@ -759,6 +789,9 @@ def finalize_reply(
         kinds = {alias[0] for alias in aliases}
         classification = _classification(line, kinds)
         evidence_items = [evidence_by_alias[alias] for alias in aliases if alias in evidence_by_alias]
+        if _unflagged_lab_judgement(line, evidence_items):
+            omitted_claims += 1
+            continue
         if any(
             item.get("entity_type") == "LabResult"
             and not item.get("confidence", {}).get("clinically_verified")
