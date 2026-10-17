@@ -18,6 +18,20 @@ from .clinical_reviews import companion_context as clinical_review_context
 CONTRACT_VERSION = "companion-evidence-context/1.0.0"
 MAX_PROMPT_CONTEXT_CHARS = 48_000
 _CITATION_RE = re.compile(r"\[([EMGC])(\d+)\]", re.IGNORECASE)
+# The local model often cites as "(E3)", "(M2, M5)" or "[ E3 ]" instead of the
+# exact "[E3]" it was asked for. A bracket or paren group made only of aliases is
+# unambiguous, so it is rewritten to canonical form before validation. Ranges
+# ("E3–E9") and prose that merely contains an alias are left alone and still
+# have to pass the citation check on their own.
+_ALIAS_GROUP_RE = re.compile(
+    r"[\(\[]\s*([EMGC]\d+(?:(?:\s*[,/;&]\s*|\s+and\s+|\s+)[EMGC]\d+)*)\s*[\)\]]",
+    re.IGNORECASE,
+)
+_ALIAS_IN_GROUP_RE = re.compile(r"[EMGC]\d+", re.IGNORECASE)
+# "estradiol (E2)" names the hormone, not evidence item E2.
+_ALIAS_LOOKALIKE_RE = re.compile(
+    r"\b(?:estradiol|estrone|estriol|estetrol|complement)\s*$", re.IGNORECASE
+)
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 _EXCLUDED_TYPES = {"DailySummary", "HealthSummary", "InsuranceInfo", "WeeklySummary"}
 _REASONING_FIELDS = {
@@ -671,6 +685,17 @@ def _qualify_unverified(text: str) -> str:
     return f"{prefix}Unverified machine-extracted lab evidence: {text[len(prefix):]}"
 
 
+def _normalize_citations(line: str) -> str:
+    def canonical(match: re.Match[str]) -> str:
+        if _ALIAS_LOOKALIKE_RE.search(line[:match.start()]):
+            return match.group(0)
+        return " ".join(
+            f"[{alias.upper()}]" for alias in _ALIAS_IN_GROUP_RE.findall(match.group(1))
+        )
+
+    return _ALIAS_GROUP_RE.sub(canonical, line)
+
+
 def finalize_reply(
     reply: str,
     public_context: dict[str, Any],
@@ -710,6 +735,7 @@ def finalize_reply(
     omitted_claims = 0
 
     for line in str(reply or "").splitlines():
+        line = _normalize_citations(line)
         aliases = []
         for kind, number in _CITATION_RE.findall(line):
             alias = f"{kind.upper()}{int(number)}"

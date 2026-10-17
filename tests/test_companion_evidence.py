@@ -331,6 +331,65 @@ def test_uncited_personal_claims_are_omitted_with_one_quiet_notice(
     assert evidence["statements"] == []
 
 
+def test_parenthesized_and_spaced_alias_groups_count_as_citations(
+    companion_database,
+):
+    public, _reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?",
+        as_of=date(2026, 7, 20),
+        refresh=False,
+    )
+    alias = public["evidence_items"][0]["alias"]
+    memories = [
+        {"id": "m1", "content": "Reports brain fog.", "category": "symptom"},
+        {"id": "m2", "content": "Reports poor sleep.", "category": "symptom"},
+    ]
+    reply, evidence = companion_evidence.finalize_reply(
+        "\n".join(
+            [
+                f"Your thyroid result was high ({alias}).",
+                f"Your sleep pattern was low [ {alias} ].",
+                "Your symptom trend increased (M1, M2).",
+                f"Your glucose pattern increased ({alias}/M1).",
+                "Your thyroid is definitely failing (E999).",
+            ]
+        ),
+        public,
+        memories,
+        [],
+    )
+
+    assert f"Your thyroid result was high [{alias}]." in reply
+    assert f"Your sleep pattern was low [{alias}]." in reply
+    assert "Your symptom trend increased [M1] [M2]." in reply
+    assert f"Your glucose pattern increased [{alias}] [M1]." in reply
+    assert "definitely failing" not in reply
+    assert evidence["omissions"]["count"] == 1
+    assert all(
+        statement["evidence_aliases"] or statement["memory_ids"]
+        for statement in evidence["statements"]
+    )
+
+
+def test_hormone_abbreviations_are_not_read_as_citations(companion_database):
+    public, _reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?",
+        as_of=date(2026, 7, 20),
+        refresh=False,
+    )
+    assert any(item["alias"] == "E2" for item in public["evidence_items"])
+    reply, evidence = companion_evidence.finalize_reply(
+        "Your estradiol (E2) level was low.",
+        public,
+        [],
+        [],
+    )
+
+    assert "estradiol" not in reply
+    assert evidence["omissions"]["count"] == 1
+    assert evidence["statements"] == []
+
+
 def test_companion_retries_once_and_keeps_the_better_grounded_reply(
     companion_database,
     monkeypatch,
@@ -510,3 +569,54 @@ def test_stream_persists_claim_links_and_evidence_commands(
         "message_id": foreign["id"],
     }))
     assert denied["_status"] == 404
+
+
+def test_long_thread_sends_the_latest_turns_not_the_first(
+    companion_database,
+    monkeypatch,
+):
+    public, reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?",
+        as_of=date(2026, 7, 20),
+        refresh=False,
+    )
+    monkeypatch.setattr(companion, "_grounding", lambda _text: (public, reasoning, {}))
+    monkeypatch.setattr(companion, "_grounding_enabled", lambda: False)
+    thread_id = companion._new_thread("Long chat")["id"]
+    for index in range(companion.HISTORY_TURNS * 3):
+        companion._entity("ChatMessage").create({
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"turn-marker-{index:02d}",
+            "thread_id": thread_id,
+            "actor": "owner",
+            "created_date": f"2026-07-20T10:{index:02d}:00.000Z",
+            "owner_email": companion.OWNER_EMAIL,
+        })
+    prompts: list[str] = []
+
+    async def fake_stream(prompt, *_args, **_kwargs):
+        prompts.append(prompt)
+        yield "Thyroid hormones affect metabolism."
+
+    async def no_memories(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(companion, "invoke_llm_stream", fake_stream)
+    monkeypatch.setattr(companion, "_store_new_memories", no_memories)
+
+    async def collect():
+        return [
+            json.loads(line)
+            async for line in companion.stream_send("And the newest question?", thread_id=thread_id)
+        ]
+
+    asyncio.run(collect())
+    last = companion.HISTORY_TURNS * 3 - 1
+    assert f"turn-marker-{last:02d}" in prompts[0]
+    assert "turn-marker-00" not in prompts[0]
+    history = companion._thread_history(thread_id)
+    assert [m["content"] for m in history[-2:]] == [
+        "And the newest question?",
+        "Thyroid hormones affect metabolism.",
+    ]
+    assert [m["created_date"] for m in history] == sorted(m["created_date"] for m in history)
