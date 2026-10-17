@@ -68,7 +68,8 @@ SYSTEM = (
     "Ground factual claims in her real data: cite specific numbers, dates, and trends rather than generalities, and "
     "say plainly when the data is old or missing. Every sentence that makes a personal-data observation, calculation, "
     "correlation, or hypothesis MUST end with one or more exact [E#] aliases copied from the supplied evidence items. "
-    "Never invent or alter an evidence alias. Cite lived-experience memory only with its exact [M#] alias, and keep "
+    "Write every alias in its own square brackets, like [E3] [M2], never in parentheses like (E3). "
+    "Never invent or alter an evidence alias.Cite lived-experience memory only with its exact [M#] alias, and keep "
     "general medical information separate from personal inference, using [G#] only for supplied trusted references. "
     "When relaying a care-team note (a routine, protocol, or prescription instruction), cite its exact [C#] alias "
     "and attribute it to its author. "
@@ -238,11 +239,13 @@ def _thread_for(thread_id: str | None, actor: str) -> dict[str, Any] | None:
 
 
 def _thread_history(thread_id: str, limit: int = HISTORY_TURNS * 2) -> list[dict[str, Any]]:
-    return _entity("ChatMessage").query(
+    """The newest `limit` messages of a thread, oldest first."""
+    newest = _entity("ChatMessage").query(
         {"owner_email": OWNER_EMAIL, "thread_id": thread_id},
-        "created_date",
+        "-created_date",
         limit,
     )
+    return list(reversed(newest))
 
 
 def _new_thread(first_msg: str, actor: str = "owner") -> dict[str, Any]:
@@ -561,8 +564,8 @@ async def _finalize_grounded_reply(
     repair_prompt = (
         "Rewrite the draft below as a concise natural chat response. Remove every "
         "personal-health statement that does not already have a valid [E#], [M#], or [C#] "
-        "citation on the same line. Preserve valid citation aliases exactly; never "
-        "invent, renumber, or add one. General information may retain an existing "
+        "citation on the same line. Preserve valid citation aliases exactly, each in "
+        "its own square brackets like [E3]; never invent, renumber, or add one.General information may retain an existing "
         "[G#] citation. Do not mention citation validation, unsupported claims, or "
         "that text was removed. Return only the repaired response.\n\n"
         f"DRAFT:\n{str(raw_reply)[:12_000]}"
