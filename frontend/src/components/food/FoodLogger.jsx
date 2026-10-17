@@ -2,14 +2,24 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { base44 } from "@/api/base44Client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Utensils, ScanBarcode, Camera, Star, Plus, Minus, Loader2, Trash2, X } from "lucide-react";
+import { Utensils, ScanBarcode, Camera, Star, Plus, Minus, Loader2, Trash2, X, Mic, Square } from "lucide-react";
 import { toast } from "sonner";
 import BarcodeScanner from "./BarcodeScanner";
+import VoiceMealPanel, { itemsForLog, mealTotals } from "./VoiceMealPanel";
+import useVoiceRecorder from "./useVoiceRecorder";
 
 function localNow() {
-  const d = new Date();
+  return toLocalInput(new Date());
+}
+
+function toLocalInput(value) {
+  const d = new Date(value);
   d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
   return d.toISOString().slice(0, 16);
+}
+
+function browserTimeZone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return undefined; }
 }
 
 function fileToImageString(file) {
@@ -26,13 +36,16 @@ function fileToImageString(file) {
   });
 }
 
+const EMPTY_MEAL = { transcript: "", title: "", items: [], confidence: null, savePreset: false, entry_method: "text" };
+
 const EMPTY = { name: "", brand: "", serving_label: "1 serving", carbs: "", fiber: "", sugars: "", protein: "", fat: "", calories: "", servings: 1, savePreset: true, preset_id: null, barcode: null, source: "manual" };
 
 export default function FoodLogger({ onLogged }) {
   const [presets, setPresets] = useState([]);
   const [recent, setRecent] = useState([]);
-  const [mode, setMode] = useState(null); // null | "scan" | "confirm"
+  const [mode, setMode] = useState(null); // null | "scan" | "confirm" | "listen" | "meal"
   const [draft, setDraft] = useState(EMPTY);
+  const [meal, setMeal] = useState(EMPTY_MEAL);
   const [when, setWhen] = useState(localNow);
   const [busy, setBusy] = useState(false);
   const [servingsById, setServingsById] = useState({});
@@ -46,6 +59,62 @@ export default function FoodLogger({ onLogged }) {
     } catch { /* ignore */ }
   }, []);
   useEffect(() => { load(); }, [load]);
+
+  async function estimateMeal(payload, entryMethod) {
+    setBusy(true);
+    try {
+      const r = await base44.functions.invoke("food", { action: "estimate_meal", ...payload, tz: browserTimeZone() });
+      const d = r.data || {};
+      if (!d.meal) throw new Error(d.error || "Couldn't estimate that.");
+      setMeal((m) => ({ ...m, transcript: d.transcript ?? m.transcript, title: d.meal.title || "", items: d.meal.items, confidence: d.meal.confidence, entry_method: entryMethod }));
+      if (d.timestamp) setWhen(toLocalInput(d.timestamp));
+      setMode("meal");
+    } catch (err) {
+      toast.error(err.message || "Couldn't estimate that.");
+      const heard = err.data?.transcript;
+      if (heard) {
+        setMeal((m) => ({ ...m, transcript: heard, entry_method: entryMethod }));
+        setMode("meal");
+      } else if (entryMethod === "voice") {
+        setMode(null);
+      }
+    }
+    setBusy(false);
+  }
+
+  const voice = useVoiceRecorder({
+    onRecorded: (audio) => estimateMeal({ audio }, "voice"),
+    onError: (message) => { toast.error(message); openMeal(); },
+  });
+
+  function openMeal() {
+    setMeal(EMPTY_MEAL);
+    setWhen(localNow());
+    setMode("meal");
+  }
+
+  function startVoice() {
+    setMeal(EMPTY_MEAL);
+    setWhen(localNow());
+    setMode("listen");
+    voice.start();
+  }
+
+  async function logMeal() {
+    const items = itemsForLog(meal.items).filter((i) => i.name.trim());
+    if (!items.length) { toast.error("Add at least one food."); return; }
+    if (items.some((i) => i.carbs == null)) { toast.error("Every food needs a carb amount."); return; }
+    setBusy(true);
+    try {
+      const r = await base44.functions.invoke("food", { action: "log_meal", name: meal.title, items, timestamp: new Date(when).toISOString(), transcript: meal.transcript, entry_method: meal.entry_method, save_preset: meal.savePreset });
+      if (r.data?.error) throw new Error(r.data.error);
+      toast.success(`Logged ${meal.title || items[0].name} · ${mealTotals(items).carbs} g carbs`);
+      setMode(null);
+      await load();
+      onLogged?.();
+    } catch (err) { toast.error(err.message || "Couldn't log that."); }
+    setBusy(false);
+  }
 
   function openConfirm(fields) {
     setDraft({ ...EMPTY, ...fields });
@@ -135,17 +204,43 @@ export default function FoodLogger({ onLogged }) {
   return (
     <div className="bg-card rounded-xl border border-border p-4 space-y-3">
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <h3 className="text-sm font-semibold flex items-center gap-2"><Utensils className="w-4 h-4 text-primary" /> Food <span className="text-xs font-normal text-muted-foreground">scan, snap, or tap</span></h3>
-        <div className="flex gap-2">
-          <Button size="sm" onClick={() => setMode("scan")} disabled={busy}><ScanBarcode className="w-4 h-4 mr-1" /> Scan barcode</Button>
+        <h3 className="text-sm font-semibold flex items-center gap-2"><Utensils className="w-4 h-4 text-primary" /> Food <span className="text-xs font-normal text-muted-foreground">say, scan, snap, or tap</span></h3>
+        <div className="flex gap-2 flex-wrap">
+          <Button size="sm" onClick={startVoice} disabled={busy || mode === "listen"}><Mic className="w-4 h-4 mr-1" /> Say it</Button>
+          <Button size="sm" variant="outline" onClick={() => setMode("scan")} disabled={busy}><ScanBarcode className="w-4 h-4 mr-1" /> Scan barcode</Button>
           <Button size="sm" variant="outline" onClick={() => fileRef.current?.click()} disabled={busy}><Camera className="w-4 h-4 mr-1" /> Label photo</Button>
           <Button size="sm" variant="outline" onClick={() => openConfirm({})} disabled={busy}><Plus className="w-4 h-4 mr-1" /> Manual</Button>
           <input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={onLabelPhoto} data-testid="label-photo-input" />
         </div>
       </div>
-      {busy && mode !== "confirm" && <div className="text-xs text-muted-foreground flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> working…</div>}
+      {busy && mode !== "confirm" && mode !== "meal" && mode !== "listen" && <div className="text-xs text-muted-foreground flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> working…</div>}
 
       {mode === "scan" && <BarcodeScanner onDetected={onBarcode} onClose={() => setMode(null)} />}
+
+      {mode === "listen" && (
+        <div className="rounded-lg border border-border p-3 flex items-center gap-3 bg-muted/20">
+          {voice.status === "recording" ? (
+            <>
+              <span className="relative flex h-3 w-3 shrink-0"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75" /><span className="relative inline-flex rounded-full h-3 w-3 bg-red-500" /></span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium tabular-nums">Listening… {Math.floor(voice.seconds / 60)}:{String(voice.seconds % 60).padStart(2, "0")}</div>
+                <div className="text-[11px] text-muted-foreground truncate">Say what you ate, like "a bag of yogurt bites"</div>
+              </div>
+              <Button size="sm" onClick={voice.stop}><Square className="w-3 h-3 mr-1 fill-current" /> Done</Button>
+              <Button size="sm" variant="ghost" onClick={() => { voice.cancel(); setMode(null); }}>Cancel</Button>
+            </>
+          ) : voice.status === "processing" || busy ? (
+            <div className="text-xs text-muted-foreground flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> Working out what you ate…</div>
+          ) : (
+            <>
+              <div className="flex-1 text-xs text-muted-foreground flex items-center gap-2"><Loader2 className="w-3 h-3 animate-spin" /> Starting the microphone…</div>
+              <Button size="sm" variant="ghost" onClick={() => { voice.cancel(); setMode(null); }}>Cancel</Button>
+            </>
+          )}
+        </div>
+      )}
+
+      {mode === "meal" && <VoiceMealPanel meal={meal} setMeal={setMeal} when={when} setWhen={setWhen} busy={busy} onEstimate={() => estimateMeal({ text: meal.transcript }, meal.entry_method)} onLog={logMeal} onCancel={() => setMode(null)} />}
 
       {mode === "confirm" && (
         <div className="rounded-lg border border-border p-3 space-y-2 bg-muted/20">
@@ -198,7 +293,7 @@ export default function FoodLogger({ onLogged }) {
           <ul className="text-xs space-y-1">
             {recent.slice(0, 6).map((t) => (
               <li key={t.id} className="flex items-center justify-between gap-2">
-                <span className="truncate">{new Date(t.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · {t.food_name} × {t.servings} · <b>{t.amount} g</b>{t.protein_g != null && <span className="text-muted-foreground"> · {t.protein_g} g protein</span>}</span>
+                <span className="truncate">{new Date(t.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · {t.food_name}{t.items ? "" : ` × ${t.servings}`} · <b>{t.amount} g</b>{t.protein_g != null && <span className="text-muted-foreground"> · {t.protein_g} g protein</span>}{t.fiber_g != null && <span className="text-muted-foreground"> · {t.fiber_g} g fiber</span>}</span>
                 <button type="button" onClick={() => deleteLog(t.id)} aria-label={`delete ${t.food_name}`}><Trash2 className="w-3 h-3 text-muted-foreground" /></button>
               </li>
             ))}

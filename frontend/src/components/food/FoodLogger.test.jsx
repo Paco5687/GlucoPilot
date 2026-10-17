@@ -46,3 +46,100 @@ describe("FoodLogger", () => {
     expect(await screen.findByText(/4 g protein/)).toBeTruthy();
   });
 });
+
+const SANDWICH = {
+  ok: true,
+  transcript: "chicken sandwich on gluten free bread",
+  meal: {
+    title: "Chicken sandwich on GF bread",
+    confidence: 0.7,
+    items: [
+      { name: "Gluten-free bread", portion: "2 slices", preset_id: null, servings: null, carbs: 34, fiber: 4, sugars: 3, protein: 4, fat: 4, calories: 180 },
+      { name: "Chicken breast", portion: "3 oz", preset_id: null, servings: null, carbs: 0, fiber: 0, sugars: 0, protein: 26, fat: 3, calories: 130 },
+    ],
+    totals: { carbs: 34 },
+  },
+  timestamp: null,
+};
+
+describe("FoodLogger voice", () => {
+  beforeEach(() => {
+    const base = apiMocks.invoke.getMockImplementation();
+    apiMocks.invoke.mockImplementation(async (name, body) => {
+      if (body.action === "estimate_meal") return { data: SANDWICH };
+      if (body.action === "log_meal") return { data: { ok: true, treatment: { id: "t3" } } };
+      return base(name, body);
+    });
+  });
+  afterEach(() => { delete window.MediaRecorder; delete navigator.mediaDevices; });
+
+  it("falls back to typing when the browser can't record, then estimates and logs one meal", async () => {
+    render(<FoodLogger />);
+    await screen.findByText("Oat bar");
+    fireEvent.click(screen.getByText("Say it"));
+    expect(await screen.findByText("What did you eat?")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("what you ate"), { target: { value: "chicken sandwich on gluten free bread" } });
+    fireEvent.click(screen.getByText("Estimate"));
+    await waitFor(() => expect(apiMocks.invoke).toHaveBeenCalledWith("food", expect.objectContaining({ action: "estimate_meal", text: "chicken sandwich on gluten free bread" })));
+    expect(await screen.findByDisplayValue("Gluten-free bread")).toBeTruthy();
+    expect(screen.getByText("34 g carbs")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Carbs g for Gluten-free bread"), { target: { value: "40" } });
+    expect(screen.getByText("40 g carbs")).toBeTruthy();
+    fireEvent.click(screen.getByText("Log it"));
+    await waitFor(() => expect(apiMocks.invoke).toHaveBeenCalledWith("food", expect.objectContaining({
+      action: "log_meal",
+      name: "Chicken sandwich on GF bread",
+      entry_method: "text",
+      save_preset: false,
+      items: [
+        expect.objectContaining({ name: "Gluten-free bread", carbs: 40, protein: 4 }),
+        expect.objectContaining({ name: "Chicken breast", carbs: 0, protein: 26 }),
+      ],
+    })));
+  });
+
+  it("removing a food updates the totals", async () => {
+    render(<FoodLogger />);
+    await screen.findByText("Oat bar");
+    fireEvent.click(screen.getByText("Say it"));
+    fireEvent.change(await screen.findByLabelText("what you ate"), { target: { value: "sandwich" } });
+    fireEvent.click(screen.getByText("Estimate"));
+    await screen.findByDisplayValue("Chicken breast");
+    fireEvent.click(screen.getByLabelText("remove Gluten-free bread"));
+    expect(screen.getByText("0 g carbs")).toBeTruthy();
+    expect(screen.queryByDisplayValue("Gluten-free bread")).toBeNull();
+  });
+
+  it("records from the microphone and sends the clip for an estimate", async () => {
+    const stopTrack = vi.fn();
+    navigator.mediaDevices = { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] })) };
+    window.MediaRecorder = class {
+      static isTypeSupported(t) { return t === "audio/webm;codecs=opus"; }
+      constructor(_stream, opts) { this.mimeType = opts.mimeType; this.state = "inactive"; }
+      start() { this.state = "recording"; }
+      stop() {
+        this.state = "inactive";
+        this.ondataavailable({ data: new Blob(["fake-audio"], { type: this.mimeType }) });
+        this.onstop();
+      }
+    };
+    render(<FoodLogger />);
+    await screen.findByText("Oat bar");
+    fireEvent.click(screen.getByText("Say it"));
+    expect(await screen.findByText(/Listening/)).toBeTruthy();
+    fireEvent.click(screen.getByText("Done"));
+    await waitFor(() => expect(apiMocks.invoke).toHaveBeenCalledWith("food", expect.objectContaining({ action: "estimate_meal", audio: `audio/webm|${btoa("fake-audio")}` })));
+    expect(await screen.findByDisplayValue("Gluten-free bread")).toBeTruthy();
+    expect(screen.getByDisplayValue("chicken sandwich on gluten free bread")).toBeTruthy();
+    expect(stopTrack).toHaveBeenCalled();
+  });
+
+  it("shows a logged meal in Recent without a servings count", async () => {
+    apiMocks.invoke.mockImplementation(async () => ({ data: { presets: [], recent: [{ id: "t9", timestamp: "2026-10-16T16:00:00Z", food_name: "Snack", servings: 1, amount: 48, fiber_g: 3.1, items: [{ name: "Banana" }] }] } }));
+    render(<FoodLogger />);
+    expect(await screen.findByText(/Snack ·/)).toBeTruthy();
+    expect(screen.queryByText(/× 1/)).toBeNull();
+    expect(screen.getByText(/3.1 g fiber/)).toBeTruthy();
+  });
+});

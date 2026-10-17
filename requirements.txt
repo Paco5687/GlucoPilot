@@ -6,3 +6,5 @@ itsdangerous==2.2.0
 argon2-cffi==25.1.0
 tconnectsync==3.0.0
 pydexcom==0.5.1
+faster-whisper==1.2.1
+av==19.0.1

@@ -1,5 +1,5 @@
-"""Food logging with as little friction as possible: scan a barcode, photograph
-a nutrition label, or tap a saved preset. Every log becomes an ordinary
+"""Food logging with as little friction as possible: say what you ate, scan a
+barcode, photograph a nutrition label, or tap a saved preset. Every log becomes an ordinary
 ``carb`` Treatment (so the correction, walking, and pattern engines see it
 as they already see pump-reported carbs) carrying the fuller nutrition
 detail — protein, fat, fiber, calories, servings — for later analysis.
@@ -7,19 +7,24 @@ detail — protein, fat, fiber, calories, servings — for later analysis.
 Barcodes are resolved through Open Food Facts. Only the barcode leaves the
 machine; no health data is involved, and the lookup can be switched off in
 Settings. Label photos go to the configured vision model exactly as lab
-reports do — with a local model they never leave the machine.
+reports do — with a local model they never leave the machine. Voice logs are
+transcribed on this machine (``speech.py``); the words then go to the
+configured text model for a per-food estimate, preferring the exact numbers of
+any saved preset the person names.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-from . import db
-from .config import OWNER_EMAIL
+from . import db, speech
+from .config import APP_TIMEZONE, OWNER_EMAIL
 from .llm import invoke_llm
 from .repositories import get_repositories
 
@@ -31,6 +36,9 @@ OFF_USER_AGENT = "GlucoPilot/1.0 (self-hosted personal health app)"
 MACROS = ("carbs", "fiber", "sugars", "protein", "fat", "calories")
 PRESET_LIMIT = 200
 RECENT_LIMIT = 30
+MEAL_ITEM_LIMIT = 12
+PRESET_HINT_LIMIT = 8
+TRANSCRIPT_LIMIT = 500
 
 NUTRITION_SCHEMA = {
     "type": "object",
@@ -64,6 +72,64 @@ Rules:
 """
 
 
+MEAL_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "portion": {"type": "string"},
+        "preset_id": {"type": ["string", "null"]},
+        "servings": {"type": ["number", "null"]},
+        "carbs": {"type": "number"},
+        "fiber": {"type": ["number", "null"]},
+        "sugars": {"type": ["number", "null"]},
+        "protein": {"type": ["number", "null"]},
+        "fat": {"type": ["number", "null"]},
+        "calories": {"type": ["number", "null"]},
+    },
+    "required": ["name", "portion", "preset_id", "servings", "carbs", "fiber", "sugars", "protein", "fat", "calories"],
+}
+
+MEAL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "items": {"type": "array", "items": MEAL_ITEM_SCHEMA},
+        "eaten_at": {"type": ["string", "null"]},
+        "minutes_ago": {"type": ["integer", "null"]},
+        "confidence": {"type": "number"},
+    },
+    "required": ["title", "items", "eaten_at", "minutes_ago", "confidence"],
+}
+
+MEAL_PROMPT = """You are estimating nutrition for the person's own food log from what they said they ate. They count carbohydrates to dose insulin, so the carb numbers matter most.
+
+What they said: "{said}"
+Their local time now: {now}
+{known}
+List each food they ate. For each one give:
+- name: a short food name, e.g. "Gluten-free bread"
+- portion: the amount eaten, e.g. "2 slices", "1 bag (28 g)", "1 cup"
+- carbs, fiber, sugars, protein, fat in grams and calories, all for that portion
+
+Rules:
+- When no amount is given, assume one typical serving. Use typical US nutrition values.
+- Split a mixed dish into its main parts when they carry different carbs (a sandwich is bread + filling + cheese + spread). Keep a packaged food or a single prepared dish as one item.
+- If a food is one of their saved foods listed above, set preset_id to that id and servings to how many servings they ate. Otherwise preset_id and servings are null.
+- Always estimate carbs, even when unsure. Never return null for carbs.
+- title: a short name for the whole meal, e.g. "Chicken sandwich on GF bread".
+- If they said a clock time ("at 8", "at noon"), set eaten_at to it as 24-hour "HH:MM" (use their local time to tell morning from evening). If they said a relative time ("an hour ago"), set minutes_ago. Otherwise both are null.
+- confidence: 0 to 1, how close you think the carb total is.
+- If what they said is not about food or drink, return an empty items list.
+"""
+
+# Words that say nothing about which food was meant, ignored when matching
+# what was said against saved preset names.
+_MATCH_STOPWORDS = frozenset(
+    "and the with for had ate just about some one two three four half bag bags cup cups "
+    "slice slices piece pieces serving servings small large medium breakfast lunch dinner snack".split()
+)
+
+
 def _get(entity_type: str, entity_id: str) -> dict[str, Any] | None:
     repositories = get_repositories()
     accessor = getattr(repositories, "entity", None)
@@ -82,6 +148,15 @@ def _num(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _valid_timestamp(value: Any) -> str | None:
+    ts = value or _now_iso()
+    try:
+        datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return ts
 
 
 def _clean_barcode(value: Any) -> str:
@@ -186,7 +261,7 @@ def _preset_payload(body: dict[str, Any]) -> dict[str, Any] | None:
         "serving_label": str(body.get("serving_label") or "1 serving").strip()[:80],
         "default_servings": max(0.25, min(_num(body.get("default_servings")) or 1.0, 20.0)),
         "barcode": _clean_barcode(body.get("barcode")) or None,
-        "source": body.get("source") if body.get("source") in ("barcode", "label", "manual") else "manual",
+        "source": body.get("source") if body.get("source") in ("barcode", "label", "manual", "voice") else "manual",
         **{m: (round(_num(body.get(m)), 1) if _num(body.get(m)) is not None else None) for m in MACROS},
         "carbs": round(carbs, 1),
     }
@@ -211,10 +286,8 @@ def log_food(body: dict[str, Any]) -> dict[str, Any]:
         return {"error": "Carbohydrates per serving are required.", "_status": 400}
     servings = _num(body.get("servings"))
     servings = max(0.25, min(servings if servings else (base.get("default_servings") or 1.0), 20.0))
-    ts = body.get("timestamp") or _now_iso()
-    try:
-        datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-    except ValueError:
+    ts = _valid_timestamp(body.get("timestamp"))
+    if ts is None:
         return {"error": "A valid time is required.", "_status": 400}
     name = str(base.get("name") or "Food").strip()[:120]
     totals = {m: (round(_num(base.get(m)) * servings, 1) if _num(base.get(m)) is not None else None) for m in MACROS}
@@ -242,6 +315,200 @@ def log_food(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "treatment": treatment}
 
 
+def _match_words(text: str) -> set[str]:
+    words = set()
+    for word in re.findall(r"[a-z]+", text.lower()):
+        if len(word) < 3 or word in _MATCH_STOPWORDS:
+            continue
+        words.add(word[:-1] if len(word) > 3 and word.endswith("s") else word)
+    return words
+
+
+def preset_candidates(said: str) -> list[dict[str, Any]]:
+    """Saved presets sharing a meaningful word with what was said, most-used
+    first, so the model can reuse their exact package numbers."""
+    spoken = _match_words(said)
+    if not spoken:
+        return []
+    scored = [(len(spoken & _match_words(f"{p.get('name') or ''} {p.get('brand') or ''}")), p) for p in list_presets()]
+    return [p for score, p in sorted(scored, key=lambda pair: -pair[0]) if score > 0][:PRESET_HINT_LIMIT]
+
+
+def _preset_hint(preset: dict[str, Any]) -> str:
+    parts = [f"{preset['carbs']:g} g carbs"]
+    parts += [f"{preset[m]:g} g {m}" for m in ("fiber", "protein", "fat") if preset.get(m) is not None]
+    if preset.get("calories") is not None:
+        parts.append(f"{preset['calories']:g} kcal")
+    brand = f" ({preset['brand']})" if preset.get("brand") else ""
+    serving = preset.get("serving_label") or "1 serving"
+    return f'- id={preset["id"]}: "{preset["name"]}"{brand}, per {serving}: ' + ", ".join(parts)
+
+
+def _local_zone(name: Any) -> Any:
+    for candidate in (name, APP_TIMEZONE):
+        if not candidate:
+            continue
+        try:
+            return ZoneInfo(str(candidate))
+        except (ZoneInfoNotFoundError, ValueError):
+            continue
+    return timezone.utc
+
+
+def resolve_eaten_at(result: dict[str, Any], now_local: datetime) -> datetime | None:
+    """A spoken clock time ("at 8") or relative time ("an hour ago") -> when.
+    A clock time later than now means yesterday."""
+    match = re.fullmatch(r"\s*(\d{1,2}):(\d{2})\s*", str(result.get("eaten_at") or ""))
+    if match and int(match.group(1)) < 24 and int(match.group(2)) < 60:
+        when = now_local.replace(hour=int(match.group(1)), minute=int(match.group(2)), second=0, microsecond=0)
+        if when > now_local + timedelta(minutes=10):
+            when -= timedelta(days=1)
+        return when
+    minutes = _num(result.get("minutes_ago"))
+    if minutes and 0 < minutes <= 24 * 60:
+        return now_local - timedelta(minutes=minutes)
+    return None
+
+
+def _clean_item(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    name = str(raw.get("name") or "").strip()[:80]
+    if not name:
+        return None
+    item: dict[str, Any] = {
+        "name": name,
+        "portion": str(raw.get("portion") or "").strip()[:60] or None,
+        "preset_id": str(raw["preset_id"]) if raw.get("preset_id") else None,
+        "servings": _num(raw.get("servings")),
+    }
+    for m in MACROS:
+        value = _num(raw.get(m))
+        item[m] = round(max(value, 0.0), 1) if value is not None else None
+    return item
+
+
+def _apply_preset(item: dict[str, Any], preset: dict[str, Any], servings: Any) -> dict[str, Any]:
+    """Replace an estimate with the preset's exact per-serving numbers."""
+    count = max(0.25, min(_num(servings) or preset.get("default_servings") or 1.0, 20.0))
+    label = preset.get("serving_label") or "serving"
+    values = {m: (round(_num(preset.get(m)) * count, 1) if _num(preset.get(m)) is not None else None) for m in MACROS}
+    return {**item, "name": preset["name"], "portion": label if count == 1 else f"{count:g} × {label}",
+            "preset_id": preset["id"], "servings": count, **values}
+
+
+def _totals(items: list[dict[str, Any]]) -> dict[str, float | None]:
+    totals: dict[str, float | None] = {}
+    for m in MACROS:
+        values = [i[m] for i in items if i.get(m) is not None]
+        totals[m] = round(sum(values), 1) if values else None
+    return totals
+
+
+async def estimate_meal(body: dict[str, Any]) -> dict[str, Any]:
+    """What was said (a recording, or typed text) -> foods with estimated
+    nutrition. Nothing is logged until the person confirms."""
+    said = str(body.get("text") or "")
+    if body.get("audio"):
+        try:
+            said = await speech.transcribe(body["audio"])
+        except speech.SpeechError as err:
+            return {"error": str(err), "_status": 400}
+        except Exception as err:
+            log.warning("speech transcription failed: %s", type(err).__name__)
+            return {"error": "Couldn't transcribe that recording. Try again, or type it.", "_status": 502}
+    said = " ".join(said.split())[:TRANSCRIPT_LIMIT]
+    if not said:
+        message = "Didn't catch anything. Try again a little closer to the mic." if body.get("audio") else "Say or type what you ate."
+        return {"error": message, "_status": 422, "transcript": ""}
+    now_local = datetime.now(_local_zone(body.get("tz")))
+    candidates = preset_candidates(said)
+    known = ""
+    if candidates:
+        known = "\nTheir saved foods (exact nutrition from the package, per serving):\n" + "\n".join(_preset_hint(p) for p in candidates) + "\n"
+    prompt = MEAL_PROMPT.format(said=said.replace('"', "'"), now=now_local.strftime("%a %H:%M"), known=known)
+    try:
+        result = await invoke_llm(prompt, response_json_schema=MEAL_SCHEMA, max_tokens=900, site="food_estimate")
+    except Exception as err:  # the model layer already logs details
+        return {"error": f"Couldn't estimate that: {err}", "_status": 502, "transcript": said}
+    result = result if isinstance(result, dict) else {}
+    raw_items = result.get("items") if isinstance(result.get("items"), list) else []
+    by_id = {str(p["id"]): p for p in candidates}
+    items = []
+    for raw in raw_items[:MEAL_ITEM_LIMIT]:
+        item = _clean_item(raw)
+        if item is None:
+            continue
+        preset = by_id.get(item["preset_id"] or "")
+        items.append(_apply_preset(item, preset, item["servings"]) if preset else {**item, "preset_id": None, "servings": None})
+    if not items:
+        return {"error": "That didn't sound like food. Try again, or type it.", "_status": 422, "transcript": said}
+    when = resolve_eaten_at(result, now_local)
+    confidence = _num(result.get("confidence"))
+    return {
+        "ok": True,
+        "transcript": said,
+        "meal": {
+            "title": str(result.get("title") or "").strip()[:120] or items[0]["name"],
+            "items": items,
+            "totals": _totals(items),
+            "confidence": max(0.0, min(confidence, 1.0)) if confidence is not None else None,
+        },
+        "timestamp": when.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z") if when else None,
+    }
+
+
+def log_meal(body: dict[str, Any]) -> dict[str, Any]:
+    """Log a described meal as ONE carb Treatment (one meal, one carb event for
+    the analysis engines), keeping the per-food breakdown alongside."""
+    items = [i for i in (_clean_item(r) for r in (body.get("items") or [])[:MEAL_ITEM_LIMIT]) if i]
+    if not items:
+        return {"error": "Add at least one food.", "_status": 400}
+    if any(i["carbs"] is None for i in items):
+        return {"error": "Every food needs a carb amount.", "_status": 400}
+    ts = _valid_timestamp(body.get("timestamp"))
+    if ts is None:
+        return {"error": "A valid time is required.", "_status": 400}
+    name = str(body.get("name") or "").strip()[:120] or items[0]["name"]
+    used_presets = []
+    for item in items:
+        preset = _get("FoodPreset", item["preset_id"]) if item["preset_id"] else None
+        if preset and preset.get("owner_email") == OWNER_EMAIL:
+            used_presets.append(preset)
+        else:
+            item["preset_id"] = None
+    totals = _totals(items)
+    described = "; ".join(f"{i['name']} ({i['portion']})" if i["portion"] else i["name"] for i in items)
+    treatment = get_repositories().treatments.create({
+        "type": "carb",
+        "event_type": "Carbs",
+        "timestamp": ts,
+        "amount": totals["carbs"],
+        "notes": f"{name}: {described}"[:500],
+        "source": "manual",
+        "entry_method": "voice" if body.get("entry_method") != "text" else "text",
+        "food_name": name,
+        "servings": 1,
+        "serving_label": "meal",
+        "protein_g": totals["protein"],
+        "fat_g": totals["fat"],
+        "fiber_g": totals["fiber"],
+        "sugars_g": totals["sugars"],
+        "calories": totals["calories"],
+        "items": items,
+        "transcript": str(body.get("transcript") or "").strip()[:TRANSCRIPT_LIMIT] or None,
+        "owner_email": OWNER_EMAIL,
+    })
+    for preset in {p["id"]: p for p in used_presets}.values():
+        db.update_entity("FoodPreset", preset["id"], {"use_count": (preset.get("use_count") or 0) + 1, "last_used": ts})
+    if body.get("save_preset"):
+        db.create_entity("FoodPreset", {
+            "name": name, "brand": None, "serving_label": "1 meal", "default_servings": 1.0, "barcode": None,
+            "source": "voice", **totals, "use_count": 1, "last_used": ts, "owner_email": OWNER_EMAIL,
+        })
+    return {"ok": True, "treatment": treatment}
+
+
 def recent_logs() -> list[dict[str, Any]]:
     rows = get_repositories().treatments.query(
         {"owner_email": OWNER_EMAIL, "type": "carb", "source": "manual"}, "-timestamp", RECENT_LIMIT
@@ -255,6 +522,10 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
         return await lookup_barcode(body.get("barcode"))
     if action == "scan_label":
         return await scan_label(body.get("image"))
+    if action == "estimate_meal":
+        return await estimate_meal(body)
+    if action == "log_meal":
+        return log_meal(body)
     if action == "presets":
         return {"presets": list_presets(), "recent": recent_logs()}
     if action == "save_preset":
