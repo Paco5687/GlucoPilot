@@ -336,3 +336,78 @@ def test_provider_can_read_but_only_admin_can_write(client, burden_database):
     assert created.status_code == 200
     assert created.json()["origin_kind"] == "manual"
     client.cookies.clear()
+
+
+def test_bundle_survives_a_sync_write_during_its_read_snapshot(burden_database, monkeypatch):
+    """The sync loop commits every minute. Deriving burden rows inside the
+    bundle's read transaction upgraded it to a writer, and SQLite refuses that
+    upgrade outright once another connection has committed ("database is
+    locked"), which surfaced to the user as a Companion that couldn't respond."""
+    _entity(
+        "Treatment",
+        "bolus",
+        timestamp=BASE.isoformat().replace("+00:00", "Z"),
+        type="insulin",
+        event_type="Bolus",
+        amount=1,
+        source="synthetic-pump",
+    )
+    import server.evidence_bundle as evidence_bundle
+
+    real_loader = evidence_bundle._load_insulin_response_candidates
+
+    def loader_with_concurrent_sync(connection, query):
+        db.create_entity("GlucoseReading", {
+            "owner_email": OWNER_EMAIL,
+            "timestamp": (BASE + timedelta(hours=1)).isoformat().replace("+00:00", "Z"),
+            "value": 120,
+            "source": "synthetic-sync",
+        })
+        return real_loader(connection, query)
+
+    monkeypatch.setattr(
+        evidence_bundle, "_load_insulin_response_candidates", loader_with_concurrent_sync
+    )
+
+    bundle = build_bundle(
+        EvidenceBundleQuery(
+            start=BASE - timedelta(minutes=1),
+            end=BASE + timedelta(days=1),
+            domains=[EvidenceDomain.ANALYTICS],
+            question_intent="management effort burden bolus",
+            item_budget=20,
+        )
+    )
+
+    assert any(
+        candidate["entity_type"] == "ManagementBurdenSummary"
+        for candidate in bundle["evidence"]["derived_metrics"]
+    )
+
+
+def test_a_busy_database_skips_the_burden_refresh_without_failing_the_bundle(
+    burden_database, monkeypatch, caplog
+):
+    import server.evidence_bundle as evidence_bundle
+
+    real_analysis = evidence_bundle.management_burden_analysis
+
+    def busy_when_writing(start, end, **kwargs):
+        if kwargs.get("derive", True) and kwargs.get("connection") is None:
+            raise sqlite3.OperationalError("database is locked")
+        return real_analysis(start, end, **kwargs)
+
+    monkeypatch.setattr(evidence_bundle, "management_burden_analysis", busy_when_writing)
+
+    bundle = build_bundle(
+        EvidenceBundleQuery(
+            start=BASE - timedelta(minutes=1),
+            end=BASE + timedelta(days=1),
+            domains=[EvidenceDomain.ANALYTICS],
+            question_intent="management effort burden",
+            item_budget=20,
+        )
+    )
+
+    assert bundle["bundle_id"]
+    assert "management burden refresh skipped" in caplog.text

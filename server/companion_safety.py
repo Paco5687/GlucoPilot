@@ -51,8 +51,18 @@ CRISIS_REPLY = (
 )
 
 
+_SMART_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"'})
+
+
+def plain(text: str) -> str:
+    """Straight quotes, so "don\u2019t" from a phone keyboard or the model
+    matches the same patterns as "don't"."""
+    return str(text or "").translate(_SMART_QUOTES)
+
+
 def crisis_signal(text: str) -> bool:
-    return any(pattern.search(text or "") for pattern in _CRISIS_PATTERNS)
+    text = plain(text)
+    return any(pattern.search(text) for pattern in _CRISIS_PATTERNS)
 
 
 _SUPPLEMENTS = (
@@ -77,35 +87,98 @@ _TESTING = re.compile(
     r"draw|panel|result|results|ng/ml|mg/dl)\b",
     re.IGNORECASE,
 )
-_TREATMENT_LINE_PATTERNS = tuple(
+# Opinions that her dose is wrong, and referrals to contested practice: always
+# dropped, whoever the sentence says should act on them.
+_OPINION_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
-        # Insulin or thyroid dose changes.
+        r"\b(dose|dosage|basal|armou?r)\b[^.\n]{0,45}\b(may|might|could|should|would)\s+(need|benefit\s+from|be)\s+"
+        r"(an?\s+)?(adjust|chang|increas|decreas|rais|lower|tweak|higher|lower)",
+        r"\b(dose|dosage)\s+(isn'?t|is\s+not|may\s+not\s+be|might\s+not\s+be|is\s+(too\s+)?(high|low))"
+        r"(\s+(right|enough|adequate|optimal|correct))?\b",
+        r"\b(see|work\s+with|find|consider|consult)\b[^.\n]*\b(functional|integrative|naturopath)",
+        r"\bdifferent\s+(formulation|thyroid\s+med\w*|brand)\b",
+    )
+)
+# "You may need more" is a dose opinion only when the sentence is about a dose;
+# "we may need more data" is not.
+_NEED_MORE = re.compile(
+    r"\b(may|might|could|probably)\s+need\s+(more|less|a\s+(higher|lower|bigger|smaller|different)\b|"
+    r"an?\s+(increase|decrease))",
+    re.IGNORECASE,
+)
+_DOSE_CONTEXT = re.compile(
+    r"\b(dose|dosage|armou?r|insulin|basal|bolus|medications?|meds?|levothyroxine|formulation)\b",
+    re.IGNORECASE,
+)
+# Instructions to change a dose: dropped unless the sentence hands the decision
+# to her care team ("only your care team can adjust your dose").
+_ACTION_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
         r"\b(increase|decrease|raise|lower|reduce|cut|double|halve|adjust|bump)\s+(up\s+|down\s+)?"
         r"(your\s+|the\s+|her\s+)?(basal|bolus|insulin|dose|dosage|armou?r|thyroid\s+(med|medication|dose)|"
         r"levothyroxine|temp\s+basal|carb\s+ratio|correction\s+factor)\b"
         r"(?!\s+(resistance|sensitivity|needs?|requirements?|levels?))",
-        r"\b(dose|dosage|basal|armou?r)\b[^.\n]{0,20}\b(may|might|could|should|would)\s+(need|benefit\s+from|be)\s+"
-        r"(an?\s+)?(adjust|chang|increas|decreas|rais|lower|tweak|higher|lower)",
         r"\b(about|consider|try|suggest|recommend)\s+(adjusting|changing|tweaking)\b[^.\n]{0,25}\b(dose|dosage|basal|bolus)\b",
         r"\bnew\s+basal(\s+rate)?(\s+profile)?\b",
-        r"\b(dose|dosage)\s+(isn'?t|is\s+not|may\s+not\s+be|might\s+not\s+be|is\s+(too\s+)?(high|low))"
-        r"(\s+(right|enough|adequate|optimal|correct))?\b",
         r"\btemp\s+basal\s+(of|at|to)\s+\d",
         r"\b(take|give|inject|add|bolus|try|use)\s+(an?\s+)?(extra\s+)?\d+(\.\d+)?\s*(u|units)\b",
-        # Referrals toward contested practice instead of her care team.
-        r"\b(see|work\s+with|find|consider|consult)\b[^.\n]*\b(functional|integrative|naturopath)",
     )
+)
+_CARE_TEAM = r"(care\s+team|doctors?|endo\w*|providers?|clinicians?)"
+_DEFERS_TO_CARE_TEAM = re.compile(
+    rf"\b(only|let)\s+(your\s+)?{_CARE_TEAM}\b|\b{_CARE_TEAM}\s+(can|should|will|must|would)\s+"
+    r"(decide|adjust|review|determine|make)\b",
+    re.IGNORECASE,
 )
 
 
-def _guarded(line: str) -> bool:
-    if any(pattern.search(line) for pattern in _TREATMENT_LINE_PATTERNS):
+_SUPPLEMENT_NAME = re.compile(rf"\b({_SUPPLEMENTS})\b", re.IGNORECASE)
+_CITED = re.compile(r"\[[EMC]\d+\]")
+
+
+def _guarded(sentence: str) -> bool:
+    if any(pattern.search(sentence) for pattern in _OPINION_PATTERNS):
         return True
+    # "Focus on reducing inflammation: omega-3s + curcumin + probiotics" is a
+    # regimen even without a recommending verb. A cited sentence ("vitamin D
+    # and B12 were normal [E4]") reports her data instead.
+    if (
+        len(_SUPPLEMENT_NAME.findall(sentence)) >= 2
+        and not _TESTING.search(sentence)
+        and not _CITED.search(sentence)
+    ):
+        return True
+    if _NEED_MORE.search(sentence) and _DOSE_CONTEXT.search(sentence):
+        return True
+    if any(pattern.search(sentence) for pattern in _ACTION_PATTERNS):
+        return not _DEFERS_TO_CARE_TEAM.search(sentence)
     return (
-        any(pattern.search(line) for pattern in _SUPPLEMENT_LINE_PATTERNS)
-        and not _TESTING.search(line)
+        any(pattern.search(sentence) for pattern in _SUPPLEMENT_LINE_PATTERNS)
+        and not _TESTING.search(sentence)
     )
+
+
+# Whitespace after end punctuation, so decimals like 2.17 never split.
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+")
+_LEADING_ALIASES = re.compile(r"^((?:\[[A-Za-z]+\d*\][.!?]?\s*)+)")
+
+
+def split_sentences(line: str) -> list[str]:
+    """Split a line into sentences, keeping "high. [E3]" aliases with the
+    sentence they follow rather than the one after."""
+    sentences: list[str] = []
+    for part in _SENTENCE_BREAK.split(line):
+        lead = _LEADING_ALIASES.match(part)
+        if sentences and lead:
+            sentences[-1] = f"{sentences[-1]} {lead.group(1).strip()}"
+            part = part[lead.end():]
+        if part.strip():
+            sentences.append(part)
+    return sentences
+
+
 # Frightening rhetoric the prompt forbids but the small model still reaches for.
 _ALARM_LINE = re.compile(
     r"\b(under\s+siege|hijack(ed|ing)?|at\s+war\s+with|being\s+attacked|ticking\s+time\s+bomb)\b",
@@ -118,9 +191,9 @@ _CONTESTED_LINE = re.compile(
     re.IGNORECASE,
 )
 # Metric paths the model sometimes cites in place of an alias:
-# "[glucose: last_30d: tir_70_180: 94]", "[insulin.pump_reported_avg_tdd]".
+# "[glucose: last_30d: tir_70_180: 94]", "[insulin.pump_reported_avg_tdd]", "[insulin]".
 _METRIC_TOKEN = re.compile(
-    r"\s*\[(?:[a-z][a-z0-9_]*\s*[.:]\s*[A-Za-z0-9_][^\[\]\n]*|[a-z]+(?:_[a-z0-9]+)+)\]"
+    r"\s*\[(?:[a-z][a-z0-9_]*\s*[.:]\s*[A-Za-z0-9_][^\[\]\n]*|[a-z]+(?:_[a-z0-9]+)*)\]"
 )
 # Crisis lines the model adds to ordinary answers ("if you're thinking about
 # hurting yourself, call 988"). Kept only when her message shows distress, so
@@ -140,27 +213,40 @@ CARE_TEAM_NOTE = (
 )
 
 
+# "[E1] [E2] ... [E24]" on one sentence is unreadable on a phone.
+_ALIAS_RUN = re.compile(r"((?:\[[EMGC]\d+\]\s*){3})(?:\[[EMGC]\d+\]\s*){2,}")
+
+
 def guard_reply(text: str, user_msg: str | None = None) -> tuple[str, int]:
-    """Drop treatment-change lines and metadata echoes. Returns (text, guarded)."""
+    """Drop treatment-change sentences, frightening or contested framing and
+    metadata echoes, keeping the rest of each line. Returns (text, guarded)."""
     kept: list[str] = []
     seen: set[str] = set()
     guarded = 0
-    unprompted_crisis = user_msg is not None and not _DISTRESS.search(user_msg)
-    for line in str(text or "").splitlines():
-        line = _METRIC_TOKEN.sub("", line)
-        if _METADATA_LINE.match(line) or _ALARM_LINE.search(line) or _CONTESTED_LINE.search(line):
+    unprompted_crisis = user_msg is not None and not _DISTRESS.search(plain(user_msg))
+    for line in plain(text).splitlines():
+        line = _ALIAS_RUN.sub(r"\1", _METRIC_TOKEN.sub("", line))
+        if _METADATA_LINE.match(line):
             continue
-        if unprompted_crisis and _CRISIS_LINE.search(line):
+        sentences = []
+        for sentence in split_sentences(line):
+            if _ALARM_LINE.search(sentence) or _CONTESTED_LINE.search(sentence):
+                continue
+            if unprompted_crisis and _CRISIS_LINE.search(sentence):
+                continue
+            if _guarded(sentence):
+                guarded += 1
+                continue
+            sentences.append(sentence)
+        if line.strip() and not sentences:
             continue
+        line = " ".join(sentences)
         # The small model sometimes loops; keep the first copy of a line only.
         key = re.sub(r"[^a-z0-9]+", " ", line.lower()).strip()
         if key and key in seen:
             continue
         if key:
             seen.add(key)
-        if _guarded(line):
-            guarded += 1
-            continue
         kept.append(line)
     out = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
     if guarded and CARE_TEAM_NOTE not in out:

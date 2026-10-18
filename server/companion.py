@@ -79,9 +79,10 @@ SYSTEM = (
     "The clinical_reviews block is authoritative: only entries under clinician_confirmed_facts may be described as "
     "clinician-confirmed; provider annotations are attributed notes, and owner_disputed_reviews stay disputed.\n"
     "BE STEADYING: She is often frightened about her health. Use calm, plain language and no alarming metaphors "
-    "(nothing like under siege, hijacked, broken, toxic, or damaged). When her data shows a feared outcome has not "
-    "happened, say so with the numbers. Do not build explanations on contested ideas such as leaky gut, adrenal "
-    "fatigue, or toxins; if her records contain such a label you may mention that it is in her records.\n"
+    "(nothing like under siege, hijacked, broken, toxic, or damaged). When she predicts something bad will "
+    "happen, check it against her data before agreeing; if the data shows it has not happened, say so with the "
+    "numbers. Do not build explanations on contested ideas such as leaky gut, adrenal fatigue, or toxins; if her "
+    "records contain such a label you may mention that it is in her records.\n"
     "NO TREATMENT CHANGES: Never suggest starting, stopping, or changing a medication, insulin dose, temp basal, "
     "supplement, herb, or diet, and never recommend a practitioner outside her care team. You can explain how her "
     "medications may be affecting her and suggest questions or tests to raise with her care team.\n"
@@ -147,7 +148,10 @@ def _tir(vals: list[float]) -> dict[str, Any]:
         "tir_70_180": round(100 * sum(1 for v in vals if 70 <= v <= 180) / n),
         "below_70": round(100 * sum(1 for v in vals if v < 70) / n),
         "above_180": round(100 * sum(1 for v in vals if v > 180) / n),
-        "cv": round(100 * statistics.pstdev(vals) / mean) if mean and n > 1 else None,
+        "cv": (cv := round(100 * statistics.pstdev(vals) / mean) if mean and n > 1 else None),
+        # Consensus target: a CV at or under 36% is stable glucose. The model
+        # otherwise called 24% "high".
+        "cv_stable": cv <= 36 if cv is not None else None,
         "gmi": round(3.31 + 0.02392 * mean, 1),
     }
 
@@ -657,6 +661,26 @@ def _save_assistant_message(
     return message
 
 
+FOLLOW_UP_MAX_WORDS = 8
+
+
+def _retrieval_question(text: str, history: list[dict[str, Any]]) -> str:
+    """Short follow-ups ("Please", "Respond to last question") carry no topic of
+    their own; retrieve evidence for them together with her previous question.
+    `history` ends with the message being answered."""
+    if len(text.split()) > FOLLOW_UP_MAX_WORDS:
+        return text
+    previous = next(
+        (
+            str(message.get("content") or "")
+            for message in reversed(history[:-1])
+            if message.get("role") == "user" and message.get("content")
+        ),
+        "",
+    )
+    return f"{text} {previous}".strip()
+
+
 def _grounding(
     user_msg: str,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -875,7 +899,7 @@ async def handle(body: dict[str, Any], actor: str = "owner") -> dict[str, Any]:
         prompt_memories = memories[:PROMPT_MEMORY_LIMIT]
         notes = _care_notes()
         try:
-            public_evidence, reasoning, metrics = _grounding(text)
+            public_evidence, reasoning, metrics = _grounding(_retrieval_question(text, history))
             raw_reply = await _reply(
                 text,
                 reasoning,
@@ -1032,7 +1056,7 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
     yield json.dumps({"grounding": True}) + "\n"
     notes = _care_notes()
     try:
-        public_evidence, reasoning, metrics = _grounding(text)
+        public_evidence, reasoning, metrics = _grounding(_retrieval_question(text, history))
         prompt = await _fitted_reply_prompt(
             text,
             reasoning,

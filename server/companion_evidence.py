@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
+from . import companion_safety
 from .contradictions import refresh_current as refresh_contradictions
 from .diagnostics import reasoning_context as diagnostic_context
 from .evidence_bundle import EvidenceBundleQuery, EvidenceDomain, build_bundle
@@ -96,9 +97,11 @@ SCOPES = (
         16,
         16,
         frozenset({
-            "basal", "bolus", "carb", "cgm", "diabetes", "fingerstick",
-            "glooko", "glucose", "glycemic", "hypoglycemia", "insulin",
-            "pump", "sugar", "tdd", "tir",
+            "basal", "bedtime", "bg", "bolus", "breakfast", "carb", "cgm", "correction",
+            "dexcom", "diabetes", "dinner", "eat", "eating", "fingerstick", "food",
+            "glooko", "glucose", "glycemic", "highs", "hypo", "hypoglycemia", "insulin",
+            "ketone", "lows", "lunch", "meal", "omnipod", "pump", "spike", "sugar",
+            "tdd", "tir",
         }),
     ),
     Scope(
@@ -108,9 +111,10 @@ SCOPES = (
         12,
         12,
         frozenset({
-            "activity", "cycle", "energy", "exercise", "fitbit", "heart", "hormone",
-            "hrv", "menstrual", "oura", "period", "position", "sitting", "sleep",
-            "spo2", "standing", "steps", "walking", "workout",
+            "activity", "bedtime", "cycle", "energy", "exercise", "exhausted", "fatigue",
+            "fitbit", "foggy", "heart", "hormone", "hrv", "menstrual", "nap", "oura",
+            "period", "position", "sit", "sitting", "sleep", "spo2", "standing", "steps",
+            "tired", "walk", "walking", "workout",
         }),
     ),
     Scope(
@@ -131,8 +135,9 @@ SCOPES = (
         12,
         12,
         frozenset({
-            "allergy", "condition", "diagnosis", "history", "medication", "medicine",
-            "profile", "symptom", "treatment", "weight",
+            "allergy", "armor", "armour", "condition", "diagnosed", "diagnosis", "disease",
+            "dose", "history", "med", "medication", "medicine", "profile", "rash", "skin",
+            "supplement", "symptom", "treatment", "weight",
         }),
     ),
     Scope(
@@ -142,8 +147,11 @@ SCOPES = (
         24,
         150,
         frozenset({
-            "antibody", "cortisol", "imaging", "inflammation", "lab", "marker",
-            "record", "report", "result", "test", "thyroid", "tsh", "urine",
+            "a1c", "acth", "antibody", "armor", "armour", "b12", "cholesterol", "cortisol",
+            "enzyme", "estradiol", "ferritin", "fsh", "imaging", "inflammation", "iron",
+            "lab", "level", "liver", "marker", "mri", "panel", "prolactin", "record",
+            "report", "result", "scan", "t3", "t4", "test", "thyroid", "tsh", "urine",
+            "vitamin",
         }),
     ),
 )
@@ -171,9 +179,47 @@ def _window(days: int, as_of: date) -> tuple[datetime, datetime]:
     )
 
 
+# The latest result of a few tests the model otherwise claims "we don't have".
+# Ranked retrieval can miss them when the question names no lab (an autonomic
+# question still turns on thyroid status), so they ride along with the labs scope.
+KEY_LABS = Scope("key_labs", (EvidenceDomain.LABS,), 3650, 12, 60, frozenset())
+KEY_LAB_INTENT = "TSH free T4 free T3 hemoglobin A1c ferritin vitamin D"
+_KEY_LAB_TESTS = (
+    ("tsh", re.compile(r"^tsh\b|thyroid[- ]stimulating", re.IGNORECASE)),
+    ("free_t4", re.compile(r"free\s*t4|t4,?\s*free|\bft4\b|free\s+thyroxine", re.IGNORECASE)),
+    ("free_t3", re.compile(r"free\s*t3|t3,?\s*free|\bft3\b|triiodothyronine.*free", re.IGNORECASE)),
+    ("a1c", re.compile(r"a1c|glycated|glycohemoglobin", re.IGNORECASE)),
+    ("ferritin", re.compile(r"ferritin", re.IGNORECASE)),
+    ("vitamin_d", re.compile(r"vitamin\s*d\b(?!.*,\s*d[23]\b)|25-?hydroxyvitamin", re.IGNORECASE)),
+)
+_KEY_LAB_ROWS_PER_TEST = 2  # same-draw duplicates can disagree on flag; show both
+
+
+def _key_lab_items(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    latest: dict[str, list[dict[str, Any]]] = {}
+    for item in _bundle_items(bundle):
+        if item.get("entity_type") != "LabResult":
+            continue
+        name = str((item.get("data") or {}).get("test_name") or "")
+        day = str(item.get("observed_at") or "")[:10]
+        for key, pattern in _KEY_LAB_TESTS:
+            if not pattern.search(name):
+                continue
+            rows = latest.get(key) or []
+            current = str(rows[0].get("observed_at") or "")[:10] if rows else ""
+            if day > current:
+                latest[key] = [item]
+            elif day == current and len(rows) < _KEY_LAB_ROWS_PER_TEST:
+                rows.append(item)
+            break
+    return [item for key, _pattern in _KEY_LAB_TESTS for item in latest.get(key, [])]
+
+
 def _selected_scopes(question: str) -> tuple[Scope, ...]:
     lower = question.lower()
     tokens = set(_TOKEN_RE.findall(lower))
+    # "sugars", "enzymes", "levels": match the singular keyword too.
+    tokens |= {token[:-1] for token in tokens if len(token) > 3 and token.endswith("s")}
     selected = [scope for scope in SCOPES if tokens & scope.keywords]
     if any(phrase in lower for phrase in ("time in range", "blood sugar")):
         metabolic = next(scope for scope in SCOPES if scope.name == "metabolic")
@@ -383,6 +429,19 @@ def build_context(
         for caveat in bundle["missing_data_caveats"]:
             caveats[(caveat["code"], caveat["domain"], caveat["message"])] = caveat
         opposing.extend(bundle["evidence"]["opposing_evidence"])
+    if any(scope.name == "labs_records" for scope, _bundle in bundles):
+        start, end = _window(KEY_LABS.days, as_of)
+        key_bundle = build_bundle(EvidenceBundleQuery(
+            start=start,
+            end=end,
+            domains=KEY_LABS.domains,
+            question_intent=KEY_LAB_INTENT,
+            item_budget=KEY_LABS.retrieval_budget,
+        ))
+        bundles.append((KEY_LABS, key_bundle))
+        items_by_scope[KEY_LABS.name] = _key_lab_items(key_bundle)[:KEY_LABS.budget]
+        for item in items_by_scope[KEY_LABS.name]:
+            items_by_id.setdefault(item["id"], item)
 
     raw_items = []
     retained_raw_ids: set[str] = set()
@@ -683,8 +742,9 @@ def _uncited_personal_claim(text: str, classification: str) -> bool:
 
 
 _LAB_JUDGEMENT = re.compile(
-    r"\b(is|are|was|were|both|came\s+back|looks?|reads?|remains?|remained|stays?|stayed)\s+"
-    r"(?:\w+\s+){0,2}?(low|high|elevated|deficient|abnormal|below\s+normal|above\s+normal)\b",
+    r"\b(is|are|was|were|both|came\s+back|looks?|reads?|remains?|remained|stays?|stayed|flagged)\s+"
+    r"(?:\w+\s+){0,2}?(low|high|elevated|deficient|abnormal|(?:above|below|outside)\s+(?:of\s+)?(?:the\s+|your\s+)?"
+    r"(?:normal|reference|optimal)(?:\s+range)?)\b",
     re.IGNORECASE,
 )
 _NEGATION = re.compile(r"\b(not|never|no)\b|n't", re.IGNORECASE)
@@ -702,6 +762,97 @@ def _unflagged_lab_judgement(line: str, evidence_items: list[dict[str, Any]]) ->
     ):
         return False
     return all((item.get("flag") or "").strip().lower() in _NORMAL_FLAGS for item in labs)
+
+
+_GLUCOSE_CLAIM = re.compile(
+    r"\b(glucose|blood\s+sugars?|sugars?|bg|cgm|time[-\s]in[-\s]range|tir|gmi|hypoglycemi\w*|hyperglycemi\w*)\b",
+    re.IGNORECASE,
+)
+# Labs count: a fasting glucose is a lab result.
+_GLUCOSE_DOMAINS = {"glucose", "insulin", "analytics", "labs"}
+
+
+def _glucose_claim_without_glucose_evidence(
+    line: str, evidence_items: list[dict[str, Any]], kinds: set[str]
+) -> bool:
+    """A glucose statement whose only citations are wearable, cycle, clinical or
+    record items. The alias is real but cannot support the claim; the model wrote
+    "bedtime glucose above 150 [E2]" citing a Fitbit day with no glucose."""
+    if not evidence_items or kinds & {"M", "C"} or not _GLUCOSE_CLAIM.search(line):
+        return False
+    return not any(item.get("domain") in _GLUCOSE_DOMAINS for item in evidence_items)
+
+
+_ABSENCE = re.compile(
+    r"\b(?:don'?t|do\s+not|doesn'?t|does\s+not)\s+(?:have|see|show)\b|\black(?:ing)?\b|\bwithout\b|\bmissing\b|"
+    r"\bno\s+(?:updated|recent|current|confirmed)\b|\bnot\s+(?:on\s+file|available)\b",
+    re.IGNORECASE,
+)
+_LAB_FAMILIES = (
+    ("thyroid", re.compile(r"\b(thyroid|tsh|t3|t4|ft3|ft4)\b", re.IGNORECASE),
+     re.compile(r"\btsh\b|thyroid[- ]stimulating|free\s*t[34]|t[34],?\s*free|\bft[34]\b|triiodothyronine|thyroxine", re.IGNORECASE)),
+    ("a1c", re.compile(r"\ba1c\b", re.IGNORECASE), re.compile(r"a1c|glycated|glycohemoglobin", re.IGNORECASE)),
+    ("ferritin", re.compile(r"\b(ferritin|iron)\b", re.IGNORECASE), re.compile(r"ferritin|\biron\b", re.IGNORECASE)),
+    ("b12", re.compile(r"\bb12\b", re.IGNORECASE), re.compile(r"\bb12\b|cobalamin", re.IGNORECASE)),
+    ("vitamin_d", re.compile(r"\bvitamin\s*d\b", re.IGNORECASE), re.compile(r"vitamin\s*d|25-?hydroxy", re.IGNORECASE)),
+    ("cortisol", re.compile(r"\bcortisol\b", re.IGNORECASE), re.compile(r"cortisol", re.IGNORECASE)),
+)
+# "We don't have recent labs": labs in general, not a named test. A named test
+# ("recent liver labs") is judged by its own family or left alone.
+_GENERIC_LABS = re.compile(
+    r"^\W*(?:(?:any|recent|updated|current|new|more|the)\s+)*lab(?:s|\s+(?:data|results?|values?))?\b",
+    re.IGNORECASE,
+)
+
+
+def _unsupported_lab_absence(line: str, public_context: dict[str, Any]) -> bool:
+    """"We don't have thyroid labs" is false when they are in the evidence, and
+    unsupported when no labs were retrieved for this question; it was said
+    with TSH 2.17 and free T4 1.0 sitting in the evidence."""
+    match = _ABSENCE.search(line)
+    if not match:
+        return False
+    window = line[match.end():match.end() + 60]
+    families = [
+        title_pattern for _name, mention, title_pattern in _LAB_FAMILIES if mention.search(window)
+    ]
+    if not families and _GENERIC_LABS.search(window):
+        families = [re.compile(r".")]
+    if not families:
+        return False
+    scopes = {scope.get("scope") for scope in public_context.get("scopes") or []}
+    if not scopes & {"labs_records", "key_labs"}:
+        return True
+    titles = [
+        str(item.get("title") or "")
+        for item in public_context.get("evidence_items") or []
+        if item.get("entity_type") == "LabResult"
+    ]
+    return any(pattern.search(title) for pattern in families for title in titles)
+
+
+def _drop_unsupported_sentences(
+    line: str,
+    public_context: dict[str, Any],
+    evidence_by_alias: dict[str, dict[str, Any]],
+) -> tuple[str, int]:
+    """Judge each sentence by its own citations. A paragraph that cites flagged
+    antibodies in one sentence must not carry "TSH 2.17 (flagged high)" in the
+    next, and one false sentence should not cost the rest of the paragraph."""
+    kept: list[str] = []
+    dropped = 0
+    for sentence in companion_safety.split_sentences(line):
+        aliases = {f"{kind.upper()}{int(number)}" for kind, number in _CITATION_RE.findall(sentence)}
+        items = [evidence_by_alias[alias] for alias in aliases if alias in evidence_by_alias]
+        if (
+            _unflagged_lab_judgement(sentence, items)
+            or _glucose_claim_without_glucose_evidence(sentence, items, {alias[0] for alias in aliases})
+            or _unsupported_lab_absence(sentence, public_context)
+        ):
+            dropped += 1
+            continue
+        kept.append(sentence)
+    return " ".join(kept), dropped
 
 
 def _qualify_unverified(text: str) -> str:
@@ -768,8 +919,13 @@ def finalize_reply(
     used_notes: dict[str, dict[str, Any]] = {}
     omitted_claims = 0
 
-    for line in str(reply or "").splitlines():
+    for line in companion_safety.plain(reply).splitlines():
         line = _normalize_citations(line)
+        if line.strip():
+            line, dropped = _drop_unsupported_sentences(line, public_context, evidence_by_alias)
+            omitted_claims += dropped
+            if not line.strip():
+                continue
         aliases = []
         for kind, number in _CITATION_RE.findall(line):
             alias = f"{kind.upper()}{int(number)}"
@@ -789,9 +945,6 @@ def finalize_reply(
         kinds = {alias[0] for alias in aliases}
         classification = _classification(line, kinds)
         evidence_items = [evidence_by_alias[alias] for alias in aliases if alias in evidence_by_alias]
-        if _unflagged_lab_judgement(line, evidence_items):
-            omitted_claims += 1
-            continue
         if any(
             item.get("entity_type") == "LabResult"
             and not item.get("confidence", {}).get("clinically_verified")

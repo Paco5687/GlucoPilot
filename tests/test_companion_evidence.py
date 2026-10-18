@@ -112,9 +112,9 @@ def test_question_ranked_context_is_bounded_deterministic_and_secret_scrubbed(
     assert first_public == second_public
     assert first_reasoning == second_reasoning
     assert first_public["contract_version"] == "companion-evidence-context/1.0.0"
-    assert [scope["scope"] for scope in first_public["scopes"]] == ["labs_records"]
-    assert first_public["budget"]["configured_items"] == 24
-    assert first_public["budget"]["prompt_items"] <= 24
+    assert [scope["scope"] for scope in first_public["scopes"]] == ["labs_records", "key_labs"]
+    assert first_public["budget"]["configured_items"] == 24 + companion_evidence.KEY_LABS.budget
+    assert first_public["budget"]["prompt_items"] <= 24 + companion_evidence.KEY_LABS.budget
     assert len(companion_evidence.prompt_context(first_reasoning)) <= (
         companion_evidence.MAX_PROMPT_CONTEXT_CHARS
     )
@@ -862,3 +862,204 @@ def test_messages_that_only_ask_questions_are_not_mined(companion_database, monk
     assert asyncio.run(
         companion._store_new_memories("How is my thyroid doing? Is my Armour dose right?", [])
     ) == []
+
+
+def test_glucose_claims_must_cite_glucose_evidence(companion_database):
+    public, _reasoning = companion_evidence.build_context(
+        "What do my glucose, thyroid lab and diagnosis history show?",
+        as_of=date(2026, 7, 20),
+        refresh=False,
+    )
+    alias_of = {item["entity_id"]: item["alias"] for item in public["evidence_items"]}
+    glucose = alias_of[companion_database["glucose"]["id"]]
+    diagnosis = alias_of[companion_database["diagnosis"]["id"]]
+    lab = alias_of[companion_database["lab"]["id"]]
+
+    reply, evidence = companion_evidence.finalize_reply(
+        "\n".join(
+            [
+                f"Your bedtime glucose was above 150 on most nights. [{diagnosis}]",
+                f"Your glucose was 123 at noon. [{glucose}]",
+                f"Your thyroid result fits hypothyroidism. [{lab}]",
+            ]
+        ),
+        public,
+        [],
+        [],
+    )
+
+    assert "above 150" not in reply
+    assert "123 at noon" in reply
+    assert "hypothyroidism" in reply
+    assert evidence["omissions"]["count"] == 1
+
+
+def test_scope_keywords_match_plurals_and_everyday_words():
+    names = lambda question: [scope.name for scope in companion_evidence._selected_scopes(question)]
+    assert "metabolic" in names("If I eat dinner late I'll be high at bedtime")
+    assert "wellness" in names("If I eat dinner late I'll be high at bedtime")
+    assert "metabolic" in names("why do my sugars keep rising")
+    assert "labs_records" in names("Do i have elevated liver enzymes?")
+    assert names("Is my free T4 okay on Armour?")[0] in {"clinical", "labs_records"}
+    assert "metabolic" not in names("Is my ferritin low?")
+
+
+def test_key_labs_ride_along_with_the_labs_scope(companion_database):
+    public, _reasoning = companion_evidence.build_context(
+        "Do my test results explain my nerves?",
+        as_of=date(2026, 7, 20),
+        refresh=False,
+    )
+    key_scope = next(scope for scope in public["scopes"] if scope["scope"] == "key_labs")
+    assert key_scope["query"]["question_intent"] == companion_evidence.KEY_LAB_INTENT
+    titles = [item["title"] for item in public["evidence_items"]]
+    assert "Synthetic TSH" in titles
+
+
+def test_short_follow_ups_retrieve_evidence_for_the_previous_question(
+    companion_database, monkeypatch
+):
+    public, reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?", as_of=date(2026, 7, 20), refresh=False
+    )
+    asked: list[str] = []
+
+    def spy_grounding(text):
+        asked.append(text)
+        return public, reasoning, {}
+
+    _stub_reply_pipeline(monkeypatch, public, reasoning, ["Thyroid hormones affect metabolism."])
+    monkeypatch.setattr(companion, "_grounding", spy_grounding)
+
+    async def no_memories(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(companion, "_store_new_memories", no_memories)
+    first = _collect("What do my thyroid labs show over the last year or so?")
+    thread_id = first[0]["thread"]["id"]
+    prompts_before = len(asked)
+    _collect("Please", thread_id=thread_id)
+
+    assert asked[0] == "What do my thyroid labs show over the last year or so?"
+    assert asked[prompts_before] == "Please What do my thyroid labs show over the last year or so?"
+
+
+def test_claims_that_labs_are_missing_must_be_true(companion_database):
+    public, _reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?", as_of=date(2026, 7, 20), refresh=False
+    )
+    reply, evidence = companion_evidence.finalize_reply(
+        "\n".join(
+            [
+                "We don't have updated thyroid labs to confirm if Armour is working.",
+                "I don't see a ferritin result in what I was given.",
+                "I don't see recent liver labs in what I have.",
+                "We don't have any recent labs.",
+                "No lab shows adrenal problems.",
+            ]
+        ),
+        public,
+        [],
+        [],
+    )
+    assert "thyroid labs to confirm" not in reply
+    assert "ferritin result" in reply
+    assert "recent liver labs" in reply
+    assert "any recent labs" not in reply
+    assert "No lab shows adrenal problems." in reply
+    assert evidence["omissions"]["count"] == 2
+
+    glucose_only, _reasoning = companion_evidence.build_context(
+        "How was my glucose overnight?", as_of=date(2026, 7, 20), refresh=False
+    )
+    reply, _evidence = companion_evidence.finalize_reply(
+        "We don't see recent labs on cortisol, ferritin, or B12.", glucose_only, [], []
+    )
+    assert "cortisol" not in reply
+
+
+def test_each_sentence_is_judged_by_its_own_citations(companion_database):
+    db.create_entity(
+        "LabResult",
+        {
+            "owner_email": OWNER,
+            "record_id": companion_database["lab"]["record_id"],
+            "collected_date": "2026-07-10",
+            "test_name": "Synthetic Free T3",
+            "value": 2.4,
+            "unit": "pg/mL",
+            "flag": "",
+            "parser_confidence": 0.99,
+            "verification_status": "unverified",
+            "validation_status": "valid",
+        },
+    )
+    clear_bundle_cache()
+    public, _reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?", as_of=date(2026, 7, 20), refresh=False
+    )
+    by_title = {item["title"]: item["alias"] for item in public["evidence_items"]}
+    tsh, free_t3 = by_title["Synthetic TSH"], by_title["Synthetic Free T3"]
+
+    reply, evidence = companion_evidence.finalize_reply(
+        f"Your TSH was 7.1 (flagged high) [{tsh}]. "
+        f"Your free T3 was 2.4 (flagged low) [{free_t3}]. "
+        "Thyroid hormones affect energy. We don't have HRV data, and we don't have recent TSH labs.",
+        public,
+        [],
+        [],
+    )
+
+    assert "TSH was 7.1 (flagged high)" in reply
+    assert "free T3 was 2.4" not in reply
+    assert "Thyroid hormones affect energy." in reply
+    assert "recent TSH labs" not in reply
+    assert evidence["omissions"]["count"] == 2
+
+
+def test_curly_apostrophe_absence_claims_are_checked(companion_database):
+    public, _reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?", as_of=date(2026, 7, 20), refresh=False
+    )
+    reply, evidence = companion_evidence.finalize_reply(
+        "Thyroid hormones affect energy. We don’t have recent T4 or TSH trends to confirm it.",
+        public,
+        [],
+        [],
+    )
+    assert reply.startswith("Thyroid hormones affect energy.")
+    assert "TSH trends" not in reply
+    assert evidence["omissions"]["count"] == 1
+
+
+def test_above_the_normal_range_counts_as_a_lab_judgement(companion_database):
+    db.create_entity(
+        "LabResult",
+        {
+            "owner_email": OWNER,
+            "record_id": companion_database["lab"]["record_id"],
+            "collected_date": "2026-07-10",
+            "test_name": "Synthetic Free T4",
+            "value": 1.0,
+            "unit": "ng/dL",
+            "flag": "",
+            "parser_confidence": 0.99,
+            "verification_status": "unverified",
+            "validation_status": "valid",
+        },
+    )
+    clear_bundle_cache()
+    public, _reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?", as_of=date(2026, 7, 20), refresh=False
+    )
+    free_t4 = next(i["alias"] for i in public["evidence_items"] if i["title"] == "Synthetic Free T4")
+    reply, _evidence = companion_evidence.finalize_reply(
+        f"Your free T4 was 1.0 [{free_t4}], which is above the normal range (0.8–0.9).", public, [], []
+    )
+    assert "above the normal range" not in reply
+
+
+def test_glucose_stats_label_cv_stability():
+    stats = companion._tir([100, 110, 120, 130, 90, 140])
+    assert stats["cv"] <= 36
+    assert stats["cv_stable"] is True

@@ -77,6 +77,8 @@ def test_guard_drops_treatment_change_lines(line):
         "Changes to insulin, medications, or supplements are best decided with your care team.",
         "There was a change in your basal from December to March [E3].",
         "Your pump was shutting down insulin before most lows [E4].",
+        "We may need more data to tell whether this pattern is real.",
+        "Your vitamin D (43) and B12 (959) are normal [E4].",
     ],
 )
 def test_guard_keeps_observations_and_test_suggestions(line):
@@ -193,3 +195,65 @@ def test_model_crisis_lines_need_distress_in_her_message():
 def test_guard_strips_bare_metric_tokens():
     text, _ = companion_safety.guard_reply("TDD is 0.48 units/kg [insulin_tdd_per_kg] [E2].")
     assert text == "TDD is 0.48 units/kg [E2]."
+
+
+def test_guard_strips_single_word_metric_tokens():
+    text, _ = companion_safety.guard_reply("Your TDD is 38 units/day [insulin] [E4].")
+    assert text == "Your TDD is 38 units/day [E4]."
+
+
+def test_guard_keeps_sentences_that_hand_the_dose_decision_to_her_care_team():
+    line = (
+        "Your antibodies were high on August 24 [E2]. "
+        "Your dose may not be enough. "
+        "These results point to possible under-treatment, but only your care team can adjust your dose safely."
+    )
+    text, guarded = companion_safety.guard_reply(line)
+    assert guarded == 1
+    assert "Your antibodies were high on August 24 [E2]." in text
+    assert "only your care team can adjust your dose safely" in text
+    assert "may not be enough" not in text
+
+
+def test_guard_collapses_long_alias_runs():
+    text, _ = companion_safety.guard_reply("Your average is 112 [E1] [E2] [E3] [E4] [E5] [E6].")
+    assert text == "Your average is 112 [E1] [E2] [E3] ."
+
+
+def test_split_sentences_keeps_trailing_aliases_with_their_sentence():
+    assert companion_safety.split_sentences("TSH was high. [E3] Free T3 was low. [E7]") == [
+        "TSH was high. [E3]",
+        "Free T3 was low. [E7]",
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I don’t want to be here anymore",
+        "I dont want to live like this",
+        "there’s no reason to keep living",
+    ],
+)
+def test_crisis_detection_survives_curly_or_missing_apostrophes(text):
+    assert companion_safety.crisis_signal(text)
+
+
+def test_guard_handles_curly_apostrophes_and_need_more_opinions():
+    text, guarded = companion_safety.guard_reply(
+        "Your TSH was 2.17 [E6].\n"
+        "Your lab values suggest you may need more or a different formulation.\n"
+        "Your dose isn’t right."
+    )
+    assert text.startswith("Your TSH was 2.17 [E6].")
+    assert guarded == 2
+
+
+def test_guard_drops_verbless_supplement_lists_and_long_range_dose_opinions():
+    text, guarded = companion_safety.guard_reply(
+        "→ Focus on reducing inflammation: omega-3s + curcumin + magnesium glycinate + probiotics.\n"
+        "Your dose of 30 mcg Armour Thyroid daily [E16] may need adjustment, but only your care team can decide.\n"
+        "Your vitamin D and B12 levels were checked in August [E4]."
+    )
+    assert guarded == 2
+    assert text.startswith("Your vitamin D and B12 levels were checked in August [E4].")
