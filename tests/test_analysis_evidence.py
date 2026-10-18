@@ -194,6 +194,32 @@ def test_companion_leads_with_the_matching_analysis(analysis_database, question,
     assert statement["source_links"]
 
 
+def test_every_finding_restated_with_its_alias_is_kept(analysis_database):
+    """The misstated-analysis check reads numbers from the findings the model was
+    shown; each finding, cited as itself, must pass it."""
+    public, reasoning = companion_evidence.build_context(
+        "Does sitting raise my glucose, does a temp basal need two hours, and does a high bedtime cost sleep?",
+        as_of=AS_OF,
+        refresh=False,
+    )
+    analyses = [item for item in reasoning["items"] if item["entity_type"] in analysis_evidence.ENTITY_TYPES]
+    assert {item["entity_type"] for item in analyses} == set(analysis_evidence.ENTITY_TYPES)
+    public_by_alias = {item["alias"]: item for item in public["evidence_items"]}
+    prompt = companion_evidence.prompt_context(reasoning)
+    for item in analyses:
+        assert public_by_alias[item["alias"]]["analysis"]["findings"] == item["data"]["findings"]
+        assert "analysis" not in item
+        reply, evidence = companion_evidence.finalize_reply(
+            "\n".join(f"{finding} [{item['alias']}]" for finding in item["data"]["findings"]),
+            public,
+            [],
+            [],
+        )
+        assert evidence["omissions"]["count"] == 0, reply
+        assert len(evidence["statements"]) == len(item["data"]["findings"])
+    assert '"analysis":' not in prompt
+
+
 def test_unrelated_questions_do_not_compute_analyses(analysis_database):
     public, reasoning = companion_evidence.build_context(
         "How is my thyroid doing?", as_of=AS_OF, refresh=False
