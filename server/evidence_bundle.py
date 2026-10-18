@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -36,6 +37,7 @@ from .relationship_api import _public_edge
 from .relationships import SqliteRelationshipRepository, relationship_reads_enabled
 from .repositories import LegacyRepositoryCatalog
 
+log = logging.getLogger("glucopilot.evidence_bundle")
 
 BUNDLE_GENERATOR = "evidence-bundle"
 BUNDLE_VERSION = "2.5.0"
@@ -739,6 +741,17 @@ def _load_activity_position_candidates(
     }
 
 
+def _refresh_management_burden(query: EvidenceBundleQuery) -> None:
+    """Derive burden rows in their own write transaction, before the bundle's read
+    snapshot. Deriving inside the read transaction upgraded it to a writer, which
+    SQLite refuses outright ("database is locked") whenever a sync committed in
+    between. A busy database only costs freshness here, never the bundle."""
+    try:
+        management_burden_analysis(query.start, query.end)
+    except sqlite3.OperationalError:
+        log.warning("management burden refresh skipped; reading stored rows", exc_info=True)
+
+
 def _load_management_burden_candidates(
     connection: sqlite3.Connection,
     query: EvidenceBundleQuery,
@@ -754,6 +767,7 @@ def _load_management_burden_candidates(
         query.start,
         query.end,
         connection=connection,
+        derive=False,
     )
     source_links = []
     seen = set()
@@ -1258,6 +1272,8 @@ def build_bundle(query: EvidenceBundleQuery) -> dict[str, Any]:
     if cached := _BUNDLE_CACHE.get(cache_key):
         return cached
 
+    if EvidenceDomain.ANALYTICS in query.domains:
+        _refresh_management_burden(query)
     with db.connect() as connection:
         connection.execute("BEGIN")
         entity_candidates, counts = _load_entity_candidates(connection, query)

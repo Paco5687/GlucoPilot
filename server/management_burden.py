@@ -483,14 +483,18 @@ def analysis_for_range(
     end: datetime,
     *,
     connection: sqlite3.Connection | None = None,
+    derive: bool = True,
 ) -> dict[str, Any]:
+    """derive=False reads already-derived rows without writing, for callers
+    inside a read transaction (the evidence bundle derives first, on its own)."""
     own = connection is None
     scope = db.connect() if own else None
     conn = scope.__enter__() if scope else connection
     try:
         if own:
             conn.execute("BEGIN IMMEDIATE")
-        _derive(conn, start, end)
+        if derive:
+            _derive(conn, start, end)
         stored = [
             _public(row)
             for row in conn.execute(
