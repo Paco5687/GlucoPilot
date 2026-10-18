@@ -9,8 +9,10 @@ which HRV number represents a day.
 import json
 import sqlite3
 
-from server.migrations import MIGRATIONS
+from server import db
+from server.migrations import MIGRATIONS, run_migrations
 from server.oura import _main_sleep_by_day, _process_daily
+from server.typed_wearables import SqliteTypedWearableRepository
 
 
 def _night(day, hrv, duration=28800, **extra):
@@ -179,3 +181,57 @@ def test_migration_is_idempotent(tmp_path):
         row = _fetch(connection, "row")
         assert row["sleep_total_score"] == 68
         assert "sleep_total_seconds" not in row
+
+
+def test_main_sleep_period_carries_its_bedtime():
+    """bedtime_start/end come off the period chosen as the night, not a nap."""
+    periods = [
+        {
+            "day": "2026-07-23",
+            "type": "sleep",
+            "average_hrv": 19,
+            "total_sleep_duration": 1800,
+            "bedtime_start": "2026-07-23T14:05:00-04:00",
+            "bedtime_end": "2026-07-23T14:40:00-04:00",
+        },
+        _night(
+            "2026-07-23",
+            30,
+            bedtime_start="2026-07-22T23:12:00-04:00",
+            bedtime_end="2026-07-23T07:05:00-04:00",
+        ),
+    ]
+
+    day = _process_daily([], periods, [], [], [], [])["2026-07-23"]
+
+    assert day["bedtime_start"] == "2026-07-22T23:12:00-04:00"
+    assert day["bedtime_end"] == "2026-07-23T07:05:00-04:00"
+    assert day["hrv"] == 30
+    assert day["sleep_total_seconds"] == 28800
+
+
+def test_bedtime_survives_the_typed_wearable_store(tmp_path, monkeypatch):
+    """Bedtime is not a typed metric column: it rides in the compatibility
+    extras and reads back unchanged from the typed table."""
+    database = tmp_path / "app.sqlite3"
+    run_migrations(database)
+    monkeypatch.setattr(db, "DB_PATH", database)
+    monkeypatch.setenv("TYPED_WEARABLE_WRITES_ENABLED", "true")
+    periods = [
+        _night(
+            "2026-07-24",
+            28,
+            bedtime_start="2026-07-23T22:48:00-04:00",
+            bedtime_end="2026-07-24T06:51:00-04:00",
+        )
+    ]
+    day = _process_daily([], periods, [], [], [], [])["2026-07-24"]
+
+    created = db.create_entity(
+        "OuraDaily", {**day, "date": "2026-07-24", "owner_email": "owner@glucopilot.local"}
+    )
+    typed = SqliteTypedWearableRepository("OuraDaily").get(created["id"])
+
+    assert typed["bedtime_start"] == "2026-07-23T22:48:00-04:00"
+    assert typed["bedtime_end"] == "2026-07-24T06:51:00-04:00"
+    assert typed["sleep_total_seconds"] == 28800

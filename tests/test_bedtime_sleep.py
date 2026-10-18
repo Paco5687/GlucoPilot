@@ -1,6 +1,7 @@
 """Bedtime glucose against that night's sleep, with a late-dinner comparison."""
 
 from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -139,3 +140,128 @@ def test_bedtime_item_without_dinner_logs_says_so():
     assert item["data"]["findings"][-1] == (
         "No dinner times were logged on these nights, so late and earlier dinners cannot be compared."
     )
+
+
+def test_nights_without_an_oura_bedtime_use_the_fixed_window():
+    analysis = _analysis()
+    assert {row["bedtime_basis"] for row in analysis["nights"]} == {"fixed_window"}
+    assert {row["bedtime"] for row in analysis["nights"]} == {None}
+    assert analysis["bedtime_basis_nights"] == {"oura_bedtime": 0, "fixed_window": NIGHTS - 1}
+    assert "from 22:30 to 00:30 local time on all 11 nights" in analysis["semantics"]["bedtime"]
+    item = analysis_evidence.bedtime_item(analysis, start=START, end=START + timedelta(days=NIGHTS - 1))
+    assert item["data"]["findings"][0].startswith("Bedtime glucose (mean CGM 22:30 to 00:30) was measured")
+    assert item["confidence"]["limitations"][0] == (
+        "Bedtime is a fixed 22:30 to 00:30 window on all 11 nights, not her recorded bedtime: "
+        "none had an Oura bedtime between 18:00 and 06:00."
+    )
+
+
+# Oura bedtimes in a non-UTC zone. Glucose is 200 from 23:10 to 01:10 local and
+# 110 otherwise, so a window anchored on a 23:40 bedtime reads 200 and the
+# fixed 22:30-00:30 window reads (8 x 110 + 16 x 200) / 24 = 170.
+NY = ZoneInfo("America/New_York")
+OURA_START = date(2026, 9, 1)
+
+
+def _high_late_cgm(days=4):
+    readings = []
+    t = datetime(OURA_START.year, OURA_START.month, OURA_START.day, 12, tzinfo=NY).astimezone(timezone.utc)
+    end = t + timedelta(days=days)
+    while t < end:
+        local = t.astimezone(NY)
+        minute = local.hour * 60 + local.minute
+        value = 200 if minute >= 23 * 60 + 10 or minute < 70 else 110
+        readings.append({"timestamp": _iso(t), "value": value})
+        t += timedelta(minutes=5)
+    return readings
+
+
+def _oura_day(night, **extra):
+    return {
+        "id": f"oura-ny-{night}",
+        "date": (OURA_START + timedelta(days=night + 1)).isoformat(),
+        "sleep_total_seconds": 8 * 3600,
+        "sleep_score": 85,
+        **extra,
+    }
+
+
+def _mixed_nights():
+    sleep = [
+        _oura_day(0, bedtime_start="2026-09-01T23:40:00-04:00", bedtime_end="2026-09-02T07:40:00-04:00"),
+        _oura_day(1),  # synced before bedtime was stored
+        # A nap-only day: its main period starts in the afternoon, not at bedtime.
+        _oura_day(2, bedtime_start="2026-09-04T14:05:00-04:00", bedtime_end="2026-09-04T14:40:00-04:00"),
+    ]
+    return bs.analyze(
+        _high_late_cgm(), sleep, [],
+        start=OURA_START, end=OURA_START + timedelta(days=2), timezone_name="America/New_York",
+    )
+
+
+def test_oura_bedtime_anchors_the_bedtime_window():
+    nights = _mixed_nights()["nights"]
+    oura, missing, nap = nights
+    assert oura["bedtime_basis"] == "oura_bedtime" and oura["bedtime"] == "23:40"
+    assert oura["bedtime_glucose"] == 200 and oura["band"] == "over_180"
+    assert oura["sleep_entity_id"] == "oura-ny-0"
+    for night in (missing, nap):
+        assert night["bedtime_basis"] == "fixed_window" and night["bedtime"] is None
+        assert night["bedtime_glucose"] == 170
+    # The fallback nights still join to their Oura sleep.
+    assert nap["sleep_entity_id"] == "oura-ny-2" and nap["sleep_hours"] == 8.0
+
+
+def test_semantics_and_limitations_count_each_bedtime_basis():
+    analysis = _mixed_nights()
+    assert analysis["bedtime_basis_nights"] == {"oura_bedtime": 1, "fixed_window": 2}
+    assert analysis["semantics"]["bedtime"] == (
+        "Bedtime glucose is the mean CGM reading from 30 minutes before to 90 minutes after "
+        "Oura's recorded bedtime (bedtime_start of the main sleep period) on 1 night, and the "
+        "mean CGM reading from 22:30 to 00:30 local time on the other 2 nights, which had no "
+        "Oura bedtime between 18:00 and 06:00 local time. Nights with under an hour of readings "
+        "in the bedtime window are not counted."
+    )
+    item = analysis_evidence.bedtime_item(
+        analysis, start=OURA_START, end=OURA_START + timedelta(days=2)
+    )
+    assert item["data"]["findings"][0].startswith(
+        "Bedtime glucose (mean CGM from 30 minutes before to 90 minutes after her Oura bedtime "
+        "on 1 night, 22:30 to 00:30 on 2 nights) was measured on 3 nights"
+    )
+    assert item["data"]["supporting_data"]["bedtime_basis_nights"] == {
+        "oura_bedtime": 1, "fixed_window": 2,
+    }
+    assert item["confidence"]["limitations"][0] == (
+        "Bedtime is the start of her Oura main sleep period on 1 night; the other 2 nights had "
+        "no Oura bedtime between 18:00 and 06:00 and use a fixed 22:30 to 00:30 window."
+    )
+
+
+def test_every_night_on_oura_bedtime_says_so():
+    sleep = [
+        _oura_day(night, bedtime_start=f"2026-09-0{night + 1}T23:40:00-04:00")
+        for night in range(3)
+    ]
+    analysis = bs.analyze(
+        _high_late_cgm(), sleep, [],
+        start=OURA_START, end=OURA_START + timedelta(days=2), timezone_name="America/New_York",
+    )
+    assert analysis["bedtime_basis_nights"] == {"oura_bedtime": 3, "fixed_window": 0}
+    assert {row["bedtime_glucose"] for row in analysis["nights"]} == {200}
+    assert "(bedtime_start of the main sleep period) on all 3 nights." in analysis["semantics"]["bedtime"]
+    item = analysis_evidence.bedtime_item(analysis, start=OURA_START, end=OURA_START + timedelta(days=2))
+    assert item["confidence"]["limitations"][0] == (
+        "Bedtime is the start of her Oura main sleep period on all 3 nights."
+    )
+
+
+def test_dinner_after_midnight_before_a_late_oura_bedtime_is_late():
+    sleep = [_oura_day(0, bedtime_start="2026-09-02T01:30:00-04:00")]
+    snack = datetime(2026, 9, 2, 0, 20, tzinfo=NY).astimezone(timezone.utc)
+    night = bs.build_nights(
+        _high_late_cgm(), sleep, [{"type": "carb", "amount": 30, "timestamp": _iso(snack)}],
+        start=OURA_START, end=OURA_START, timezone_name="America/New_York",
+    )[0]
+    assert night["bedtime_basis"] == "oura_bedtime" and night["bedtime"] == "01:30"
+    assert night["dinner_time"] == "00:20" and night["late_dinner"] is True

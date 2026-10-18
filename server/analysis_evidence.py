@@ -326,6 +326,43 @@ def _signed(value: float | None) -> str:
     return f"+{value:g}" if value > 0 else f"{value:g}"
 
 
+def _bedtime_measure(basis_nights: dict[str, int]) -> str:
+    oura = basis_nights[bedtime_sleep.OURA_BEDTIME]
+    fixed = basis_nights[bedtime_sleep.FIXED_WINDOW]
+    if oura and fixed:
+        return (
+            f"mean CGM from 30 minutes before to 90 minutes after her Oura bedtime on "
+            f"{bedtime_sleep.nights_text(oura)}, 22:30 to 00:30 on {bedtime_sleep.nights_text(fixed)}"
+        )
+    if oura:
+        return "mean CGM from 30 minutes before to 90 minutes after her Oura bedtime"
+    return "mean CGM 22:30 to 00:30"
+
+
+def _bedtime_limitation(basis_nights: dict[str, int]) -> str:
+    oura = basis_nights[bedtime_sleep.OURA_BEDTIME]
+    fixed = basis_nights[bedtime_sleep.FIXED_WINDOW]
+    if oura and fixed:
+        return (
+            f"Bedtime is the start of her Oura main sleep period on {bedtime_sleep.nights_text(oura)}; "
+            f"the other {bedtime_sleep.nights_text(fixed)} had no Oura bedtime between 18:00 and 06:00 "
+            "and use a fixed 22:30 to 00:30 window."
+        )
+    if oura:
+        return (
+            f"Bedtime is the start of her Oura main sleep period on {bedtime_sleep.all_nights_text(oura)}."
+        )
+    if fixed:
+        return (
+            f"Bedtime is a fixed 22:30 to 00:30 window on {bedtime_sleep.all_nights_text(fixed)}, not "
+            "her recorded bedtime: none had an Oura bedtime between 18:00 and 06:00."
+        )
+    return (
+        "Bedtime is the start of her Oura main sleep period, or a fixed 22:30 to 00:30 window "
+        "on nights without one."
+    )
+
+
 def bedtime_item(
     analysis: dict[str, Any],
     *,
@@ -340,7 +377,8 @@ def bedtime_item(
     if measured:
         over = analysis["nights_over_180"]
         findings.append(
-            f"Bedtime glucose (mean CGM 22:30 to 00:30) was measured on {measured} nights from "
+            f"Bedtime glucose ({_bedtime_measure(analysis['bedtime_basis_nights'])}) was measured "
+            f"on {measured} nights from "
             f"{analysis['first_night']} to {analysis['last_night']}; it was above "
             f"{bedtime_sleep.HIGH_BEDTIME_MG_DL} mg/dL on "
             + (f"{over} of them" if over else "none of them")
@@ -400,6 +438,7 @@ def bedtime_item(
         "supporting_data": {
             "bands": analysis["bands"],
             "band_nights": analysis["band_nights"],
+            "bedtime_basis_nights": analysis["bedtime_basis_nights"],
             "dinner": dinner,
             "highest_bedtime_glucose": analysis["highest_bedtime_glucose"],
             "nights_over_180": analysis["nights_over_180"],
@@ -410,7 +449,7 @@ def bedtime_item(
     return {
         "data": data,
         "confidence": _confidence(envelope, [
-            "Bedtime is a fixed 22:30 to 00:30 window, not her recorded bedtime.",
+            _bedtime_limitation(analysis["bedtime_basis_nights"]),
             "Sleep figures are Oura's estimates.",
             "Dinner timing comes only from logged carbohydrate entries.",
         ]),

@@ -1,10 +1,12 @@
 """Bedtime glucose and that night's sleep, measured from her own CGM and Oura data.
 
-Each night is anchored on the local evening it starts. Bedtime glucose is the
-mean CGM reading across a fixed bedtime window (22:30 to 00:30 local): the
-Oura rows stored here carry sleep durations and scores but no bedtime, so the
-window stands in for it. The night's sleep is the Oura day the night ends on,
-which is Oura's own convention (a night belongs to the morning it ends).
+Each night is anchored on the local evening it starts. The night's sleep is
+the Oura day the night ends on, which is Oura's own convention (a night belongs
+to the morning it ends). Bedtime glucose is the mean CGM reading from 30
+minutes before to 90 minutes after that sleep period's ``bedtime_start``. Rows
+synced before Oura's bedtime was stored, nights without a ring, and days whose
+main period is a nap have no usable bedtime; they use a fixed 22:30 to 00:30
+local window instead, and each night records which basis it used.
 
 Nights are grouped into bedtime-glucose bands so "a high bedtime means no
 sleep" can be checked against how she actually slept after nights in each
@@ -21,9 +23,17 @@ from statistics import mean, median
 from typing import Any
 from zoneinfo import ZoneInfo
 
-ALGORITHM_VERSION = "bedtime-sleep/1.0.0"
-BEDTIME_START = time(22, 30)
+ALGORITHM_VERSION = "bedtime-sleep/1.1.0"
+BEDTIME_START = time(22, 30)  # the fixed window, for nights without an Oura bedtime
 BEDTIME_MINUTES = 120
+OURA_LEAD_MINUTES = 30  # an Oura-anchored window opens 30 minutes before bedtime_start
+# An Oura bedtime counts for the night only from 18:00 to 06:00 local: a day with
+# no long sleep keeps its nap as the main period, and a nap is not a bedtime.
+OURA_BEDTIME_FROM = time(18, 0)
+OURA_BEDTIME_UNTIL = time(6, 0)
+OURA_BEDTIME = "oura_bedtime"
+FIXED_WINDOW = "fixed_window"
+BEDTIME_BASES = (OURA_BEDTIME, FIXED_WINDOW)
 MIN_BEDTIME_POINTS = 12  # half of a 5-minute cadence across the window
 NEXT_DAY_START = time(6, 0)
 NEXT_DAY_END = time(22, 0)
@@ -67,6 +77,25 @@ def _between(points: list[tuple[datetime, float]], start: datetime, end: datetim
     return [value for instant, value in points if start <= instant < end]
 
 
+def nights_text(count: int) -> str:
+    return f"{count} night" if count == 1 else f"{count} nights"
+
+
+def all_nights_text(count: int) -> str:
+    return "the 1 night" if count == 1 else f"all {count} nights"
+
+
+def _oura_bedtime(sleep: dict[str, Any] | None, day: date, tz: ZoneInfo) -> datetime | None:
+    """Oura's recorded bedtime for the night starting on ``day``, when it falls
+    within that night."""
+    instant = _instant(sleep.get("bedtime_start")) if sleep else None
+    if instant is None:
+        return None
+    earliest = datetime.combine(day, OURA_BEDTIME_FROM, tzinfo=tz)
+    latest = datetime.combine(day + timedelta(days=1), OURA_BEDTIME_UNTIL, tzinfo=tz)
+    return instant if earliest <= instant < latest else None
+
+
 def _band(value: float) -> str:
     for name, low, high in BANDS:
         if (low is None or value > low) and (high is None or value <= high):
@@ -100,18 +129,22 @@ def build_nights(
     nights = []
     day = start
     while day <= end:
-        bedtime = datetime.combine(day, BEDTIME_START, tzinfo=tz).astimezone(timezone.utc)
-        window = _between(points, bedtime, bedtime + timedelta(minutes=BEDTIME_MINUTES))
+        morning = day + timedelta(days=1)
+        sleep = sleep_by_day.get(morning.isoformat())
+        oura_bedtime = _oura_bedtime(sleep, day, tz)
+        if oura_bedtime is not None:
+            window_start = oura_bedtime - timedelta(minutes=OURA_LEAD_MINUTES)
+        else:
+            window_start = datetime.combine(day, BEDTIME_START, tzinfo=tz).astimezone(timezone.utc)
+        window = _between(points, window_start, window_start + timedelta(minutes=BEDTIME_MINUTES))
         if len(window) >= MIN_BEDTIME_POINTS:
-            morning = day + timedelta(days=1)
-            sleep = sleep_by_day.get(morning.isoformat())
             next_day = _between(
                 points,
                 datetime.combine(morning, NEXT_DAY_START, tzinfo=tz).astimezone(timezone.utc),
                 datetime.combine(morning, NEXT_DAY_END, tzinfo=tz).astimezone(timezone.utc),
             )
             dinner_from = datetime.combine(day, DINNER_FROM, tzinfo=tz).astimezone(timezone.utc)
-            dinners = [instant for instant in carbs if dinner_from <= instant < bedtime]
+            dinners = [instant for instant in carbs if dinner_from <= instant < window_start]
             dinner = dinners[-1].astimezone(tz) if dinners else None
             bedtime_glucose = mean(window)
             sleep_id = str(sleep.get("id") or "") if sleep else ""
@@ -119,6 +152,8 @@ def build_nights(
                 "night": day.isoformat(),
                 "bedtime_glucose": round(bedtime_glucose),
                 "band": _band(bedtime_glucose),
+                "bedtime_basis": OURA_BEDTIME if oura_bedtime else FIXED_WINDOW,
+                "bedtime": oura_bedtime.astimezone(tz).strftime("%H:%M") if oura_bedtime else None,
                 "sleep_day": morning.isoformat() if sleep else None,
                 "sleep_entity_id": sleep_id or None,
                 "sleep_hours": (
@@ -130,8 +165,11 @@ def build_nights(
                     round(mean(next_day)) if len(next_day) >= MIN_NEXT_DAY_POINTS else None
                 ),
                 "dinner_time": dinner.strftime("%H:%M") if dinner else None,
+                # An instant comparison: after a late Oura bedtime the dinner
+                # can fall past midnight, which is late, not early.
                 "late_dinner": (
-                    dinner.time() >= LATE_DINNER_FROM if dinner else None
+                    dinner >= datetime.combine(day, LATE_DINNER_FROM, tzinfo=tz)
+                    if dinner else None
                 ),
             })
         day += timedelta(days=1)
@@ -161,6 +199,31 @@ def _group(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     }
 
 
+def _bedtime_semantics(basis_nights: dict[str, int]) -> str:
+    oura, fixed = basis_nights[OURA_BEDTIME], basis_nights[FIXED_WINDOW]
+    around_oura = (
+        "the mean CGM reading from 30 minutes before to 90 minutes after Oura's recorded "
+        "bedtime (bedtime_start of the main sleep period)"
+    )
+    fixed_window = "the mean CGM reading from 22:30 to 00:30 local time"
+    no_oura = "Oura bedtime between 18:00 and 06:00 local time"
+    if oura and fixed:
+        basis = (
+            f"{around_oura} on {nights_text(oura)}, and {fixed_window} on the other "
+            f"{nights_text(fixed)}, which had no {no_oura}"
+        )
+    elif oura:
+        basis = f"{around_oura} on {all_nights_text(oura)}"
+    elif fixed:
+        basis = f"{fixed_window} on {all_nights_text(fixed)}; none had an {no_oura}"
+    else:
+        basis = f"{around_oura} when there is an {no_oura}, otherwise {fixed_window}"
+    return (
+        f"Bedtime glucose is {basis}. Nights with under an hour of readings in the bedtime "
+        "window are not counted."
+    )
+
+
 def analyze(
     readings: list[dict[str, Any]],
     sleep_days: list[dict[str, Any]],
@@ -175,6 +238,9 @@ def analyze(
         readings, sleep_days, treatments, start=start, end=end, timezone_name=timezone_name
     )
     dinners = [row for row in nights if row["dinner_time"] is not None]
+    basis_nights = {
+        basis: sum(1 for row in nights if row["bedtime_basis"] == basis) for basis in BEDTIME_BASES
+    }
     return {
         "algorithm_version": ALGORITHM_VERSION,
         "nights_measured": len(nights),
@@ -185,6 +251,7 @@ def analyze(
         "nights_over_180": sum(1 for row in nights if row["bedtime_glucose"] > HIGH_BEDTIME_MG_DL),
         "bands": {name: _group([row for row in nights if row["band"] == name]) for name, _, _ in BANDS},
         "band_nights": {name: sum(1 for row in nights if row["band"] == name) for name, _, _ in BANDS},
+        "bedtime_basis_nights": basis_nights,
         "dinner": {
             "nights_logged": len(dinners),
             "late": _group([row for row in dinners if row["late_dinner"]]),
@@ -192,10 +259,10 @@ def analyze(
         },
         "nights": nights,
         "semantics": {
-            "bedtime": "Bedtime glucose is the mean CGM reading from 22:30 to 00:30 local time; nights with under an hour of readings in that window are not counted.",
+            "bedtime": _bedtime_semantics(basis_nights),
             "sleep": "Sleep is the Oura main sleep period for the morning the night ends on.",
             "next_day": "Next-day glucose is the mean CGM reading from 06:00 to 22:00 local time on the following day.",
-            "dinner": "Dinner time is the last carbohydrate entry between 16:00 and the bedtime window; a dinner at or after 20:00 counts as late.",
+            "dinner": "Dinner time is the last carbohydrate entry between 16:00 and the start of the bedtime window; a dinner at or after 20:00 counts as late.",
             "association": "Medians of temporal associations from one person's records; not causal and not treatment guidance.",
         },
     }
