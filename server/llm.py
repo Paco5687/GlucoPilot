@@ -451,7 +451,7 @@ class _ThinkStripper:
         return rest
 
 
-async def _stream_local(prompt: str, max_tokens: int, url_override: str | None = None, model_override: str | None = None, stop: list[str] | None = None):
+async def _stream_local(prompt: str, max_tokens: int, url_override: str | None = None, model_override: str | None = None, stop: list[str] | None = None, meta: dict | None = None):
     raw_url = url_override or config_value("local_llm_url", LOCAL_URL_DEFAULT)
     model = model_override or config_value("local_llm_model", LOCAL_MODEL_DEFAULT)
     payload: dict[str, Any] = {
@@ -486,7 +486,10 @@ async def _stream_local(prompt: str, max_tokens: int, url_override: str | None =
                         chunk = json.loads(data)
                     except ValueError:
                         continue
-                    delta = (chunk.get("choices") or [{}])[0].get("delta", {}).get("content") or ""
+                    choice = (chunk.get("choices") or [{}])[0]
+                    if meta is not None and choice.get("finish_reason"):
+                        meta["finish_reason"] = choice["finish_reason"]
+                    delta = choice.get("delta", {}).get("content") or ""
                     if delta:
                         visible = stripper.feed(delta)
                         if visible:
@@ -507,7 +510,7 @@ def _local_stream_overrides(tier: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-async def invoke_llm_stream(prompt: str, max_tokens: int = 700, tier: str = "default", stop: list[str] | None = None, site: str = ""):
+async def invoke_llm_stream(prompt: str, max_tokens: int = 700, tier: str = "default", stop: list[str] | None = None, site: str = "", meta: dict | None = None):
     """Yield reply text incrementally. The local provider streams token-by-token;
     cloud providers yield the full reply once (correct, just not chunked).
 
@@ -518,7 +521,10 @@ async def invoke_llm_stream(prompt: str, max_tokens: int = 700, tier: str = "def
     Breeze is non-streaming today: it makes one complete request and yields the
     finished reply as a single chunk, so the NDJSON interface above it is
     unchanged. Deliberately not split into fake token-sized pieces — a caller
-    watching deltas should see real generation progress or none at all."""
+    watching deltas should see real generation progress or none at all.
+
+    Pass a dict as `meta` to receive the local stream's finish_reason
+    ("length" means the reply hit max_tokens)."""
     provider = config_value("llm_provider", "anthropic").strip().lower()
     if provider == "breeze":
         route, details = await breeze.route_text_call(site, prompt, max_tokens, count_tokens)
@@ -534,11 +540,11 @@ async def invoke_llm_stream(prompt: str, max_tokens: int = 700, tier: str = "def
             yield text if isinstance(text, str) else str(text)
             return
         # Hybrid: this call stays on the local provider, which really streams.
-        async for chunk in _stream_local(prompt, max_tokens, *_local_stream_overrides(tier), stop=stop):
+        async for chunk in _stream_local(prompt, max_tokens, *_local_stream_overrides(tier), stop=stop, meta=meta):
             yield chunk
         return
     if provider == "local":
-        async for chunk in _stream_local(prompt, max_tokens, *_local_stream_overrides(tier), stop=stop):
+        async for chunk in _stream_local(prompt, max_tokens, *_local_stream_overrides(tier), stop=stop, meta=meta):
             yield chunk
         return
     text = await invoke_llm(prompt, max_tokens=max_tokens, tier=tier)

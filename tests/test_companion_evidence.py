@@ -642,3 +642,223 @@ def test_long_thread_sends_the_latest_turns_not_the_first(
         "Thyroid hormones affect metabolism.",
     ]
     assert [m["created_date"] for m in history] == sorted(m["created_date"] for m in history)
+
+
+def _stub_reply_pipeline(monkeypatch, public, reasoning, chunks, *, finish_reason=None):
+    monkeypatch.setattr(companion, "_grounding", lambda _text: (public, reasoning, {}))
+    monkeypatch.setattr(companion, "_grounding_enabled", lambda: False)
+    calls: list[str] = []
+
+    async def fake_stream(prompt, *_args, **kwargs):
+        calls.append(prompt)
+        if finish_reason and kwargs.get("meta") is not None:
+            kwargs["meta"]["finish_reason"] = finish_reason
+        for chunk in chunks:
+            yield chunk
+
+    monkeypatch.setattr(companion, "invoke_llm_stream", fake_stream)
+    return calls
+
+
+def _collect(text, **kwargs):
+    async def run():
+        return [json.loads(line) async for line in companion.stream_send(text, **kwargs)]
+
+    return asyncio.run(run())
+
+
+def test_crisis_message_gets_the_fixed_reply_without_the_model(companion_database, monkeypatch):
+    public, reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?", as_of=date(2026, 7, 20), refresh=False
+    )
+    calls = _stub_reply_pipeline(monkeypatch, public, reasoning, ["model output"])
+    extracted: list[str] = []
+
+    async def spy_extract(*args, **_kwargs):
+        extracted.append(args[0])
+        return []
+
+    monkeypatch.setattr(companion, "_extract_memories", spy_extract)
+
+    events = _collect("I don't want to be here anymore")
+
+    assert calls == []
+    assert extracted == []
+    reply = "".join(event.get("delta", "") for event in events)
+    assert reply == companion.companion_safety.CRISIS_REPLY
+    assert events[-1] == {"done": True, "remembered": [], "thread_id": events[0]["thread"]["id"]}
+    history = companion._thread_history(events[0]["thread"]["id"])
+    assert [m["role"] for m in history] == ["user", "assistant"]
+    assert history[-1]["content"] == companion.companion_safety.CRISIS_REPLY
+
+
+def test_provider_clinical_language_still_reaches_the_model(companion_database, monkeypatch):
+    public, reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?", as_of=date(2026, 7, 20), refresh=False
+    )
+    calls = _stub_reply_pipeline(
+        monkeypatch, public, reasoning, ["Thyroid hormones affect mood and energy."]
+    )
+
+    events = _collect(
+        "Has she reported suicidal ideation alongside the thyroid changes?",
+        actor="provider:drsynthetic",
+    )
+
+    assert len(calls) == 1
+    assert "Thyroid hormones affect mood" in "".join(e.get("delta", "") for e in events)
+
+
+def test_treatment_change_lines_are_guarded_out_of_replies(companion_database, monkeypatch):
+    public, reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?", as_of=date(2026, 7, 20), refresh=False
+    )
+    lab = next(
+        item for item in public["evidence_items"]
+        if item["entity_id"] == companion_database["lab"]["id"]
+    )
+    _stub_reply_pipeline(
+        monkeypatch,
+        public,
+        reasoning,
+        [
+            f"Your thyroid result was high. [{lab['alias']}]\n",
+            "Try adding ashwagandha daily to support your thyroid.\n",
+            "Thyroid hormones affect metabolism.",
+        ],
+    )
+
+    async def no_memories(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(companion, "_store_new_memories", no_memories)
+    events = _collect("What do my thyroid labs show?")
+    reply = "".join(e.get("delta", "") for e in events)
+    evidence = next(e["evidence"] for e in events if e.get("evidence"))
+
+    assert "ashwagandha" not in reply
+    assert "Thyroid hormones affect metabolism." in reply
+    assert companion.companion_safety.CARE_TEAM_NOTE in reply
+    assert evidence["safety_guard"] == {"guarded_lines": 1}
+
+
+def test_reply_cut_off_at_the_token_cap_ends_on_a_full_sentence(companion_database, monkeypatch):
+    public, reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?", as_of=date(2026, 7, 20), refresh=False
+    )
+    _stub_reply_pipeline(
+        monkeypatch,
+        public,
+        reasoning,
+        ["Thyroid hormones affect metabolism. They also affect ", "energy and mo"],
+        finish_reason="length",
+    )
+
+    async def no_memories(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(companion, "_store_new_memories", no_memories)
+    events = _collect("What do my thyroid labs show?")
+
+    assert "".join(e.get("delta", "") for e in events) == "Thyroid hormones affect metabolism."
+
+
+def test_only_memories_grounded_in_her_message_are_stored(companion_database, monkeypatch):
+    async def fake_extract(_text, _existing):
+        return [
+            {"content": "Reports puffy hands in the mornings.", "category": "symptom"},
+            {"content": "Reports significant obesity.", "category": "nutrition_routine"},
+            {"content": "Reports brutal work stress this month.", "category": "personal_hygiene/training"},
+        ]
+
+    monkeypatch.setattr(companion, "_extract_memories", fake_extract)
+    message = "Work stress has been brutal this month and my hands are puffy in the mornings"
+
+    stored = asyncio.run(companion._store_new_memories(message, []))
+
+    assert stored == [
+        "Reports puffy hands in the mornings.",
+        "Reports brutal work stress this month.",
+    ]
+    categories = {m["content"]: m["category"] for m in companion._memories()}
+    assert categories["Reports brutal work stress this month."] == "observation"
+    assert asyncio.run(companion._store_new_memories("Please", [])) == []
+
+
+def test_unverified_lab_headings_are_marked_at_the_end(companion_database):
+    public, _reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?", as_of=date(2026, 7, 20), refresh=False
+    )
+    lab = next(
+        item for item in public["evidence_items"]
+        if item["entity_id"] == companion_database["lab"]["id"]
+    )
+    reply, _evidence = companion_evidence.finalize_reply(
+        f"**Your thyroid result was high [{lab['alias']}]**", public, [], []
+    )
+
+    assert reply == f"**Your thyroid result was high [{lab['alias']}]** (unverified lab)"
+
+
+def test_lone_questions_are_not_mined_for_memories(companion_database, monkeypatch):
+    async def fake_extract(_text, _existing):
+        return [{"content": "Read MRI images and thinking about them.", "category": "observation"}]
+
+    monkeypatch.setattr(companion, "_extract_memories", fake_extract)
+
+    assert asyncio.run(
+        companion._store_new_memories("What do you think about my MRI images?", [])
+    ) == []
+
+
+def test_labs_are_called_low_or_high_only_when_the_lab_flagged_them(companion_database):
+    db.create_entity(
+        "LabResult",
+        {
+            "owner_email": OWNER,
+            "record_id": companion_database["lab"]["record_id"],
+            "collected_date": "2026-07-10",
+            "test_name": "Synthetic Free T3",
+            "value": 2.4,
+            "unit": "pg/mL",
+            "flag": "",
+            "parser_confidence": 0.99,
+            "verification_status": "unverified",
+            "validation_status": "valid",
+        },
+    )
+    clear_bundle_cache()
+    public, _reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?", as_of=date(2026, 7, 20), refresh=False
+    )
+    by_title = {item["title"]: item["alias"] for item in public["evidence_items"]}
+    free_t3, tsh = by_title["Synthetic Free T3"], by_title["Synthetic TSH"]
+
+    reply, evidence = companion_evidence.finalize_reply(
+        "\n".join(
+            [
+                f"Your free T3 of 2.4 is low. [{free_t3}]",
+                f"Your free T3 was not low. [{free_t3}]",
+                f"Your TSH was high. [{tsh}]",
+            ]
+        ),
+        public,
+        [],
+        [],
+    )
+
+    assert "is low" not in reply
+    assert "was not low" in reply
+    assert "TSH was high" in reply
+    assert evidence["omissions"]["count"] == 1
+
+
+def test_messages_that_only_ask_questions_are_not_mined(companion_database, monkeypatch):
+    async def fake_extract(_text, _existing):
+        return [{"content": "Reports Armour dose being the issue.", "category": "treatment"}]
+
+    monkeypatch.setattr(companion, "_extract_memories", fake_extract)
+
+    assert asyncio.run(
+        companion._store_new_memories("How is my thyroid doing? Is my Armour dose right?", [])
+    ) == []
