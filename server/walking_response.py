@@ -52,15 +52,17 @@ def build_walks(intervals: list[dict[str, Any]]) -> list[dict[str, Any]]:
         start, end = _instant(row.get("start_time")), _instant(row.get("end_time"))
         if start is None or end is None or end <= start:
             continue
-        bouts.append((start, end))
+        bouts.append((start, end, str(row.get("id") or "")))
     bouts.sort()
     walks: list[dict[str, Any]] = []
-    for start, end in bouts:
+    for start, end, interval_id in bouts:
         if walks and (start - walks[-1]["end"]).total_seconds() <= EPISODE_GAP_MINUTES * 60:
             walks[-1]["end"] = max(walks[-1]["end"], end)
             walks[-1]["bouts"] += 1
         else:
-            walks.append({"start": start, "end": end, "bouts": 1})
+            walks.append({"start": start, "end": end, "bouts": 1, "interval_ids": []})
+        if interval_id and interval_id not in walks[-1]["interval_ids"]:
+            walks[-1]["interval_ids"].append(interval_id)
     output = []
     for walk in walks:
         minutes = (walk["end"] - walk["start"]).total_seconds() / 60
@@ -172,14 +174,14 @@ def _controls(walks: list[dict[str, Any]], glucose: _Glucose, start: datetime, e
         if clear:
             m = _measure(glucose, cursor, cursor + timedelta(minutes=20))
             if m:
-                out.append({**m, "hour": cursor.hour})
+                out.append({**m, "hour": cursor.hour, "start": cursor.isoformat().replace("+00:00", "Z")})
         cursor += timedelta(minutes=30)
     return out
 
 
-def analyze(intervals: list[dict[str, Any]], readings: list[dict[str, Any]], *, start: datetime, end: datetime,
+def measure(intervals: list[dict[str, Any]], readings: list[dict[str, Any]], *, start: datetime, end: datetime,
             timezone_name: str = "UTC") -> dict[str, Any]:
-    """Walking response over [start, end]. Pure and deterministic."""
+    """Every walk and sitting control with its measured response. Pure."""
     from zoneinfo import ZoneInfo
 
     tz = ZoneInfo(timezone_name)
@@ -190,9 +192,19 @@ def analyze(intervals: list[dict[str, Any]], readings: list[dict[str, Any]], *, 
         m = _measure(glucose, walk["start"], walk["end"])
         if m:
             measured.append({**m, "minutes": walk["minutes"], "hour": walk["start"].astimezone(tz).hour,
-                             "start": walk["start"].isoformat().replace("+00:00", "Z")})
-    controls = _controls(walks, glucose, start, end)
+                             "start": walk["start"].isoformat().replace("+00:00", "Z"),
+                             "interval_ids": walk["interval_ids"]})
+    return {"walks": walks, "measured": measured, "controls": _controls(walks, glucose, start, end)}
 
+
+def analyze(intervals: list[dict[str, Any]], readings: list[dict[str, Any]], *, start: datetime, end: datetime,
+            timezone_name: str = "UTC") -> dict[str, Any]:
+    """Walking response over [start, end]. Pure and deterministic."""
+    return summarize(measure(intervals, readings, start=start, end=end, timezone_name=timezone_name))
+
+
+def summarize(measurement: dict[str, Any]) -> dict[str, Any]:
+    walks, measured, controls = measurement["walks"], measurement["measured"], measurement["controls"]
     bands = {}
     for name, _, _ in BANDS:
         walk_rows = [r for r in measured if _band(r["start_glucose"]) == name]

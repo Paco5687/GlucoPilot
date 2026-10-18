@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
-from . import companion_safety
+from . import analysis_evidence, companion_safety
 from .contradictions import refresh_current as refresh_contradictions
 from .diagnostics import reasoning_context as diagnostic_context
 from .evidence_bundle import EvidenceBundleQuery, EvidenceDomain, build_bundle
@@ -35,6 +35,7 @@ _ALIAS_LOOKALIKE_RE = re.compile(
     r"\b(?:estradiol|estrone|estriol|estetrol|complement)\s*$", re.IGNORECASE
 )
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+_NORMAL_FLAGS = {"", "n", "normal", "none"}
 _EXCLUDED_TYPES = {"DailySummary", "HealthSummary", "InsuranceInfo", "WeeklySummary"}
 _REASONING_FIELDS = {
     "allergen",
@@ -49,7 +50,9 @@ _REASONING_FIELDS = {
     "dose",
     "entry_date",
     "explanation",
+    "findings",
     "flag",
+    "flag_note",
     "frequency",
     "kind",
     "language",
@@ -76,6 +79,7 @@ _REASONING_FIELDS = {
     "validation_status",
     "value",
     "verification_status",
+    "window",
 }
 
 
@@ -192,7 +196,9 @@ _KEY_LAB_TESTS = (
     ("ferritin", re.compile(r"ferritin", re.IGNORECASE)),
     ("vitamin_d", re.compile(r"vitamin\s*d\b(?!.*,\s*d[23]\b)|25-?hydroxyvitamin", re.IGNORECASE)),
 )
-_KEY_LAB_ROWS_PER_TEST = 2  # same-draw duplicates can disagree on flag; show both
+# Same-draw duplicates are already collapsed (lab_dedupe); two rows of one test
+# on one day are two different results, so both are shown.
+_KEY_LAB_ROWS_PER_TEST = 2
 
 
 def _key_lab_items(bundle: dict[str, Any]) -> list[dict[str, Any]]:
@@ -213,6 +219,46 @@ def _key_lab_items(bundle: dict[str, Any]) -> list[dict[str, Any]]:
                 rows.append(item)
             break
     return [item for key, _pattern in _KEY_LAB_TESTS for item in latest.get(key, [])]
+
+
+# Precomputed analyses of the questions she asks most: does glucose climb while
+# she sits, does a temp basal really need two hours, does a late or high
+# bedtime cost her sleep. A matching question gets the analysis itself, over
+# months of data, instead of the ~16 raw readings the model would otherwise
+# improvise from. They lead the evidence list so they take the first aliases.
+ANALYSES = Scope("analyses", (EvidenceDomain.GLUCOSE,), 120, 3, 3, frozenset())
+_ANALYSIS_TRIGGERS = (
+    (
+        analysis_evidence.WALKING,
+        re.compile(
+            r"\b(sit|sits|sitting|sat|seated|desk|couch|sofa|walk\w*|stroll\w*|steps?|"
+            r"standing|movement|exercis\w*)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        analysis_evidence.CORRECTION,
+        re.compile(
+            r"\b(temp(?:orary)?\s*basals?|temps|corrections?|correcting|delay\w*|kicks?\s+in|"
+            r"start(?:s|ed)?\s+working|takes?\s+(?:so\s+)?long|(?:2|two)[-\s]?(?:hours?|hrs?))\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        analysis_evidence.BEDTIME,
+        re.compile(
+            r"\b(bed|bedtime|sleep\w*|slept|asleep|insomnia|nights?|overnight|tonight|dinner|"
+            r"supper|evening)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def _selected_analyses(question: str) -> tuple[str, ...]:
+    return tuple(
+        sorted(entity_type for entity_type, pattern in _ANALYSIS_TRIGGERS if pattern.search(question))
+    )
 
 
 def _selected_scopes(question: str) -> tuple[Scope, ...]:
@@ -262,12 +308,18 @@ def _scope_intent(scope: Scope, question: str) -> str:
 
 
 def _bundle_items(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    """Ranked items, with each blood draw once: a second report of the same
+    draw is represented by the kept row, which links both documents."""
     evidence = bundle["evidence"]
     return [
-        *evidence["derived_metrics"],
-        *evidence["documents"],
-        *evidence["direct_observations"],
-        *evidence["relationships"],
+        item
+        for item in (
+            *evidence["derived_metrics"],
+            *evidence["documents"],
+            *evidence["direct_observations"],
+            *evidence["relationships"],
+        )
+        if not (item.get("entity_type") == "LabResult" and (item.get("data") or {}).get("duplicate_of"))
     ]
 
 
@@ -330,13 +382,73 @@ def _bounded(value: Any, *, depth: int = 0) -> Any:
     return value
 
 
+def _range_text(low: Any, high: Any) -> str:
+    if low not in (None, "") and high not in (None, ""):
+        return f"{low}-{high}"
+    if low not in (None, ""):
+        return f"above {low}"
+    if high not in (None, ""):
+        return f"below {high}"
+    return "not stated"
+
+
+def _nonstandard_flag(item: dict[str, Any]) -> str | None:
+    """The "optimal range" judgement attached to a lab row: its own, when the
+    row comes from such a report, or a same-draw twin's."""
+    if item.get("entity_type") != "LabResult":
+        return None
+    data = item.get("data") if isinstance(item.get("data"), dict) else {}
+    if data.get("reference_basis") == "nonstandard":
+        flag = str(data.get("flag") or "").strip().lower()
+        return None if flag in _NORMAL_FLAGS else flag
+    for twin in data.get("nonstandard_flags") or []:
+        flag = str(twin.get("flag") or "").strip().lower()
+        if flag not in _NORMAL_FLAGS:
+            return flag
+    return None
+
+
+def _flag_note(data: dict[str, Any]) -> str | None:
+    if data.get("reference_basis") == "nonstandard":
+        flag = str(data.get("flag") or "").strip().lower()
+        judged = f"rates this {flag}" if flag not in _NORMAL_FLAGS else "does not flag this"
+        return (
+            "From a functional-medicine report that uses narrower 'optimal' ranges, not a lab reference "
+            f"range: it {judged} against its optimal range "
+            f"({_range_text(data.get('reference_low'), data.get('reference_high'))}). "
+            "This is not a lab high/low flag."
+        )
+    twins = [
+        twin for twin in data.get("nonstandard_flags") or []
+        if str(twin.get("flag") or "").strip().lower() not in _NORMAL_FLAGS
+    ]
+    if twins and str(data.get("flag") or "").strip().lower() in _NORMAL_FLAGS:
+        twin = twins[0]
+        return (
+            "A functional-medicine report of this same draw rates it "
+            f"{str(twin.get('flag')).lower()} against its narrower 'optimal' range "
+            f"({_range_text(twin.get('reference_low'), twin.get('reference_high'))}); "
+            "the lab's own reference range did not flag it."
+        )
+    return None
+
+
 def _reasoning_data(item: dict[str, Any]) -> dict[str, Any]:
     data = item.get("data") if isinstance(item.get("data"), dict) else {}
-    return {
+    output = {
         key: _bounded(data[key])
         for key in sorted(_REASONING_FIELDS)
         if key in data
     }
+    if item.get("entity_type") == "LabResult":
+        if data.get("reference_basis") == "nonstandard":
+            # The optimal range and its flag move into the note, so the model
+            # cannot read them as the lab's reference range or flag.
+            for key in ("flag", "reference_low", "reference_high"):
+                output.pop(key, None)
+        if note := _flag_note(data):
+            output["flag_note"] = note
+    return output
 
 
 def _source_ids(item: dict[str, Any]) -> list[str]:
@@ -371,8 +483,10 @@ def _public_item(alias: str, item: dict[str, Any]) -> dict[str, Any]:
         "flag": (
             str(data.get("flag") or "").strip().lower() or None
             if item.get("entity_type") == "LabResult"
+            and data.get("reference_basis") != "nonstandard"
             else None
         ),
+        "nonstandard_flag": _nonstandard_flag(item),
     }
 
 
@@ -429,6 +543,27 @@ def build_context(
         for caveat in bundle["missing_data_caveats"]:
             caveats[(caveat["code"], caveat["domain"], caveat["message"])] = caveat
         opposing.extend(bundle["evidence"]["opposing_evidence"])
+    if analyses := _selected_analyses(intent):
+        start, end = _window(ANALYSES.days, as_of)
+        analysis_bundle = build_bundle(EvidenceBundleQuery(
+            start=start,
+            end=end,
+            domains=ANALYSES.domains,
+            question_intent=intent,
+            item_budget=ANALYSES.retrieval_budget,
+            normalized_entity_types=analyses,
+        ))
+        bundles.append((ANALYSES, analysis_bundle))
+        items_by_scope[ANALYSES.name] = [
+            item for item in _bundle_items(analysis_bundle)
+            if item.get("entity_type") in analysis_evidence.ENTITY_TYPES
+        ][:ANALYSES.budget]
+        for item in items_by_scope[ANALYSES.name]:
+            items_by_id.setdefault(item["id"], item)
+        # The analyses rest on glucose rows, so unresolved glucose contradictions
+        # travel with them even when no metabolic scope was selected.
+        for contradiction in analysis_bundle["contradictions"]:
+            contradictions_by_id[contradiction["id"]] = contradiction
     if any(scope.name == "labs_records" for scope, _bundle in bundles):
         start, end = _window(KEY_LABS.days, as_of)
         key_bundle = build_bundle(EvidenceBundleQuery(
@@ -443,8 +578,8 @@ def build_context(
         for item in items_by_scope[KEY_LABS.name]:
             items_by_id.setdefault(item["id"], item)
 
-    raw_items = []
-    retained_raw_ids: set[str] = set()
+    raw_items = list(items_by_scope.get(ANALYSES.name, []))
+    retained_raw_ids: set[str] = {item["id"] for item in raw_items}
     max_scope_items = max((len(items) for items in items_by_scope.values()), default=0)
     for index in range(max_scope_items):
         for scope, _bundle in bundles:
@@ -741,25 +876,34 @@ def _uncited_personal_claim(text: str, classification: str) -> bool:
     return bool(claim and (personal or definite or numeric_personal))
 
 
+# Up to six tokens may sit between the verb and the judgement, so a value and
+# its unit and date ("was 1.0 ng/dL in August, below the lab's reference range")
+# cannot slip a false judgement past the check. Sentences are judged one at a
+# time, so the gap never spans two of them.
 _LAB_JUDGEMENT = re.compile(
-    r"\b(is|are|was|were|both|came\s+back|looks?|reads?|remains?|remained|stays?|stayed|flagged)\s+"
-    r"(?:\w+\s+){0,2}?(low|high|elevated|deficient|abnormal|(?:above|below|outside)\s+(?:of\s+)?(?:the\s+|your\s+)?"
-    r"(?:normal|reference|optimal)(?:\s+range)?)\b",
+    r"\b(is|are|was|were|both|came\s+back|looks?|reads?|remains?|remained|stays?|stayed|flagged|"
+    r"considered|deemed|rated|rates|marked|marks|notes|calls|labels|(?:it|that|which)['’]s)\s+"
+    r"(?:\S+\s+){0,6}?(low|high|elevated|deficient|abnormal|(?:above|below|outside)\s+(?:of\s+)?"
+    r"(?:the\s+|your\s+|their\s+|its\s+)?(?:lab'?s?\s+)?(?:normal|reference|optimal)(?:\s+range)?)\b",
     re.IGNORECASE,
 )
 _NEGATION = re.compile(r"\b(not|never|no)\b|n't", re.IGNORECASE)
-_NORMAL_FLAGS = {"", "n", "normal", "none"}
+_ATTRIBUTED = re.compile(r"\b(functional|optimal)\b", re.IGNORECASE)
 
 
 def _unflagged_lab_judgement(line: str, evidence_items: list[dict[str, Any]]) -> bool:
     """A line that calls labs low or high while citing only labs the lab itself
-    did not flag. The small model reads low-normal values as "low"."""
+    did not flag. The small model reads low-normal values as "low". Saying what
+    a functional-medicine report's optimal range makes of a value is allowed
+    when the sentence names that report or range and a cited row carries it."""
     labs = [item for item in evidence_items if item.get("entity_type") == "LabResult"]
     if not labs or len(labs) != len(evidence_items):
         return False
     if not any(
         not _NEGATION.search(match.group(0)) for match in _LAB_JUDGEMENT.finditer(line)
     ):
+        return False
+    if _ATTRIBUTED.search(line) and any(item.get("nonstandard_flag") for item in labs):
         return False
     return all((item.get("flag") or "").strip().lower() in _NORMAL_FLAGS for item in labs)
 
