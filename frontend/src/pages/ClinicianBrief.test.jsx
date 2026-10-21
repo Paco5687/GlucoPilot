@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ClinicianBrief from "./ClinicianBrief";
 
@@ -13,6 +13,16 @@ const evidence = {
   entity_id: "synthetic",
   title: "Synthetic ferritin",
   observed_at: "2026-07-01",
+  display: {
+    label: "Synthetic ferritin",
+    value: "6.2",
+    unit: "ng/mL",
+    reference: "15–150",
+    flag: "Low",
+    date: "2026-07-01",
+    status: null,
+    detail: null,
+  },
   data: {},
   evidence_strength: {
     status: "observed",
@@ -39,7 +49,19 @@ const brief = {
     associations: "Observed associations and calculations do not establish causation.",
   },
   sections: {
-    concerns: [evidence],
+    concerns: [{ ...evidence, concern: { kind: "abnormal_lab", reason: "Synthetic ferritin 6.2 ng/mL — Low, reference 15–150." } }],
+    problems: [{
+      id: "entity:Diagnosis:synthetic",
+      entity_type: "Diagnosis",
+      display: { label: "Synthetic condition", status: "active", date: "2010-01-01" },
+      source_links: [],
+    }],
+    medications: [],
+    allergies: [],
+    weight: [],
+    labs: [evidence],
+    documents: [],
+    symptoms_history: [],
     objective_patterns: [],
     glucose_insulin: [],
     management_burden: [],
@@ -49,7 +71,8 @@ const brief = {
       title: "Possible synthetic iron issue",
       description: "Tentative observation.",
       evidence_state: "not_evaluated",
-      display_label: "Not evaluated — no supporting or opposing evidence recorded",
+      display_label: "Unconfirmed — not a diagnosis. Not evaluated — no supporting or opposing evidence recorded",
+      status_label: "Unconfirmed",
       definitive_allowed: false,
     }],
     reassuring_evidence: [{ evidence, reason: "Synthetic reassurance." }],
@@ -89,10 +112,27 @@ describe("ClinicianBrief", () => {
     expect(screen.getByText(/other PHI is omitted/i)).toBeTruthy();
     expect(screen.getByText(/Not evaluated — no supporting or opposing evidence recorded/i)).toBeTruthy();
     expect(screen.getByText("Possible synthetic iron issue").className).toContain("text-muted-foreground");
-    expect(screen.getAllByText(/Recorded observation/).length).toBeGreaterThan(0);
+    expect(screen.getByText("Unconfirmed")).toBeTruthy();
+    expect(screen.getByText("Synthetic condition")).toBeTruthy();
     const links = screen.getAllByRole("link", { name: "Open source evidence" });
     expect(links[0].getAttribute("href")).toBe("/api/evidence/source/LabResult/synthetic");
     expect(screen.getByText("Which results need follow-up?")).toBeTruthy();
+  });
+
+  it("prints each result's value, unit, reference range, flag and date", async () => {
+    render(<ClinicianBrief />);
+    await screen.findByText("Hematology brief");
+
+    expect(screen.getByText(/Synthetic ferritin 6\.2 ng\/mL — Low, reference 15–150\./)).toBeTruthy();
+    expect(screen.getByText("Abnormal lab")).toBeTruthy();
+    const labs = screen.getByRole("heading", { name: /^Labs/ }).closest("section");
+    const row = within(labs).getByRole("row", { name: /Synthetic ferritin/ });
+    expect(row.textContent).toContain("6.2 ng/mL");
+    expect(row.textContent).toContain("15–150");
+    expect(row.textContent).toContain("Low");
+    expect(row.textContent).toContain("2026-07-01");
+    expect(screen.queryByText("Recorded observation.")).toBeNull();
+    expect(screen.queryByText("LabResult")).toBeNull();
   });
 
   it("regenerates only when specialty or range meaningfully changes", async () => {

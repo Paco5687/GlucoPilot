@@ -205,6 +205,8 @@ def test_clinician_export_minimizes_nested_sections_and_internal_ids(
         "title": "Synthetic result",
         "observed_at": "2026-07-20",
         "description": "Synthetic minimum-necessary description.",
+        "display": {"label": "Synthetic result", "value": "6.2", "unit": "U/L", "flag": "High"},
+        "concern": {"kind": "abnormal_lab", "reason": "Synthetic result 6.2 U/L — High."},
         "source_links": [{"href": "https://secret.example.test/result"}],
     }
     monkeypatch.setattr(
@@ -254,6 +256,8 @@ def test_clinician_export_minimizes_nested_sections_and_internal_ids(
         "title": "Synthetic result",
         "observed_at": "2026-07-20",
         "description": "Synthetic minimum-necessary description.",
+        "display": {"label": "Synthetic result", "value": "6.2", "unit": "U/L", "flag": "High"},
+        "concern": {"kind": "abnormal_lab", "reason": "Synthetic result 6.2 U/L — High."},
     }]
     assert content["sections"]["reassuring_evidence"][0]["evidence"]["title"] == (
         "Synthetic result"

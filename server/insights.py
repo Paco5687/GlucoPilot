@@ -115,6 +115,21 @@ def _daily_glucose_metrics(
 # its name.
 DEVICE_SCOPED_FIELDS = {"hrv": "hrv_oura", "breathing_rate": "breathing_rate_oura"}
 
+# Rings report SpO2 as 0 on nights they could not measure it. A 0 is a missing
+# value, not a reading; averaging it in invents a desaturation.
+PLAUSIBLE_RANGES = {"spo2_average": (70.0, 100.0)}
+
+
+def _plausible(field: str, value: Any) -> Any:
+    bounds = PLAUSIBLE_RANGES.get(field)
+    if bounds is None or value is None:
+        return value
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if bounds[0] <= number <= bounds[1] else None
+
 
 def _correlation_candidates(glucose: dict, oura_by_day: dict) -> list[dict[str, Any]]:
     axes = [
@@ -156,8 +171,9 @@ def _correlation_candidates(glucose: dict, oura_by_day: dict) -> list[dict[str, 
         source_types: set[str] = set()
         for day, g in glucose.items():
             o = oura_by_day.get(day, {})
-            if o.get(oura_field) is not None:
-                pairs.append((day, float(o[oura_field]), float(g[g_field])))
+            value = _plausible(oura_field, o.get(oura_field))
+            if value is not None:
+                pairs.append((day, float(value), float(g[g_field])))
                 field_source = (o.get("_field_sources") or {}).get(oura_field)
                 if field_source:
                     source_types.add(field_source)
@@ -228,18 +244,22 @@ async def analyze() -> dict[str, Any]:
     oura_rows = repositories.oura_daily.query(
         {"owner_email": OWNER_EMAIL}, "-date", 400
     )
-    oura_by_day = {
-        r.get("date"): {
-            **{DEVICE_SCOPED_FIELDS.get(key, key): value for key, value in r.items()},
+    oura_by_day = {}
+    for r in oura_rows:
+        if not r.get("date"):
+            continue
+        fields = {
+            DEVICE_SCOPED_FIELDS.get(key, key): _plausible(DEVICE_SCOPED_FIELDS.get(key, key), value)
+            for key, value in r.items()
+        }
+        oura_by_day[r["date"]] = {
+            **fields,
             "_field_sources": {
-                DEVICE_SCOPED_FIELDS.get(key, key): "OuraDaily"
-                for key, value in r.items()
+                key: "OuraDaily"
+                for key, value in fields.items()
                 if value is not None and key not in {"id", "owner_email", "date"}
             },
         }
-        for r in oura_rows
-        if r.get("date")
-    }
 
     # Merge Fitbit daily metrics into the wearable-by-day map. Oura fields win
     # where both exist; Fitbit contributes its unique fields and fills gaps.
@@ -262,8 +282,9 @@ async def analyze() -> dict[str, Any]:
             ("hrv", "hrv"),
             ("nonrem_heart_rate", "nonrem_heart_rate"),
         ):
-            if f.get(src_key) is not None and merged.get(dst_key) is None:
-                merged[dst_key] = f[src_key]
+            value = _plausible(dst_key, f.get(src_key))
+            if value is not None and merged.get(dst_key) is None:
+                merged[dst_key] = value
                 field_sources[dst_key] = "FitbitDaily"
 
     # Daily average HR from the intraday minute-buckets (FitbitHeartRate). Only
