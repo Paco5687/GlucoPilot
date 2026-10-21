@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import FoodLogger from "./FoodLogger";
 
@@ -109,6 +109,49 @@ describe("FoodLogger voice", () => {
     fireEvent.click(screen.getByLabelText("remove Gluten-free bread"));
     expect(screen.getByText("0 g carbs")).toBeTruthy();
     expect(screen.queryByDisplayValue("Gluten-free bread")).toBeNull();
+  });
+
+  it("won't log foods estimated from words that were changed afterwards", async () => {
+    const SALAD = { ...SANDWICH, transcript: "a garden salad", meal: { title: "Garden salad", confidence: 0.6, items: [{ name: "Garden salad", portion: "1 bowl", preset_id: null, servings: null, carbs: 12, fiber: 4, sugars: 5, protein: 3, fat: 1, calories: 70 }], totals: { carbs: 12 } } };
+    render(<FoodLogger />);
+    await screen.findByText("Oat bar");
+    fireEvent.click(screen.getByText("Say it"));
+    fireEvent.change(await screen.findByLabelText("what you ate"), { target: { value: "chicken sandwich on gluten free bread" } });
+    fireEvent.click(screen.getByText("Estimate"));
+    await screen.findByDisplayValue("Gluten-free bread");
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("what you ate"), { target: { value: "a garden salad" } });
+    expect(screen.getByRole("alert").textContent).toMatch(/changed what you ate/);
+    expect(screen.getByText("Log it").closest("button").disabled).toBe(true);
+    fireEvent.click(screen.getByText("Log it"));
+    expect(apiMocks.invoke).not.toHaveBeenCalledWith("food", expect.objectContaining({ action: "log_meal" }));
+
+    // Re-estimating from the new words clears the warning and replaces the foods.
+    apiMocks.invoke.mockImplementationOnce(async () => ({ data: SALAD }));
+    fireEvent.click(within(screen.getByRole("alert")).getByText("Re-estimate"));
+    await waitFor(() => expect(apiMocks.invoke).toHaveBeenCalledWith("food", expect.objectContaining({ action: "estimate_meal", text: "a garden salad" })));
+    await waitFor(() => expect(screen.getByLabelText("food 1 name").value).toBe("Garden salad"));
+    expect(screen.queryByDisplayValue("Gluten-free bread")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    fireEvent.click(screen.getByText("Log it"));
+    await waitFor(() => expect(apiMocks.invoke).toHaveBeenCalledWith("food", expect.objectContaining({
+      action: "log_meal", transcript: "a garden salad", items: [expect.objectContaining({ name: "Garden salad", carbs: 12 })],
+    })));
+  });
+
+  it("logs the listed foods after an edit only when asked to explicitly", async () => {
+    render(<FoodLogger />);
+    await screen.findByText("Oat bar");
+    fireEvent.click(screen.getByText("Say it"));
+    fireEvent.change(await screen.findByLabelText("what you ate"), { target: { value: "chicken sandwich on gluten free bread" } });
+    fireEvent.click(screen.getByText("Estimate"));
+    await screen.findByDisplayValue("Gluten-free bread");
+    fireEvent.change(screen.getByLabelText("what you ate"), { target: { value: "chicken sandwich on gluten-free bread, toasted" } });
+    fireEvent.click(screen.getByText("Log foods as listed"));
+    await waitFor(() => expect(apiMocks.invoke).toHaveBeenCalledWith("food", expect.objectContaining({
+      action: "log_meal", transcript: "chicken sandwich on gluten-free bread, toasted", items: [expect.objectContaining({ name: "Gluten-free bread" }), expect.objectContaining({ name: "Chicken breast" })],
+    })));
   });
 
   it("records from the microphone and sends the clip for an estimate", async () => {

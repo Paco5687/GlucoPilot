@@ -37,7 +37,9 @@ function fileToImageString(file) {
   });
 }
 
-const EMPTY_MEAL = { transcript: "", title: "", items: [], confidence: null, savePreset: false, entry_method: "text" };
+// estimatedFrom: the text the current items were estimated from, so an edit
+// after estimating can be caught before stale foods are logged.
+const EMPTY_MEAL = { transcript: "", estimatedFrom: "", title: "", items: [], confidence: null, savePreset: false, entry_method: "text" };
 
 const EMPTY = { name: "", brand: "", serving_label: "1 serving", carbs: "", fiber: "", sugars: "", protein: "", fat: "", calories: "", servings: 1, savePreset: true, preset_id: null, barcode: null, source: "manual" };
 
@@ -67,7 +69,7 @@ export default function FoodLogger({ onLogged }) {
       const r = await base44.functions.invoke("food", { action: "estimate_meal", ...payload, tz: browserTimeZone() });
       const d = r.data || {};
       if (!d.meal) throw new Error(d.error || "Couldn't estimate that.");
-      setMeal((m) => ({ ...m, transcript: d.transcript ?? m.transcript, title: d.meal.title || "", items: d.meal.items, confidence: d.meal.confidence, entry_method: entryMethod }));
+      setMeal((m) => ({ ...m, transcript: d.transcript ?? m.transcript, estimatedFrom: d.transcript ?? m.transcript, title: d.meal.title || "", items: d.meal.items, confidence: d.meal.confidence, entry_method: entryMethod }));
       if (d.timestamp) setWhen(toLocalInput(d.timestamp));
       setMode("meal");
     } catch (err) {

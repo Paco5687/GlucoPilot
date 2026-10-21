@@ -358,6 +358,68 @@ def _local_zone(name: Any) -> Any:
     return timezone.utc
 
 
+# A clock time as Whisper writes it: "at 3:30", "at 330", "at 3 30", "at 12.15",
+# "at 5 p.m.", "10.05am", "8.45 a.m.". A bare "at 5" is left to the model, since
+# without minutes or am/pm it is too easily something else.
+_SPOKEN_TIME = re.compile(
+    r"(?:\b(?P<at>at|around|about)(?:\s+(?:about|around))?\s+)?"
+    r"(?<![\d.:,$])\b(?:(?P<hm>\d{3,4})|(?P<h>\d{1,2})(?:(?:[:.]|\s)(?P<m>[0-5]\d))?)"
+    r"(?:\s*(?P<mer>[ap])\.?\s?m\b\.?|\s*(?P<oclock>o'?\s?clock)\b)?"
+    r"(?![.:,]?\d)"
+    r"(?!\s*(?:g|grams?|mg|kg|ml|oz|ounces?|lbs?|pounds?|cal|calories|kcal|carbs?|cups?|%|percent)\b)",
+    re.IGNORECASE,
+)
+
+
+def _clock_of(match: re.Match[str]) -> tuple[int, int, str | None] | None:
+    if match.group("hm"):
+        hour, minute = int(match.group("hm")[:-2]), int(match.group("hm")[-2:])
+    else:
+        hour, minute = int(match.group("h")), int(match.group("m") or 0)
+    meridiem = (match.group("mer") or "").lower() or None
+    if meridiem is None and not (match.group("at") and (match.group("hm") or match.group("m") or match.group("oclock"))):
+        return None
+    if minute > 59 or hour > (12 if meridiem else 23) or (meridiem and hour == 0):
+        return None
+    return hour, minute, meridiem
+
+
+def parse_spoken_time(said: str, now_local: datetime) -> tuple[datetime | None, str]:
+    """Find a clock time in what was said and return when it was (the most
+    recent past one, so a bare "330" in the afternoon is 15:30 and "at 9" late
+    at night is 21:00), plus the words with the time taken out, so the model
+    can't mistake "330" for a portion size."""
+    when = None
+    kept, last = [], 0
+    for match in _SPOKEN_TIME.finditer(said):
+        clock = _clock_of(match)
+        if clock is None:
+            continue
+        kept.append(said[last:match.start()])
+        last = match.end()
+        if when is None:
+            when = _most_recent_clock(*clock, now_local)
+    kept.append(said[last:])
+    rest = re.sub(r" ([,.!?;:])", r"\1", " ".join("".join(kept).split()))
+    return when, rest.strip(" ,;:")
+
+
+def _most_recent_clock(hour: int, minute: int, meridiem: str | None, now_local: datetime) -> datetime:
+    if meridiem:
+        hours = [hour % 12 + (12 if meridiem == "p" else 0)]
+    elif hour == 0 or hour > 12:
+        hours = [hour]
+    else:
+        hours = [hour % 12, hour % 12 + 12]
+    candidates = []
+    for h in hours:
+        when = now_local.replace(hour=h, minute=minute, second=0, microsecond=0)
+        if when > now_local + timedelta(minutes=10):  # later than now -> yesterday
+            when -= timedelta(days=1)
+        candidates.append(when)
+    return max(candidates)
+
+
 def resolve_eaten_at(result: dict[str, Any], now_local: datetime) -> datetime | None:
     """A spoken clock time ("at 8") or relative time ("an hour ago") -> when.
     A clock time later than now means yesterday."""
@@ -425,11 +487,14 @@ async def estimate_meal(body: dict[str, Any]) -> dict[str, Any]:
         message = "Didn't catch anything. Try again a little closer to the mic." if body.get("audio") else "Say or type what you ate."
         return {"error": message, "_status": 422, "transcript": ""}
     now_local = datetime.now(_local_zone(body.get("tz")))
-    candidates = preset_candidates(said)
+    # A clock time is read here, not by the model: Whisper writes "at 3:30" as
+    # "at 330" or "at 3.30", which the model misreads (or takes for a portion).
+    spoken_when, food_said = parse_spoken_time(said, now_local)
+    candidates = preset_candidates(food_said)
     known = ""
     if candidates:
         known = "\nTheir saved foods (exact nutrition from the package, per serving):\n" + "\n".join(_preset_hint(p) for p in candidates) + "\n"
-    prompt = MEAL_PROMPT.format(said=said.replace('"', "'"), now=now_local.strftime("%a %H:%M"), known=known)
+    prompt = MEAL_PROMPT.format(said=food_said.replace('"', "'"), now=now_local.strftime("%a %H:%M"), known=known)
     try:
         result = await invoke_llm(prompt, response_json_schema=MEAL_SCHEMA, max_tokens=900, site="food_estimate")
     except Exception as err:  # the model layer already logs details
@@ -446,7 +511,7 @@ async def estimate_meal(body: dict[str, Any]) -> dict[str, Any]:
         items.append(_apply_preset(item, preset, item["servings"]) if preset else {**item, "preset_id": None, "servings": None})
     if not items:
         return {"error": "That didn't sound like food. Try again, or type it.", "_status": 422, "transcript": said}
-    when = resolve_eaten_at(result, now_local)
+    when = spoken_when or resolve_eaten_at(result, now_local)
     confidence = _num(result.get("confidence"))
     return {
         "ok": True,
