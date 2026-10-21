@@ -10,7 +10,8 @@ Settings. Label photos go to the configured vision model exactly as lab
 reports do — with a local model they never leave the machine. Voice logs are
 transcribed on this machine (``speech.py``); the words then go to the
 configured text model for a per-food estimate, preferring the exact numbers of
-any saved preset the person names.
+any saved preset the person names. What glucose did after each logged meal is
+measured read-only by ``meal_response.py``.
 """
 
 from __future__ import annotations
@@ -23,8 +24,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-from . import db, speech
+from . import db, meal_response, speech
+from .activity_position import SqliteActivityPositionRepository, resolve_intervals
 from .config import APP_TIMEZONE, OWNER_EMAIL
+from .data_contracts import DEPLOYMENT_OWNER_ID
 from .llm import invoke_llm
 from .repositories import get_repositories
 
@@ -516,6 +519,62 @@ def recent_logs() -> list[dict[str, Any]]:
     return [r for r in rows if r.get("food_name")]
 
 
+MEAL_RESPONSE_DAYS = 90
+TEMP_BASAL_MAX_HOURS = 12
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _treatments_between(start: datetime, end: datetime) -> list[dict[str, Any]]:
+    repository = get_repositories().treatments
+    output: list[dict[str, Any]] = []
+    while True:
+        page = repository.query(
+            {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": _iso(start), "$lte": _iso(end)}},
+            "timestamp", 5_000, len(output),
+        )
+        output.extend(page)
+        if len(page) < 5_000:
+            return output
+
+
+def _typed_glucose_between(start: datetime, end: datetime) -> list[dict[str, Any]]:
+    """CGM from the typed glucose_readings table, on its canonical UTC clock."""
+    connection = db.connect()
+    try:
+        rows = connection.execute(
+            "SELECT observed_at, value_mg_dl FROM glucose_readings "
+            "WHERE owner_id=? AND observed_at >= ? AND observed_at <= ? ORDER BY observed_at, entity_id",
+            (DEPLOYMENT_OWNER_ID, _iso(start), _iso(end)),
+        ).fetchall()
+    finally:
+        connection.close()
+    return [{"timestamp": row[0], "value": row[1]} for row in rows]
+
+
+def _walking_between(start: datetime, end: datetime) -> list[dict[str, Any]]:
+    """Effective walking segments, with manual intervals taking precedence as
+    on the activity page."""
+    return [
+        {"activity": row.get("activity"), **segment}
+        for row in resolve_intervals(SqliteActivityPositionRepository().list(start, end))
+        if row.get("activity") == "walking"
+        for segment in row["effective_segments"]
+    ]
+
+
+def meal_response_for_range(start: datetime, end: datetime) -> dict[str, Any]:
+    follow_end = end + timedelta(minutes=meal_response.FOLLOW_MINUTES)
+    treatments = _treatments_between(
+        start - timedelta(hours=TEMP_BASAL_MAX_HOURS, minutes=meal_response.INSULIN_BEFORE_MINUTES),
+        end + timedelta(minutes=meal_response.INSULIN_AFTER_MINUTES),
+    )
+    readings = _typed_glucose_between(start - timedelta(minutes=meal_response.PRIOR_MINUTES + 10), follow_end)
+    return meal_response.analyze(treatments, readings, _walking_between(start, follow_end), start=start, end=end)
+
+
 async def handle(body: dict[str, Any]) -> dict[str, Any]:
     action = body.get("action", "presets")
     if action == "lookup_barcode":
@@ -528,6 +587,10 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
         return log_meal(body)
     if action == "presets":
         return {"presets": list_presets(), "recent": recent_logs()}
+    if action == "meal_response":
+        days = max(7, min(int(_num(body.get("days")) or MEAL_RESPONSE_DAYS), 365))
+        end = datetime.now(timezone.utc)
+        return meal_response_for_range(end - timedelta(days=days), end)
     if action == "save_preset":
         payload = _preset_payload(body)
         if payload is None:

@@ -6,6 +6,7 @@ import { Utensils, ScanBarcode, Camera, Star, Plus, Minus, Loader2, Trash2, X, M
 import { toast } from "sonner";
 import BarcodeScanner from "./BarcodeScanner";
 import VoiceMealPanel, { itemsForLog, mealTotals } from "./VoiceMealPanel";
+import MealResponse from "./MealResponse";
 import useVoiceRecorder from "./useVoiceRecorder";
 
 function localNow() {
@@ -300,6 +301,8 @@ export default function FoodLogger({ onLogged }) {
           </ul>
         </div>
       )}
+
+      <MealResponse />
     </div>
   );
 }
