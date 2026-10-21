@@ -6,6 +6,7 @@ import base64
 import io
 import math
 import struct
+import time
 import wave
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -356,6 +357,17 @@ def test_a_bare_spoken_time_is_the_most_recent_past_one():
 ])
 def test_parse_spoken_time_leaves_other_numbers_alone(said):
     assert food.parse_spoken_time(said, LATE) == (None, said)
+
+
+@pytest.mark.parametrize("said", [" " * 20000 + "!", " ," * 10000, "1 " * 10000, "at 1 " * 5000, "1" + " " * 20000 + "g", "chips at" + " " * 20000 + "330 ."])
+def test_parse_spoken_time_stays_fast_on_long_runs(said):
+    start = time.perf_counter()
+    food.parse_spoken_time(said, LATE)
+    assert time.perf_counter() - start < 1
+
+
+def test_parse_spoken_time_tidies_the_words_left_behind():
+    assert food.parse_spoken_time("chips   at 330 ,  and   a soda .", LATE) == (_at(16, 15, 30), "chips, and a soda.")
 
 
 def test_estimate_reads_the_spoken_time_itself_and_hides_it_from_the_model(database, monkeypatch):

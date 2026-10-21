@@ -400,7 +400,7 @@ def parse_spoken_time(said: str, now_local: datetime) -> tuple[datetime | None, 
         if when is None:
             when = _most_recent_clock(*clock, now_local)
     kept.append(said[last:])
-    rest = re.sub(r"\s+([,.!?;:])", r"\1", " ".join("".join(kept).split()))
+    rest = re.sub(r" ([,.!?;:])", r"\1", " ".join("".join(kept).split()))
     return when, rest.strip(" ,;:")
 
 
