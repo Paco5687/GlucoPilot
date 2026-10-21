@@ -248,3 +248,187 @@ describe("visit report contradictions", () => {
     expect(screen.getByText(/not evaluated · no supporting or opposing evidence recorded/i)).toBeTruthy();
   });
 });
+
+describe("visit report clinical framing", () => {
+  const framed = {
+    ...report,
+    patient: { name: "Synthetic Patient", date_of_birth: "1990-02-03", age: 36, sex: "female" },
+    insurance: { available: true, member_name: "Synthetic Subscriber", carrier: "Synthetic Carrier" },
+    weight: {
+      available: true,
+      units: "imperial",
+      entries: 3,
+      latest: { date: "2026-10-15", weight_kg: 61.0 },
+      first: { date: "2026-03-01", weight_kg: 70.0 },
+      window_change: { from_date: "2026-07-20", from_kg: 64.0, change_kg: -3.0, change_pct: -4.7, days: 87 },
+      since_first_change: { from_date: "2026-03-01", from_kg: 70.0, change_kg: -9.0, change_pct: -12.9, days: 228 },
+      series: [
+        { date: "2026-03-01", weight_kg: 70.0 },
+        { date: "2026-07-20", weight_kg: 64.0 },
+        { date: "2026-10-15", weight_kg: 61.0 },
+      ],
+    },
+    glucose: { ...report.glucose, tir: 72, tbr70: 10.3, tbr54: 3.1, tar180: 17.7, tar250: 4 },
+    insulin: {
+      available: true,
+      quality: {},
+      nutrition_quality: {},
+      pump_reported_avg_tdd: 37.9,
+      pump_reported_days: 80,
+      pump_reported_sources: { glooko: 80 },
+      avg_tdd_est: 37.9,
+      avg_daily_bolus: 0.1,
+      boluses_per_day: 0.1,
+      bolus_source: "Glooko bolus event stream",
+      bolus_stream_incomplete: true,
+      temp_basal_corrections: {
+        count: 40, extra_units_total: 120.4, extra_units_per_day: 1.3, per_day: 0.4,
+        source: "Glooko temporary basal (manual mode)",
+      },
+      scheduled_avg_daily_basal: 16.0,
+      avg_daily_carbs: 4,
+      carbs_representative: false,
+      carb_logged_days: 9,
+      carb_expected_days: 90,
+    },
+    labs: {
+      available: true,
+      flagged: [],
+      key_results: [{
+        test_name: "Hemoglobin A1c", value: 6.8, unit: "%", reference_high: 5.6, reference_low: null,
+        flag: "high", date: "2026-04-02", collected_date: "04/02/2026", verification: { qualified: true, verification_status: "unverified" },
+      }],
+      categories: {
+        Chemistry: [{
+          test_name: "Hemoglobin A1c", reported_names: ["HbA1c"], value: 6.8, unit: "%", flag: "high",
+          date: "2026-04-02", collected_date: "04/02/2026", trend: "down", verification: {},
+        }],
+      },
+      duplicates_removed: 3,
+      undated_results: 1,
+      verification: {},
+    },
+    narrative: null,
+    narrative_status: {
+      available: false,
+      reason: "The written summary is unavailable: the language model request failed.",
+      note: "Every figure in this report is computed directly from the data and is unaffected.",
+    },
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => framed }));
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("heads the report with the patient's name and date of birth", async () => {
+    render(<Report />);
+
+    expect(await screen.findByText("Synthetic Patient")).toBeTruthy();
+    expect(screen.getByText(/DOB 1990-02-03 · 36 y · Female/)).toBeTruthy();
+  });
+
+  it("shows the weight trend with change over the window and since the first entry", async () => {
+    render(<Report />);
+
+    expect(await screen.findByText("Weight")).toBeTruthy();
+    expect(screen.getByText("134.5 lb")).toBeTruthy();
+    expect(screen.getByText("−6.6 lb (−4.7%)")).toBeTruthy();
+    expect(screen.getByText("−19.8 lb (−12.9%)")).toBeTruthy();
+    expect(screen.getByText(/since 2026-03-01 · 228 days/)).toBeTruthy();
+    expect(screen.getByText(/Weight loss of 5% or more of body weight is recorded/)).toBeTruthy();
+  });
+
+  it("gives hypoglycemia its own tiles flagged against consensus targets", async () => {
+    render(<Report />);
+
+    const below70 = (await screen.findByText("Time below 70 mg/dL")).parentElement;
+    expect(below70.textContent).toContain("10.3%");
+    expect(below70.textContent).toContain("target <4% · above target");
+    expect(below70.querySelector(".text-red-600")).toBeTruthy();
+    const below54 = screen.getByText("Time below 54 mg/dL").parentElement;
+    expect(below54.textContent).toContain("3.1%");
+    expect(below54.textContent).toContain("target <1% · above target");
+    expect(screen.getByText(/Time below range exceeds the consensus target/)).toBeTruthy();
+  });
+
+  it("marks hypoglycemia within target when it is", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(/** @type {Response} */ ({
+      ok: true,
+      json: async () => ({ ...framed, glucose: { ...framed.glucose, tbr70: 2.0, tbr54: 0.4 } }),
+    }));
+    render(<Report />);
+
+    const below70 = (await screen.findByText("Time below 70 mg/dL")).parentElement;
+    expect(below70.textContent).toContain("within target");
+    expect(below70.querySelector(".text-green-600")).toBeTruthy();
+    expect(screen.queryByText(/Time below range exceeds the consensus target/)).toBeNull();
+  });
+
+  it("says when the narrative is unavailable instead of silently omitting it", async () => {
+    render(<Report />);
+
+    expect(await screen.findByText("Narrative unavailable")).toBeTruthy();
+    expect(screen.getByText(/language model request failed/)).toBeTruthy();
+    expect(screen.queryByText("Quarter in review")).toBeNull();
+  });
+
+  it("puts key lab results with flags above the full tables", async () => {
+    render(<Report />);
+
+    const panel = (await screen.findByText(/Key results · most recent value/)).parentElement;
+    expect(panel.textContent).toContain("Hemoglobin A1c");
+    expect(panel.textContent).toContain("6.8");
+    expect(panel.textContent).toContain("high");
+    expect(panel.textContent).toContain("2026-04-02");
+    expect(screen.getByText(/also reported as HbA1c/)).toBeTruthy();
+    expect(screen.getByText(/3 duplicate results \(same test, date, and value\) merged/)).toBeTruthy();
+  });
+
+  it("labels insulin sources and omits tiles that would read as non-adherence", async () => {
+    render(<Report />);
+
+    expect(await screen.findByText("Insulin & carbs")).toBeTruthy();
+    expect(screen.queryByText("Bolus insulin")).toBeNull();
+    expect(screen.queryByText("Carbs logged")).toBeNull();
+    const corrections = screen.getByText("Temp-basal corrections").parentElement;
+    expect(corrections.textContent).toContain("1.3");
+    expect(corrections.textContent).toContain("above programmed rate");
+    expect(screen.getByText("Programmed basal schedule")).toBeTruthy();
+    expect(screen.getByText(/Bolus\/basal split not available/).textContent).toContain("not a record of missed doses");
+    expect(screen.getByText(/Carbs were logged on 9 of 90 days/)).toBeTruthy();
+  });
+
+  it("still shows bolus and carb tiles when those streams are complete", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(/** @type {Response} */ ({
+      ok: true,
+      json: async () => ({
+        ...framed,
+        insulin: {
+          ...framed.insulin,
+          avg_daily_bolus: 18.2,
+          bolus_stream_incomplete: false,
+          carbs_representative: true,
+          avg_daily_carbs: 150,
+        },
+      }),
+    }));
+    render(<Report />);
+
+    const bolus = (await screen.findByText("Bolus insulin")).parentElement;
+    expect(bolus.textContent).toContain("18.2");
+    expect(bolus.textContent).toContain("Glooko bolus event stream");
+    expect(screen.getByText("Carbs logged")).toBeTruthy();
+    expect(screen.queryByText(/Bolus\/basal split not available/)).toBeNull();
+  });
+});
