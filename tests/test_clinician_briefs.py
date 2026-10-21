@@ -3,7 +3,7 @@
 import base64
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -114,7 +114,9 @@ def test_hematology_omits_irrelevant_phi_and_keeps_source_links(synthetic_source
     assert "GlucoseReading" not in appendix_types
     assert "InsuranceInfo" not in appendix_types
     assert not any(item["entity_id"] == "unrelated" for item in brief["appendix"])
-    lab = next(item for item in brief["sections"]["labs_imaging"] if item["entity_type"] == "LabResult")
+    lab = next(item for item in brief["sections"]["labs"] if item["entity_type"] == "LabResult")
+    # Labs are listed once; there is no second copy alongside documents.
+    assert "labs_imaging" not in brief["sections"]
     assert lab["source_links"][0]["href"].startswith("/api/evidence/source/")
     assert brief["privacy"]["policy"] == "specialty_minimum_necessary/1.1.0"
     assert brief["privacy"]["always_omitted_entity_types"] == ["InsuranceInfo"]
@@ -303,24 +305,161 @@ def test_core_records_are_always_included_alongside_raw_row_volume(patient):
 def test_concerns_route_abnormal_labs_weight_loss_lows_and_reported_symptoms(patient):
     ids, end = patient
     concerns = clinician_briefs.build_brief("clinician", 90, end=end)["sections"]["concerns"]
-    by_kind = {}
-    for concern in concerns:
-        by_kind.setdefault(concern["concern"]["kind"], []).append(concern)
 
-    assert set(by_kind) == {"abnormal_lab", "weight_loss", "hypoglycemia", "reported_symptoms"}
-    assert sorted(_labels(by_kind["abnormal_lab"])) == ["Hemoglobin A1c", "TSH"]
-    tsh = next(item for item in by_kind["abnormal_lab"] if item["display"]["label"] == "TSH")
-    assert "TSH 6.2 mIU/L — High, reference 0.4–4.5" in tsh["concern"]["reason"]
-    weight = by_kind["weight_loss"][0]
+    # Ranked: weight loss, hypoglycemia and reported symptoms lead; abnormal
+    # labs follow as one grouped concern.
+    assert [concern["concern"]["kind"] for concern in concerns] == [
+        "weight_loss", "hypoglycemia", "reported_symptoms", "abnormal_labs",
+    ]
+    by_kind = {concern["concern"]["kind"]: concern for concern in concerns}
+    labs = by_kind["abnormal_labs"]
+    assert labs["display"]["label"] == "Abnormal lab results"
+    assert labs["display"]["value"] == "2 abnormal results"
+    assert sorted(result["label"] for result in labs["data"]["results"]) == ["Hemoglobin A1c", "TSH"]
+    assert "TSH 6.2 mIU/L (High, ref 0.4–4.5" in labs["concern"]["reason"]
+    assert labs["source_links"]
+    weight = by_kind["weight_loss"]
     assert weight["data"]["loss_from_peak_kg"] == 18.6
     assert "18.6 kg (41 lb)" in weight["concern"]["reason"]
-    lows = by_kind["hypoglycemia"][0]
+    lows = by_kind["hypoglycemia"]
     assert lows["data"]["tbr70_pct"] > clinician_briefs.TBR70_TARGET_PCT
     assert lows["data"]["episodes"] == 10
     assert "below 54" in lows["concern"]["reason"]
-    symptoms = by_kind["reported_symptoms"][0]
+    symptoms = by_kind["reported_symptoms"]
     assert symptoms["entity_id"] == ids["symptoms"]
     assert "palpitations" in symptoms["concern"]["reason"]
+
+
+def _add_labs(end, rows):
+    from server import db
+    from server.evidence_bundle import clear_bundle_cache
+
+    day = (end.date() - timedelta(days=5)).isoformat()
+    db.bulk_create_entities("LabResult", [
+        {"owner_email": "owner@glucopilot.local", "collected_date": day, "category": "Chemistry",
+         "verification_status": "approved", **row}
+        for row in rows
+    ])
+    clear_bundle_cache()
+
+
+def test_lab_concerns_trust_the_reference_range_over_a_contradicting_stored_flag(patient):
+    _, end = patient
+    _add_labs(end, [
+        # Stored "high", but inside the range: not a concern.
+        {"test_name": "Urine albumin/creatinine ratio", "value": 9, "unit": "mg/g", "reference_range": "<30", "flag": "high"},
+        {"test_name": "Total cholesterol", "value": 183, "unit": "mg/dL", "reference_high": 200, "flag": "high"},
+        # Stored "normal", but outside the range: a concern.
+        {"test_name": "eGFR", "value": 45, "unit": "mL/min/1.73m2", "reference_range": "≥ 60", "flag": "normal"},
+        # No range to check against: the stored flag stands.
+        {"test_name": "Synthetic qualitative screen", "value": 1, "unit": "", "flag": "abnormal"},
+    ])
+
+    brief = clinician_briefs.build_brief("primary_care", 90, end=end)
+
+    group = next(item for item in brief["sections"]["concerns"] if item["concern"]["kind"] == "abnormal_labs")
+    labels = {result["label"] for result in group["data"]["results"]}
+    assert "Urine albumin/creatinine ratio" not in labels
+    assert "Total cholesterol" not in labels
+    assert {"eGFR", "Synthetic qualitative screen", "TSH", "Hemoglobin A1c"} <= labels
+    assert "Urine albumin" not in group["concern"]["reason"]
+
+    labs = {item["display"]["label"]: item["display"] for item in brief["sections"]["labs"]}
+    assert labs["Urine albumin/creatinine ratio"]["flag"] == "Normal"
+    assert "Source flagged High" in labs["Urine albumin/creatinine ratio"]["flag_note"]
+    assert labs["Total cholesterol"]["flag"] == "Normal"
+    assert labs["eGFR"]["flag"] == "Low"
+    assert labs["Synthetic qualitative screen"]["flag"] == "Abnormal"
+    # A contradicted source label is neither reassuring nor opposing evidence.
+    stance_labels = [
+        entry["display"]["label"]
+        for entry in [*brief["sections"]["reassuring_evidence"], *brief["sections"]["opposing_evidence"]]
+    ]
+    assert "Urine albumin/creatinine ratio" not in stance_labels
+    assert "source_flag_contradicted" in {item["code"] for item in brief["sections"]["limitations"]}
+
+
+def test_lab_rows_are_listed_once_across_synonyms_and_duplicate_extractions(patient):
+    _, end = patient
+    _add_labs(end, [
+        {"test_name": "Ferritin", "value": 8, "unit": "ng/mL", "reference_low": 15, "reference_high": 150},
+        {"test_name": "Ferritin", "value": 8, "unit": "ng/mL", "reference_low": 15, "reference_high": 150},
+        {"test_name": "Ferritin, serum", "value": 8, "unit": "ng/mL", "reference_low": 15, "reference_high": 150},
+        {"test_name": "HbA1c", "value": 6.6, "unit": "%", "reference_low": 4.0, "reference_high": 5.6, "flag": "high"},
+    ])
+
+    brief = clinician_briefs.build_brief("primary_care", 90, end=end)
+
+    labels = _labels(brief["sections"]["labs"])
+    assert labels.count("Ferritin") == 1 and "Ferritin, serum" not in labels
+    assert labels.count("Hemoglobin A1c") == 1 and "HbA1c" not in labels
+    ferritin = next(item for item in brief["sections"]["labs"] if item["display"]["label"] == "Ferritin")
+    assert ferritin["data"]["result_count"] == 1
+    assert len(set(_labels(brief["sections"]["labs"]))) == len(brief["sections"]["labs"])
+    group = next(item for item in brief["sections"]["concerns"] if item["concern"]["kind"] == "abnormal_labs")
+    assert [result["label"] for result in group["data"]["results"]].count("Ferritin") == 1
+
+
+def test_symptom_concerns_are_capped_and_the_rest_noted(patient):
+    from server import db
+    from server.evidence_bundle import clear_bundle_cache
+
+    _, end = patient
+    for offset in range(8):
+        db.create_entity("SymptomLog", {
+            "owner_email": "owner@glucopilot.local", "title": f"Synthetic symptom {offset}",
+            "severity": "severe", "entry_date": (end.date() - timedelta(days=offset + 1)).isoformat(),
+        })
+    clear_bundle_cache()
+
+    brief = clinician_briefs.build_brief("clinician", 90, end=end)
+
+    kinds = [item["concern"]["kind"] for item in brief["sections"]["concerns"]]
+    assert kinds.count("reported_symptoms") == clinician_briefs.MAX_SYMPTOM_CONCERNS
+    assert kinds[-1] == "abnormal_labs"
+    symptom_labels = [item["display"]["label"] for item in brief["sections"]["concerns"] if item["concern"]["kind"] == "reported_symptoms"]
+    assert symptom_labels[0] == "Synthetic symptom 0"  # newest first
+    assert "symptom_concerns_capped" in {item["code"] for item in brief["sections"]["limitations"]}
+
+
+def test_reassuring_opposing_and_limitation_entries_carry_display_blocks(patient):
+    _, end = patient
+    brief = clinician_briefs.build_brief("clinician", 90, end=end)
+    sections = brief["sections"]
+
+    assert sections["reassuring_evidence"] and sections["limitations"]
+    for entry in [*sections["reassuring_evidence"], *sections["opposing_evidence"], *sections["limitations"]]:
+        assert entry["display"]["label"], entry
+        assert entry["display"]["value"] or entry["display"]["detail"], entry
+    reassuring = sections["reassuring_evidence"][0]
+    assert reassuring["display"]["value"] == reassuring["evidence"]["display"]["value"]
+    assert reassuring["display"]["detail"] == reassuring["reason"]
+    limitation = sections["limitations"][0]
+    assert limitation["display"]["detail"] == limitation["message"]
+
+
+def test_opposing_contradiction_entry_is_labelled_with_both_sides(synthetic_sources, monkeypatch):
+    original = clinician_briefs.build_bundle
+
+    def with_contradiction(query):
+        bundle = original(query)
+        bundle["contradictions"] = [{
+            "id": "contradiction-synthetic", "severity": "blocking", "domain": "insulin",
+            "explanation": "Synthetic totals disagree.",
+        }]
+        bundle["evidence"]["opposing_evidence"] = [{
+            "contradiction_id": "contradiction-synthetic", "reason": "Synthetic totals disagree.",
+            "left": {"source": "pump", "total_units": 31.5}, "right": {"source": "calculated", "total_units": 12},
+        }]
+        return bundle
+
+    monkeypatch.setattr(clinician_briefs, "build_bundle", with_contradiction)
+    brief = clinician_briefs.build_brief("hematology", 90)
+
+    entry = brief["sections"]["opposing_evidence"][0]
+    assert entry["display"]["label"] == "Unresolved blocking contradiction"
+    assert entry["display"]["value"] == "source pump, total units 31.5 vs source calculated, total units 12"
+    assert entry["display"]["detail"] == "Synthetic totals disagree."
 
 
 def test_every_item_prints_a_readable_label_and_its_values(patient):

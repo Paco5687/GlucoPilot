@@ -65,7 +65,6 @@ const brief = {
     objective_patterns: [],
     glucose_insulin: [],
     management_burden: [],
-    labs_imaging: [evidence],
     hypotheses: [{
       id: "hypothesis-synthetic",
       title: "Possible synthetic iron issue",
@@ -75,10 +74,22 @@ const brief = {
       status_label: "Unconfirmed",
       definitive_allowed: false,
     }],
-    reassuring_evidence: [{ evidence, reason: "Synthetic reassurance." }],
-    opposing_evidence: [],
+    reassuring_evidence: [{
+      id: evidence.id,
+      evidence,
+      reason: "Synthetic reassurance.",
+      display: { label: "Synthetic ferritin", value: "6.2", unit: "ng/mL", flag: "Low", date: "2026-07-01", detail: "Synthetic reassurance." },
+    }],
+    opposing_evidence: [{
+      id: "contradiction-synthetic",
+      reason: "Synthetic totals disagree.",
+      display: { label: "Unresolved blocking contradiction", value: "source pump, total units 31.5 vs source calculated, total units 12", detail: "Synthetic totals disagree." },
+    }],
     contradictions: [],
-    limitations: [{ code: "missing", message: "Synthetic source is incomplete." }],
+    limitations: [
+      { code: "missing", message: "Synthetic source is incomplete.", display: { label: "Labs", status: "missing", detail: "Synthetic source is incomplete." } },
+      { code: "legacy", message: "Synthetic limitation without a display block." },
+    ],
     questions: ["Which results need follow-up?"],
   },
   appendix: [evidence],
@@ -133,6 +144,51 @@ describe("ClinicianBrief", () => {
     expect(row.textContent).toContain("2026-07-01");
     expect(screen.queryByText("Recorded observation.")).toBeNull();
     expect(screen.queryByText("LabResult")).toBeNull();
+  });
+
+  it("labels reassuring, opposing and limitation entries with their values and reasons", async () => {
+    render(<ClinicianBrief />);
+    const section = (await screen.findByRole("heading", { name: "Reassuring & opposing evidence" })).closest("section");
+
+    expect(within(section).getByText("Synthetic ferritin")).toBeTruthy();
+    expect(within(section).getByText("Synthetic reassurance.")).toBeTruthy();
+    expect(within(section).getByText("Unresolved blocking contradiction")).toBeTruthy();
+    expect(within(section).getByText(/source pump, total units 31\.5 vs source calculated/)).toBeTruthy();
+    expect(within(section).getByText("Synthetic totals disagree.")).toBeTruthy();
+    const limits = screen.getByRole("heading", { name: "Contradictions & limitations" }).closest("section");
+    expect(within(limits).getByText("Labs")).toBeTruthy();
+    expect(within(limits).getByText("Synthetic source is incomplete.")).toBeTruthy();
+    expect(within(limits).getByText("Synthetic limitation without a display block.")).toBeTruthy();
+  });
+
+  it("shows grouped abnormal labs and a range-corrected flag note", async () => {
+    const corrected = {
+      ...evidence,
+      id: "entity:LabResult:acr",
+      display: {
+        ...evidence.display, label: "Urine albumin/creatinine ratio", value: "9", unit: "mg/g", reference: "<30", flag: "Normal",
+        flag_note: "Source flagged High; shown as Normal from the value and its reference range.",
+      },
+    };
+    const group = {
+      id: "derived:LabResultGroup:synthetic",
+      entity_type: "LabResultGroup",
+      display: { label: "Abnormal lab results", value: "2 abnormal results", date: "2026-07-01" },
+      data: { count: 2 },
+      source_links: [],
+      concern: { kind: "abnormal_labs", reason: "Synthetic ferritin 6.2 ng/mL (Low, ref 15–150, 2026-07-01)." },
+    };
+    fetch.mockImplementation(async (url) => (String(url) === "/api/clinical-reviews"
+      ? { ok: true, json: async () => ({ reviews: [] }) }
+      : { ok: true, json: async () => ({ ...brief, sections: { ...brief.sections, concerns: [group], labs: [evidence, corrected] } }) }));
+    render(<ClinicianBrief />);
+
+    expect(await screen.findByText("Abnormal labs")).toBeTruthy();
+    expect(screen.getByText("Abnormal lab results")).toBeTruthy();
+    expect(screen.getByText("2 abnormal results")).toBeTruthy();
+    const labs = screen.getByRole("heading", { name: /^Labs/ }).closest("section");
+    const row = within(labs).getByRole("row", { name: /Urine albumin/ });
+    expect(row.textContent).toContain("Source flagged High");
   });
 
   it("regenerates only when specialty or range meaningfully changes", async () => {

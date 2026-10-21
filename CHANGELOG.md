@@ -13,6 +13,20 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Insulin and Connections pages and in the Visit Report, each with the
   snapshot's as-of date and age; the Companion can answer from the latest one.
 
+### Fixed
+- **Visit Report weight** — the headline is change from the 12-month high to
+  the latest weight. Change since the first entry is shown as secondary context.
+- **Visit Report narrative** — the prompt is capped at 8,000 tokens (less when
+  the model's window is smaller), shedding evidence, contradictions and lab
+  detail in steps until it fits.
+- **Lab flags** — when a result has a numeric value and reference range, the
+  range decides high/low/normal; a stored flag the range contradicts is noted
+  and not used.
+- **Clinician Brief** — concerns are ranked (weight loss, hypoglycemia,
+  reported symptoms, then one grouped abnormal-labs entry); each lab test is
+  listed once; reassuring, opposing and limitation entries show their label,
+  value and reason.
+
 ## [0.1.2] — 2026-07-21
 
 ### Added

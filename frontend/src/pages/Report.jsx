@@ -339,7 +339,9 @@ function WeightBlock({ weight }) {
     date: point.date,
     value: units === "metric" ? point.weight_kg : Math.round(point.weight_kg * LB_PER_KG * 10) / 10,
   }));
-  const significantLoss = [weight.window_change, weight.since_first_change].some(
+  // The 12-month high is the headline reference; the first entry can be a
+  // years-old baseline and only appears as secondary context.
+  const significantLoss = [weight.peak_change, weight.window_change].some(
     (change) => change && change.change_pct <= -SIGNIFICANT_WEIGHT_LOSS_PCT,
   );
   return (
@@ -348,18 +350,28 @@ function WeightBlock({ weight }) {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Metric label="Latest weight" value={formatWeight(weight.latest?.weight_kg, units)} sub={weight.latest?.date} />
         <Metric
+          label="Change from 12-month high"
+          value={formatWeightChange(weight.peak_change, units)}
+          sub={
+            weight.peak_change
+              ? `from ${formatWeight(weight.peak_change.from_kg, units)} on ${weight.peak_change.from_date} · ${weight.peak_change.days} days`
+              : "latest is the 12-month high"
+          }
+          tone={weightTone(weight.peak_change)}
+        />
+        <Metric
           label="Change over report window"
           value={formatWeightChange(weight.window_change, units)}
           sub={weight.window_change ? `since ${weight.window_change.from_date}` : "no earlier entry"}
           tone={weightTone(weight.window_change)}
         />
-        <Metric
-          label="Change since first entry"
-          value={formatWeightChange(weight.since_first_change, units)}
-          sub={weight.since_first_change ? `since ${weight.since_first_change.from_date} · ${weight.since_first_change.days} days` : "one entry"}
-          tone={weightTone(weight.since_first_change)}
-        />
       </div>
+      {weight.since_first_change && (
+        <p className="text-xs text-muted-foreground">
+          First logged weight: {formatWeight(weight.first?.weight_kg, units)} on {weight.since_first_change.from_date}{" "}
+          ({formatWeightChange(weight.since_first_change, units)} to latest).
+        </p>
+      )}
       {significantLoss && (
         <p className="text-xs font-medium text-red-700">
           Weight loss of {SIGNIFICANT_WEIGHT_LOSS_PCT}% or more of body weight is recorded.

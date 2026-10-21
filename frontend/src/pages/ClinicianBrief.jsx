@@ -26,6 +26,7 @@ async function generate(mode, days) {
 
 const CONCERN_LABELS = {
   abnormal_lab: "Abnormal lab",
+  abnormal_labs: "Abnormal labs",
   weight_loss: "Weight loss",
   hypoglycemia: "Hypoglycemia",
   reported_symptoms: "Reported symptoms",
@@ -161,7 +162,10 @@ function LabTable({ items = [], onReview = null }) {
                 </td>
                 <td className={`py-1 pr-2 ${isAbnormal(display.flag) ? "font-semibold text-red-800" : ""}`}>{display.value}{display.unit ? ` ${display.unit}` : ""}</td>
                 <td className="py-1 pr-2 text-muted-foreground">{display.reference || "—"}</td>
-                <td className="py-1 pr-2"><Flag flag={display.flag} /></td>
+                <td className="py-1 pr-2">
+                  <Flag flag={display.flag} />
+                  {display.flag_note && <span className="block text-[10px] text-muted-foreground">{display.flag_note}</span>}
+                </td>
                 <td className="py-1 pr-2 whitespace-nowrap">{display.date || "—"}</td>
                 <td className="py-1 print:hidden">
                   <SourceLinks links={item.source_links} />
@@ -173,6 +177,30 @@ function LabTable({ items = [], onReview = null }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+function DisplayList({ entries = [], empty }) {
+  if (!entries.length) return <p className="text-xs text-muted-foreground">{empty}</p>;
+  return (
+    <ul className="divide-y divide-border text-xs">
+      {entries.map((entry, index) => {
+        const display = entry.display || {};
+        const label = display.label || entry.evidence?.display?.label || entry.code || "Entry";
+        const detail = display.detail || entry.reason || entry.message;
+        return (
+          <li key={`${entry.id || entry.code || "entry"}-${index}`} className="py-1">
+            <span className="flex flex-wrap items-center gap-2">
+              <b>{label}</b>
+              {display.value && <span>{display.value}{display.unit ? ` ${display.unit}` : ""}</span>}
+              <Flag flag={display.flag} />
+              {display.date && <span className="text-muted-foreground">{display.date}</span>}
+            </span>
+            {detail && <span className="block text-muted-foreground">{detail}</span>}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -391,20 +419,13 @@ export default function ClinicianBrief() {
           </Section>
           <Section title="Reassuring & opposing evidence">
             <p className="text-xs font-medium">Reassuring</p>
-            {(sections.reassuring_evidence || []).length === 0 ? <p className="text-xs text-muted-foreground">No selected reassuring evidence.</p> : (
-              <p className="text-xs">
-                {sections.reassuring_evidence.length} result(s) labelled normal by their source
-                {sections.reassuring_evidence.length <= 8 && `: ${sections.reassuring_evidence.filter((entry) => entry.evidence).map((entry) => entry.evidence.display?.label || entry.evidence.title).join(", ")}`}.
-              </p>
-            )}
+            <DisplayList entries={sections.reassuring_evidence} empty="No selected reassuring evidence." />
             <p className="text-xs font-medium pt-2">Opposing / contradictory</p>
-            {(sections.opposing_evidence || []).length === 0 ? <p className="text-xs text-muted-foreground">No selected opposing evidence.</p> : (
-              <p className="text-xs">{sections.opposing_evidence.length} opposing or contradiction entries retained.</p>
-            )}
+            <DisplayList entries={sections.opposing_evidence} empty="No selected opposing evidence." />
           </Section>
           <Section title="Contradictions & limitations">
             {(sections.contradictions || []).map((item) => <p key={item.id} className="text-xs"><b className="capitalize">{item.severity}</b> — {item.explanation}</p>)}
-            {(sections.limitations || []).map((item, index) => <p key={`${item.code}-${index}`} className="text-xs text-muted-foreground">{item.message}</p>)}
+            <DisplayList entries={sections.limitations} empty="No limitations recorded." />
           </Section>
           <Section title="Questions for the visit">
             <ul className="list-disc pl-5 text-sm space-y-1">{sections.questions.map((question) => <li key={question}>{question}</li>)}</ul>

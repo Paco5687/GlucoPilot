@@ -230,11 +230,13 @@ def test_clinician_export_minimizes_nested_sections_and_internal_ids(
                 "opposing_evidence": [{
                     "evidence_item_id": "private-evidence-id",
                     "reason": "Synthetic opposing reason.",
+                    "display": {"label": "Synthetic result", "value": "6.2", "detail": "Synthetic opposing reason."},
                 }],
                 "limitations": [{
                     "code": "synthetic",
                     "message": "Synthetic limitation.",
                     "evidence_item_id": "private-evidence-id",
+                    "display": {"label": "Labs", "detail": "Synthetic limitation."},
                 }],
                 "contradictions": [{
                     "id": "private-contradiction-id",
@@ -262,6 +264,9 @@ def test_clinician_export_minimizes_nested_sections_and_internal_ids(
     assert content["sections"]["reassuring_evidence"][0]["evidence"]["title"] == (
         "Synthetic result"
     )
+    # Stance entries and limitations keep their readable display blocks.
+    assert content["sections"]["opposing_evidence"][0]["display"]["label"] == "Synthetic result"
+    assert content["sections"]["limitations"][0]["display"] == {"label": "Labs", "detail": "Synthetic limitation."}
     assert content["evidence_bundle_version"] == "synthetic-bundle/1"
     for private in (
         "private-evidence-id",

@@ -36,8 +36,10 @@ from .evidence_bundle import (
 from .hypotheses import report_block as hypothesis_report
 from .insulin_reconciliation import reconcile_treatments
 from .insulin_response import build_response_events
+from .lab_audit import effective_flag
 from .lab_audit import summary_eligible as lab_summary_eligible
 from .repositories import get_repositories
+from .report import canonical_lab_name
 
 
 router = APIRouter(dependencies=[Depends(require_login)])
@@ -198,6 +200,10 @@ SPO2_PLAUSIBLE = (70.0, 100.0)
 TBR70_TARGET_PCT = 4.0
 TBR54_TARGET_PCT = 1.0
 WEIGHT_LOSS_CONCERN_PCT = 5.0
+# Concerns stay a short, ranked list: weight loss, hypoglycemia and reported
+# symptoms lead; abnormal labs follow as one grouped entry.
+MAX_SYMPTOM_CONCERNS = 5
+LAB_CONCERN_LISTED = 8
 KG_PER_LB = 0.45359237
 
 
@@ -329,7 +335,12 @@ def _reference(data: dict[str, Any]) -> str | None:
 
 
 def _lab_flag(data: dict[str, Any]) -> str:
-    return str(data.get("normalized_flag") or data.get("flag") or "").strip().lower().replace(" ", "_")
+    """The flag the value and its reference range support (see effective_flag)."""
+    return effective_flag(data)[0]
+
+
+def _flag_label(flag: str) -> str:
+    return _FLAG_LABELS.get(flag, flag.replace("_", " ").title())
 
 
 def _display(item: dict[str, Any]) -> dict[str, Any]:
@@ -341,15 +352,19 @@ def _display(item: dict[str, Any]) -> dict[str, Any]:
         "reference": None, "flag": None, "status": None, "detail": None,
     }
     if entity_type == "LabResult":
-        flag = _lab_flag(data)
+        flag, replaced = effective_flag(data)
         display.update({
-            "label": data.get("test_name") or "Lab result",
+            "label": canonical_lab_name(data["test_name"]) if data.get("test_name") else "Lab result",
             "value": _fmt(data.get("value"), 2) or str(data.get("value_text") or ""),
             "unit": data.get("unit") or None,
             "reference": _reference(data),
-            "flag": _FLAG_LABELS.get(flag, flag.replace("_", " ").title()) if flag else None,
+            "flag": _flag_label(flag) if flag else None,
             "detail": data.get("category") or None,
         })
+        if replaced:
+            display["flag_note"] = (
+                f"Source flagged {_flag_label(replaced)}; shown as {_flag_label(flag)} from the value and its reference range."
+            )
         confidence = item.get("confidence") or {}
         if confidence.get("clinically_verified") is False:
             display["status"] = "Unverified extraction"
@@ -392,10 +407,10 @@ def _display(item: dict[str, Any]) -> dict[str, Any]:
         })
     elif entity_type == "SymptomLog":
         display.update({
-            "label": data.get("symptom") or "Reported symptom",
+            "label": data.get("symptom") or data.get("title") or "Reported symptom",
             "flag": (str(data.get("severity")).title() if data.get("severity") else None),
             "date": _day(data.get("entry_date")),
-            "detail": data.get("notes") or None,
+            "detail": data.get("notes") or data.get("description") or None,
         })
     elif entity_type == "MedicalRecord":
         doc_type = str(data.get("doc_type") or "")
@@ -1036,14 +1051,24 @@ def _labs(items: list[dict[str, Any]], start: datetime, excluded_records: set[st
             continue
         if not lab_summary_eligible(data) or not _specialty_relevant(item, config):
             continue
-        key = " ".join(str(data["test_name"]).lower().split())
+        # Synonyms ("HbA1c", "Hemoglobin A1c") are one test, listed once.
+        key = canonical_lab_name(data["test_name"]).lower()
         by_test.setdefault(key, []).append(item)
     latest, abnormal = [], []
     window_start = start.date().isoformat()
     for results in by_test.values():
         results.sort(key=lambda entry: (str((entry.get("data") or {}).get("collected_date") or ""), entry["id"]))
         newest = results[-1]
-        newest = {**newest, "data": {**(newest.get("data") or {}), "result_count": len(results)}}
+        # The same draw extracted from two documents counts once.
+        draws = {
+            (
+                str((entry.get("data") or {}).get("collected_date") or ""),
+                str((entry.get("data") or {}).get("value")),
+                str((entry.get("data") or {}).get("unit") or "").lower(),
+            )
+            for entry in results
+        }
+        newest = {**newest, "data": {**(newest.get("data") or {}), "result_count": len(draws)}}
         latest.append(newest)
         if _lab_flag(newest["data"]) in _ABNORMAL_FLAGS:
             abnormal.append(newest)
@@ -1063,8 +1088,73 @@ def _labs(items: list[dict[str, Any]], start: datetime, excluded_records: set[st
     return latest, abnormal
 
 
+_DOMAIN_LABELS = {
+    "labs": "Labs", "glucose": "Glucose", "insulin": "Insulin", "clinical": "Clinical record",
+    "wearables": "Wearables", "analytics": "Analytics", "records": "Documents", "cycle": "Cycle",
+    "all": "All sources",
+}
+
+
+def _side(value: Any) -> str:
+    """One side of a contradiction in a few readable words."""
+    if isinstance(value, dict):
+        parts = [
+            f"{str(key).replace('_', ' ')} {_fmt(item, 2) if isinstance(item, (int, float)) else item}"
+            for key, item in value.items()
+            if isinstance(item, (str, int, float)) and not isinstance(item, bool)
+            and not str(key).endswith("id") and len(str(item)) <= 60
+        ]
+        return ", ".join(parts[:4])
+    return "" if value is None else str(value)[:120]
+
+
 def _concern(item: dict[str, Any], kind: str, reason: str) -> dict[str, Any]:
     return {**item, "concern": {"kind": kind, "reason": reason}}
+
+
+_FLAG_RANK = {"critical_high": 0, "critical_low": 0, "critical": 0, "hh": 0, "ll": 0}
+
+
+def _lab_line(entry: dict[str, Any]) -> str:
+    display = entry["display"]
+    reference = f", ref {display['reference']}" if display["reference"] else ""
+    return (
+        f"{display['label']} {display['value']} {display['unit'] or ''}".strip()
+        + f" ({display['flag'] or 'flagged'}{reference}, {display['date'] or 'undated'})"
+    )
+
+
+def _lab_group(entries: list[dict[str, Any]], window_start: str) -> tuple[dict[str, Any], str]:
+    """Every abnormal lab as one concern item and its reason: critical results
+    first, then the most recent. The full table stays in the Labs section."""
+    # Most recent first, undated last; then critical results ahead (stable sort).
+    entries = sorted(entries, key=lambda entry: entry["display"]["date"] or "", reverse=True)
+    entries.sort(key=lambda entry: _FLAG_RANK.get(_lab_flag(entry.get("data") or {}), 1))
+    listed = entries[:LAB_CONCERN_LISTED]
+    more = len(entries) - len(listed)
+    reason = "; ".join(_lab_line(entry) for entry in listed) + "."
+    if more:
+        reason += f" {more} more in the Labs section."
+    links = []
+    for entry in listed:
+        for link in entry.get("source_links") or []:
+            if link not in links:
+                links.append(link)
+    count = len(entries)
+    item = _summary_item("LabResultGroup", "labs", {
+        "count": count,
+        "results": [
+            {"evidence_item_id": entry["id"], **{key: entry["display"][key] for key in ("label", "value", "unit", "flag", "reference", "date")}}
+            for entry in entries
+        ],
+        "window_start": window_start,
+    }, {
+        "label": "Abnormal lab results",
+        "value": f"{count} abnormal result{'s' if count != 1 else ''}",
+        "date": max((entry["display"]["date"] for entry in entries if entry["display"]["date"]), default=None),
+        "detail": None,
+    }, source_links=links)
+    return item, reason
 
 
 def build_brief(
@@ -1221,16 +1311,10 @@ def build_brief(
     def listing(items: list[dict[str, Any] | None]) -> list[dict[str, Any]]:
         return [public(item) for item in items if item]
 
-    # Concerns: explicit rules over the selected evidence.
+    # Concerns: explicit rules over the selected evidence, ranked. Weight
+    # loss, hypoglycemia and reported symptoms lead; abnormal labs follow as
+    # one grouped entry so a long panel cannot bury them.
     concerns = []
-    for item in abnormal_labs:
-        entry = public(item)
-        display = entry["display"]
-        reference = f", reference {display['reference']}" if display["reference"] else ""
-        concerns.append(_concern(entry, "abnormal_lab", (
-            f"{display['label']} {display['value']} {display['unit'] or ''}".strip()
-            + f" — {display['flag'] or 'flagged'}{reference}, collected {display['date'] or 'undated'}."
-        )))
     if weight and weight["data"]["loss_from_peak_pct"] >= WEIGHT_LOSS_CONCERN_PCT:
         entry = public(weight)
         concerns.append(_concern(entry, "weight_loss", (
@@ -1246,18 +1330,33 @@ def build_brief(
                 f"{metrics['episodes']} low episodes ≥15 min, {metrics['nocturnal_episodes']} overnight, "
                 f"{metrics['level2_episodes']} below 54."
             )))
-    for item in history:
+    symptom_concerns = []
+    for item in history:  # newest first
         data = item.get("data") or {}
-        entry = public(item)
         if item["entity_type"] == "HistoryEntry" and _REPORTED_SYMPTOMS.search(str(data.get("title") or "")):
-            concerns.append(_concern(entry, "reported_symptoms", (
+            entry = public(item)
+            symptom_concerns.append(_concern(entry, "reported_symptoms", (
                 f"{entry['display']['label']} ({entry['display']['date'] or 'undated'})."
                 + (f" {entry['display']['detail']}" if entry["display"]["detail"] else "")
             )))
         elif item["entity_type"] == "SymptomLog" and str(data.get("severity") or "").lower() in {"moderate", "severe"}:
-            concerns.append(_concern(entry, "reported_symptoms", (
+            entry = public(item)
+            symptom_concerns.append(_concern(entry, "reported_symptoms", (
                 f"{entry['display']['label']} — {data.get('severity')} ({entry['display']['date'] or 'undated'})."
             )))
+    concerns.extend(symptom_concerns[:MAX_SYMPTOM_CONCERNS])
+    if len(symptom_concerns) > MAX_SYMPTOM_CONCERNS:
+        limitations.append({
+            "code": "symptom_concerns_capped",
+            "domain": "clinical",
+            "message": (
+                f"{len(symptom_concerns) - MAX_SYMPTOM_CONCERNS} older reported symptom(s) are listed under "
+                "Symptoms & history rather than as concerns."
+            ),
+        })
+    if abnormal_labs:
+        group, reason = _lab_group([public(item) for item in abnormal_labs], window_day)
+        concerns.append(_concern(public(group), "abnormal_labs", reason))
 
     hypotheses = _relevant_hypotheses(config)
     if not config.get("omit_unconfirmed_hypotheses"):
@@ -1294,24 +1393,70 @@ def build_brief(
         "documents": listing(documents),
         "narrative_summaries": listing(narrative),
     }
-    labs_imaging = [*sections_items["labs"], *sections_items["documents"]]
     public_items = list(public_cache.values())
     by_id = {item["id"]: item for item in public_items}
+
+    # Every reassuring/opposing entry and limitation carries a display block
+    # like any other brief item. A lab whose source label its own reference
+    # range contradicts is evidence of neither.
+    contradicted_labels = 0
+
+    def stance_entry(evidence: dict[str, Any], reason: Any) -> dict[str, Any]:
+        display = {key: evidence["display"].get(key) for key in ("label", "value", "unit", "flag", "reference", "date")}
+        return {
+            "id": evidence["id"],
+            "evidence": evidence,
+            "reason": reason,
+            "display": {**display, "status": None, "detail": reason or None},
+        }
 
     reassuring, seen_reassuring = [], set()
     for entry in reassuring_entries:
         evidence_id = entry.get("evidence_item_id")
         if evidence_id in by_id and evidence_id not in seen_reassuring:
             seen_reassuring.add(evidence_id)
-            reassuring.append({"evidence": by_id[evidence_id], "reason": entry.get("reason")})
+            if by_id[evidence_id]["display"].get("flag_note"):
+                contradicted_labels += 1
+                continue
+            reassuring.append(stance_entry(by_id[evidence_id], entry.get("reason")))
     opposing, seen_opposing = [], set()
     for entry in opposing_entries:
-        key = entry.get("evidence_item_id") or entry.get("contradiction_id")
+        evidence_id = entry.get("evidence_item_id")
+        key = evidence_id or entry.get("contradiction_id")
         if key in seen_opposing:
             continue
-        if not entry.get("evidence_item_id") or entry.get("evidence_item_id") in by_id:
+        if evidence_id:
+            if evidence_id not in by_id:
+                continue
             seen_opposing.add(key)
-            opposing.append(entry)
+            if by_id[evidence_id]["display"].get("flag_note"):
+                contradicted_labels += 1
+                continue
+            opposing.append(stance_entry(by_id[evidence_id], entry.get("reason")))
+        else:
+            seen_opposing.add(key)
+            contradiction = contradictions.get(entry.get("contradiction_id")) or {}
+            severity = str(contradiction.get("severity") or "")
+            sides = " vs ".join(side for side in (_side(entry.get("left")), _side(entry.get("right"))) if side)
+            opposing.append({
+                **entry,
+                "id": entry.get("contradiction_id"),
+                "display": {
+                    "label": f"Unresolved {severity} contradiction" if severity else "Unresolved contradiction",
+                    "value": sides or None, "unit": None, "flag": None, "reference": None, "date": None,
+                    "status": contradiction.get("domain") or None,
+                    "detail": entry.get("reason") or None,
+                },
+            })
+    if contradicted_labels:
+        limitations.append({
+            "code": "source_flag_contradicted",
+            "domain": "labs",
+            "message": (
+                f"{contradicted_labels} lab result(s) carry a source flag their own reference range contradicts; "
+                "they are shown with the range-derived flag and not counted as reassuring or opposing evidence."
+            ),
+        })
 
     seen_messages = {item["message"] for item in limitations}
     for item in public_items:
@@ -1321,6 +1466,17 @@ def build_brief(
                 continue
             seen_messages.add(message)
             limitations.append({"code": "item_limitation", "domain": item["domain"], "message": message, "evidence_item_id": item["id"]})
+
+    def limitation_display(limitation: dict[str, Any]) -> dict[str, Any]:
+        domain = str(limitation.get("domain") or "")
+        return {
+            "label": _DOMAIN_LABELS.get(domain) or (_words(domain).replace("_", " ") if domain else "Limitation"),
+            "value": None, "unit": None, "flag": None, "reference": None, "date": None,
+            "status": str(limitation.get("code") or "").replace("_", " ") or None,
+            "detail": limitation.get("message") or None,
+        }
+
+    limitations = [{**limitation, "display": limitation_display(limitation)} for limitation in limitations]
 
     appendix = [
         {
@@ -1373,7 +1529,6 @@ def build_brief(
         "sections": {
             "concerns": concerns,
             **sections_items,
-            "labs_imaging": labs_imaging,
             "reassuring_evidence": reassuring,
             "opposing_evidence": opposing,
             "contradictions": list(contradictions.values()),

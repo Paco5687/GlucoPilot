@@ -255,3 +255,24 @@ def test_verified_backup_accounts_for_lab_audit_history(audit_case, audit_databa
     assert verification["lab_verified_observation_count"] == 1
     assert verification["lab_verification_event_count"] == 1
     assert verify_backup(backup) == verification
+
+
+@pytest.mark.parametrize(("row", "expected"), [
+    # Stored flags the reference range contradicts are replaced.
+    ({"value": 9, "reference_range": "<30", "flag": "high"}, ("normal", "high")),
+    ({"value": 183, "reference_high": 200, "flag": "H"}, ("normal", "h")),
+    ({"value": 45, "reference_range": "≥ 60", "flag": "normal"}, ("low", "normal")),
+    ({"value": 6.2, "reference_low": 0.4, "reference_high": 4.5, "flag": "low"}, ("high", "low")),
+    ({"value": 30, "reference_range": "< 30", "flag": ""}, ("high", None)),
+    ({"value": 4.0, "reference_range": "0.4 - 4.5"}, ("normal", None)),
+    ({"value": 3, "reference_low": 0, "reference_range": "<5 mg/L"}, ("normal", None)),
+    # Agreeing flags keep their detail; no range leaves the stored flag alone.
+    ({"value": 600, "reference_high": 200, "flag": "critical_high"}, ("critical_high", None)),
+    ({"value": 1, "flag": "abnormal"}, ("abnormal", None)),
+    ({"value": "positive", "reference_range": "<1", "flag": "high"}, ("high", None)),
+    ({"value": 5, "reference_low": 10, "reference_high": 2, "flag": "high"}, ("high", None)),
+])
+def test_effective_flag_rederives_status_from_the_reference_range(row, expected):
+    from server.lab_audit import effective_flag
+
+    assert effective_flag(row) == expected

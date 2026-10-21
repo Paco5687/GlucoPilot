@@ -55,9 +55,44 @@ def test_weight_block_reports_series_window_change_and_change_since_first(report
     assert weight["window_change"]["change_kg"] == -5.0
     assert weight["since_first_change"]["change_kg"] == -9.0
     assert weight["since_first_change"]["change_pct"] == pytest.approx(-12.9)
+    assert weight["peak"] == {"date": "2026-03-01", "weight_kg": 70.0}
+    assert weight["peak_change"]["change_kg"] == -9.0
     assert [point["date"] for point in weight["series"]] == [
         "2026-03-01", "2026-06-15", "2026-08-01", "2026-09-15", "2026-10-15",
     ]
+
+
+def test_weight_headline_is_change_from_twelve_month_high_not_old_baseline(report_db):
+    # An old baseline far below today's weight, a peak this year, then a
+    # loss: change since the first entry reads as a gain.
+    for day, kg in (
+        ("2021-04-10", 47.0),
+        ("2025-06-01", 80.0),   # higher, but more than a year before the latest entry
+        ("2026-01-05", 75.0),
+        ("2026-01-20", 75.0),   # tie: the earlier date is the peak
+        ("2026-05-01", 68.0),
+        ("2026-10-15", 61.0),
+    ):
+        db.create_entity("WeightLog", {"date": day, "weight_kg": kg, "owner_email": OWNER})
+
+    weight = report._weight(date(2026, 7, 22))
+
+    assert weight["since_first_change"]["change_pct"] == pytest.approx(29.8)
+    assert weight["peak"] == {"date": "2026-01-05", "weight_kg": 75.0}
+    assert weight["peak_change"] == {
+        "from_date": "2026-01-05", "from_kg": 75.0, "change_kg": -14.0,
+        "change_pct": pytest.approx(-18.7), "days": 283,
+    }
+
+
+def test_weight_peak_change_is_none_when_latest_is_the_high(report_db):
+    for day, kg in (("2026-05-01", 60.0), ("2026-10-15", 63.0)):
+        db.create_entity("WeightLog", {"date": day, "weight_kg": kg, "owner_email": OWNER})
+
+    weight = report._weight(date(2026, 7, 22))
+
+    assert weight["peak"]["date"] == "2026-10-15"
+    assert weight["peak_change"] is None
 
 
 def test_weight_block_is_unavailable_without_entries(report_db):
@@ -294,8 +329,10 @@ def _narrative_payload(item_count=600, note_chars=8000):
             "available": True, "entries": 3,
             "latest": {"date": "2026-10-15", "weight_kg": 61.0},
             "first": {"date": "2026-03-01", "weight_kg": 70.0},
+            "peak": {"date": "2026-01-05", "weight_kg": 75.0},
+            "peak_change": {"from_date": "2026-01-05", "change_kg": -14.0, "change_pct": -18.7, "days": 283},
             "window_change": {"change_kg": -5.0, "change_pct": -7.6},
-            "since_first_change": {"change_kg": -9.0, "change_pct": -12.9},
+            "since_first_change": {"change_kg": 14.0, "change_pct": 29.8},
             "series": [{"date": "2026-03-01", "weight_kg": 70.0}] * 50,
         },
         "glucose": {
@@ -324,11 +361,115 @@ def _narrative_payload(item_count=600, note_chars=8000):
     }
 
 
+def _large_narrative_payload():
+    """A record at the scale that broke the live narrative: hundreds of wide
+    evidence items, many unresolved TDD contradictions, a full key-lab panel
+    and verbose data-quality prose."""
+    payload = _narrative_payload(item_count=600, note_chars=8000)
+    for item in payload["_evidence_reasoning"]["items"]:
+        item["data"].update({f"field_{n}": "z" * 600 for n in range(40)})
+        item["data"]["values"] = list(range(200))
+    payload["_evidence_reasoning"]["contradictions"] = [
+        {
+            "id": f"urn:synthetic:contradiction:{n}",
+            "domain": "insulin",
+            "severity": "blocking" if n % 10 == 0 else "warning",
+            "explanation": "Synthetic pump-reported and calculated daily totals disagree. " * 12,
+            "left": {"source": "pump", "total_units": 30 + n, "note": "l" * 900},
+            "right": {"source": "calculated", "total_units": 12 + n, "note": "r" * 900},
+            "context": {"days": [f"2026-08-{d:02d}" for d in range(1, 29)]},
+        }
+        for n in range(150)
+    ]
+    payload["_evidence_reasoning"]["missing_data_caveats"] = [
+        {"code": f"gap_{n}", "domain": "cgm", "message": "Synthetic coverage gap. " * 30} for n in range(80)
+    ]
+    long_quality = {
+        "ai_eligible": True, "coverage_pct": 88.0, "reliability": "medium", "data_through": "2026-10-15",
+        "exclusion_reasons": ["synthetic exclusion " * 20] * 30, "limitations": ["synthetic limitation " * 30] * 30,
+    }
+    payload["glucose"]["quality"] = long_quality
+    payload["insulin"].update({
+        "quality": long_quality, "nutrition_quality": long_quality,
+        "limitations": ["synthetic insulin limitation " * 25] * 40,
+        "temp_basal_corrections": {"count": 311, "per_day": 3.5, "notes": ["n" * 500] * 40},
+    })
+    payload["cycle"] = {
+        "available": True, "quality": long_quality, "cycles_detected": 3, "avg_cycle_length": 29.0,
+        "per_phase": {phase: {"days": 20, "tir": 70, "avg_glucose": 140} for phase in ("menstrual", "follicular", "ovulatory", "luteal")},
+        "phase_provenance": {"by_phase": {f"phase_{n}": {"confirmed_days": n, "inferred_days": n} for n in range(30)},
+                             "semantics": "s" * 3000},
+    }
+    payload["insulin_response"] = {
+        "available": True, "quality": long_quality, "algorithm_version": "synthetic-1",
+        "counts": {"events": 400}, "confidence": {"label": "emerging"},
+        "analysis": {f"bucket_{n}": {"median": n, "notes": "a" * 400} for n in range(30)},
+        "semantics": "s" * 4000, "assumptions": ["assume " * 60] * 20,
+    }
+    payload["activity_position"] = {
+        "algorithm_version": "synthetic-1", "semantics": "s" * 4000,
+        "qualifying_effects": [{"effect": n, "detail": "e" * 700} for n in range(40)],
+    }
+    payload["labs"] = {"key_results": [
+        {
+            "test_name": name, "value": 1.0 + n, "unit": "u", "date": "2026-04-02",
+            "flag": "high" if n % 3 == 0 else "normal", "verification": {"verification_status": "unverified"},
+        }
+        for n, name in enumerate(report.KEY_LABS)
+    ]}
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("window", "tokenizer", "budget"),
+    [
+        (None, None, 8000),            # no window advertised, no tokenizer: length estimate
+        (131_072, "half", 8000),       # a large window still gets the hard cap
+        (8192, "half", 8192 - 1500 - 256),  # a small window tightens it
+    ],
+)
+def test_narrative_prompt_stays_under_budget_with_a_large_dataset(monkeypatch, window, tokenizer, budget):
+    captured = {}
+
+    async def limit(*_args, **_kwargs):
+        return window
+
+    async def count(text, *_args, **_kwargs):
+        return None if tokenizer is None else len(text) // 2
+
+    async def fake_llm(prompt, **_kwargs):
+        captured["prompt"] = prompt
+        return {"headline": "Fits", "glucose_summary": "", "discussion_points": [], "evidence_item_ids": []}
+
+    monkeypatch.setattr(report, "context_limit", limit)
+    monkeypatch.setattr(report, "count_tokens", count)
+    monkeypatch.setattr(report, "invoke_llm", fake_llm)
+    payload = _large_narrative_payload()
+
+    assert asyncio.run(report._narrative(payload))["headline"] == "Fits"
+
+    prompt = captured["prompt"]
+    tokens = report._estimate_tokens(prompt) if tokenizer is None else len(prompt) // 2
+    assert tokens <= budget
+    # Whatever was shed, the clinical headline numbers survive.
+    data = json.loads(prompt.split("(JSON):\n", 1)[1].split("\n\nWrite a concise", 1)[0])
+    metrics = data["deterministic_metrics"]
+    assert metrics["glucose"]["tbr70"] == 10.3
+    assert metrics["weight"]["peak_change"]["change_pct"] == -18.7
+    evidence = data["shared_evidence_context"]
+    assert evidence["contradictions_truncated"]["unresolved"] == 150
+    assert evidence["contradictions_truncated"]["blocking"] == 15
+    assert all(entry["severity"] == "blocking" for entry in evidence["contradictions"])
+
+
 def test_narrative_prompt_is_compact_and_carries_hypoglycemia_and_weight(monkeypatch):
     captured = {}
 
     async def no_limit(*_args, **_kwargs):
         return None
+
+    async def generous_tokenizer(text, *_args, **_kwargs):
+        return len(text) // 4
 
     async def fake_llm(prompt, **_kwargs):
         captured["prompt"] = prompt
@@ -338,6 +479,7 @@ def test_narrative_prompt_is_compact_and_carries_hypoglycemia_and_weight(monkeyp
         }
 
     monkeypatch.setattr(report, "context_limit", no_limit)
+    monkeypatch.setattr(report, "count_tokens", generous_tokenizer)
     monkeypatch.setattr(report, "invoke_llm", fake_llm)
     payload = _narrative_payload()
 
@@ -351,7 +493,9 @@ def test_narrative_prompt_is_compact_and_carries_hypoglycemia_and_weight(monkeyp
     assert metrics["glucose"]["tbr70"] == 10.3
     assert metrics["glucose"]["tbr54"] == 3.1
     assert metrics["glucose"]["consensus_targets_pct"] == {"tbr70_below": 4.0, "tbr54_below": 1.0, "tir_above": 70}
-    assert metrics["weight"]["since_first_change"]["change_kg"] == -9.0
+    assert metrics["weight"]["peak_change"]["change_kg"] == -14.0
+    # A years-old first entry is not a reference the narrative can headline.
+    assert "since_first_change" not in metrics["weight"]
     assert "series" not in metrics["weight"]
     assert metrics["key_labs"][0]["test"] == "Hemoglobin A1c"
     assert "avg_daily_bolus" not in metrics["insulin"]
@@ -397,6 +541,7 @@ def test_narrative_failure_is_logged_and_reported_not_swallowed(monkeypatch, cap
         raise RuntimeError("synthetic provider outage")
 
     monkeypatch.setattr(report, "context_limit", no_limit)
+    monkeypatch.setattr(report, "count_tokens", no_limit)
     monkeypatch.setattr(report, "invoke_llm", failing_llm)
     payload = _narrative_payload(item_count=3, note_chars=10)
 
