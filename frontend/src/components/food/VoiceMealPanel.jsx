@@ -11,6 +11,8 @@ function num(v) {
   return Number.isNaN(n) ? null : n;
 }
 
+const squash = (text) => (text || "").split(/\s+/).filter(Boolean).join(" ").toLowerCase();
+
 export function mealTotals(items) {
   const totals = {};
   for (const [k] of MEAL_MACROS) {
@@ -30,6 +32,8 @@ export default function VoiceMealPanel({ meal, setMeal, when, setWhen, busy, onE
   const items = meal.items;
   const totals = mealTotals(items);
   const canEstimate = !busy && !!meal.transcript.trim();
+  // The words were changed after estimating: the foods below no longer match them.
+  const stale = items.length > 0 && squash(meal.transcript) !== squash(meal.estimatedFrom);
   const setItem = (idx, patch) => setMeal({ ...meal, items: items.map((it, i) => (i === idx ? { ...it, ...patch } : it)) });
   const removeItem = (idx) => setMeal({ ...meal, items: items.filter((_, i) => i !== idx) });
 
@@ -76,11 +80,20 @@ export default function VoiceMealPanel({ meal, setMeal, when, setWhen, busy, onE
             {totals.calories != null && <> · {Math.round(totals.calories)} kcal</>}
             {meal.confidence != null && meal.confidence < 0.5 && <div className="text-muted-foreground">Rough estimate — change anything you know better.</div>}
           </div>
+          {stale && (
+            <div role="alert" className="rounded-md border border-amber-500/50 bg-amber-500/10 p-2 text-xs space-y-1">
+              <div>You changed what you ate after the estimate. Re-estimate so the foods match, or log the foods as listed.</div>
+              <div className="flex gap-2">
+                <Button size="sm" onClick={onEstimate} disabled={!canEstimate}><Sparkles className="w-4 h-4 mr-1" />Re-estimate</Button>
+                <Button size="sm" variant="outline" onClick={onLog} disabled={busy}>Log foods as listed</Button>
+              </div>
+            </div>
+          )}
           <div className="flex items-center gap-3 flex-wrap text-xs">
             <Input placeholder="Meal name" value={meal.title} onChange={(e) => setMeal({ ...meal, title: e.target.value })} aria-label="meal name" className="w-auto flex-1 min-w-[10rem] text-xs" />
             <Input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} className="w-auto text-xs" aria-label="when" />
             <label className="inline-flex items-center gap-1"><input type="checkbox" checked={meal.savePreset} onChange={(e) => setMeal({ ...meal, savePreset: e.target.checked })} /> Save as preset</label>
-            <Button size="sm" onClick={onLog} disabled={busy}>{busy ? <Loader2 className="w-4 h-4 animate-spin" /> : "Log it"}</Button>
+            <Button size="sm" onClick={onLog} disabled={busy || stale}>{busy ? <Loader2 className="w-4 h-4 animate-spin" /> : "Log it"}</Button>
           </div>
         </>
       )}

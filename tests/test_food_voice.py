@@ -302,3 +302,80 @@ def test_logged_meals_can_be_deleted_like_any_food_log(database):
     t = food.log_meal({"items": [{"name": "Toast", "carbs": 15}]})["treatment"]
     assert asyncio.run(food.handle({"action": "delete_log", "id": t["id"]}))["ok"]
     assert food.recent_logs() == []
+
+
+# Late afternoon, when "330" can only mean 3:30 p.m.
+LATE = datetime(2026, 10, 16, 16, 35, tzinfo=ZoneInfo("America/New_York"))
+
+
+def _at(day, hour, minute):
+    return datetime(2026, 10, day, hour, minute, tzinfo=LATE.tzinfo)
+
+
+@pytest.mark.parametrize("said, expected, rest", [
+    ("a bag of chips at 330", _at(16, 15, 30), "a bag of chips"),
+    ("a bag of chips at 3 30", _at(16, 15, 30), "a bag of chips"),
+    ("a bag of chips at 3:30", _at(16, 15, 30), "a bag of chips"),
+    ("a bag of chips at 3.30.", _at(16, 15, 30), "a bag of chips."),
+    ("Yogurt with berries at 1.20 p.m.", _at(16, 13, 20), "Yogurt with berries"),
+    ("rice at 12.15 and a pear", _at(16, 12, 15), "rice and a pear"),
+    ("a muffin 10.05am", _at(16, 10, 5), "a muffin"),
+    ("Toast, 8.45 a.m.", _at(16, 8, 45), "Toast"),
+    ("pasta at 1430", _at(16, 14, 30), "pasta"),
+    ("at 9 o'clock a bagel", _at(16, 9, 0), "a bagel"),
+    ("two eggs at around 7 AM", _at(16, 7, 0), "two eggs"),
+    ("oatmeal at 4:50", _at(16, 4, 50), "oatmeal"),  # 4:50 p.m. is still ahead -> this morning
+    ("a burger at 5 p.m.", _at(15, 17, 0), "a burger"),  # later than now -> yesterday
+    ("popcorn at 1030 p.m.", _at(15, 22, 30), "popcorn"),
+    ("an apple at 4 45", _at(16, 16, 45), "an apple"),  # a few minutes ahead is still today
+])
+def test_parse_spoken_time(said, expected, rest):
+    assert food.parse_spoken_time(said, LATE) == (expected, rest)
+
+
+def test_a_bare_spoken_time_is_the_most_recent_past_one():
+    morning = datetime(2026, 10, 16, 9, 0, tzinfo=LATE.tzinfo)
+    assert food.parse_spoken_time("cereal at 830", morning)[0] == _at(16, 8, 30)
+    assert food.parse_spoken_time("pizza at 930", morning)[0] == _at(15, 21, 30)
+    assert food.parse_spoken_time("a snack at 1205", morning)[0] == _at(16, 0, 5)
+    assert food.parse_spoken_time("a snack at 1205 p.m.", morning)[0] == _at(15, 12, 5)
+
+
+@pytest.mark.parametrize("said", [
+    "a bag of chips",
+    "a sandwich at 9",  # a bare hour is left to the model
+    "1.5 cups of rice",
+    "about 150 grams of rice",
+    "one bag at 140 calories",
+    "2 slices of bread and 12 almonds",
+    "a 330 ml can of soda",
+    "at 3 30 g bags of pretzels",
+    "I am hungry, had a banana",
+    "coffee at 25:00",
+    "a granola bar for $2.50",
+])
+def test_parse_spoken_time_leaves_other_numbers_alone(said):
+    assert food.parse_spoken_time(said, LATE) == (None, said)
+
+
+def test_estimate_reads_the_spoken_time_itself_and_hides_it_from_the_model(database, monkeypatch):
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return LATE.astimezone(tz)
+
+    seen = {}
+
+    async def fake_invoke(prompt, **kwargs):
+        seen["prompt"] = prompt
+        return {**SANDWICH, "eaten_at": "13:00"}  # the model's misreading loses to the parse
+
+    monkeypatch.setattr(food, "datetime", FixedDatetime)
+    monkeypatch.setattr(food, "invoke_llm", fake_invoke)
+    r = asyncio.run(food.estimate_meal({"text": "a bag of chips at 330", "tz": "America/New_York"}))
+    assert 'What they said: "a bag of chips"' in seen["prompt"] and "330" not in seen["prompt"]
+    assert r["transcript"] == "a bag of chips at 330"
+    assert r["timestamp"] == "2026-10-16T19:30:00.000Z"
+
+    r = asyncio.run(food.estimate_meal({"text": "a bag of chips", "tz": "America/New_York"}))
+    assert r["timestamp"] == "2026-10-16T17:00:00.000Z"  # no time said -> the model's eaten_at

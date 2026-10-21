@@ -28,8 +28,11 @@ SAMPLE_RATE = 16000
 MAX_AUDIO_BYTES = 8 * 1024 * 1024
 MAX_SECONDS = 90
 # Whisper keeps the style and vocabulary of its prompt, which helps with food
-# words and gets punctuation right on short clips.
-VOCAB_PROMPT = "Food log. One bag of yogurt bites. Chicken sandwich on gluten-free bread with Swiss cheese."
+# words and gets punctuation right on short clips. "Chips" is here because
+# Whisper wrote "Toe chips" for it. No clock time is in it: a time leaked
+# from the prompt into a transcript would be logged as when the meal was eaten.
+VOCAB_PROMPT = ("Food log. One bag of yogurt bites. A bag of potato chips. "
+                "Chicken sandwich on gluten-free bread with Swiss cheese.")
 
 _model: Any = None
 _load_lock = threading.Lock()
