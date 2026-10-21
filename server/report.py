@@ -9,7 +9,10 @@ a data summary to support the clinical conversation, not replace it).
 Read-only: available to both admin and provider sessions.
 """
 
+import json
+import logging
 import math
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -21,16 +24,23 @@ from .analytics_confidence import phase_provenance
 from .auth import require_login
 from .canonical_time import temporal_metadata
 from .clinical_evidence import build_context as build_clinical_evidence
-from .clinical_evidence import link_generated_narrative
+from .clinical_evidence import link_generated_narrative, resolve_prompt_aliases
+from .clinical_evidence import prompt_view as prompt_evidence_view
 from .config import APP_TIMEZONE, DEMO_MODE, OWNER_EMAIL
-from .db import config_value
+from .db import config_value, get_setting
 from .data_quality import assess_cgm, assess_daily, assess_nutrition, assess_pump_tdd, cgm_points
 from .glucose_reconciliation import summarize as summarize_fingersticks
 from .insulin_reconciliation import reconcile_treatments
 from .lab_audit import qualification as lab_qualification
 from .lab_audit import summary_eligible as lab_summary_eligible
-from .llm import invoke_llm
+from .llm import CONTEXT_SAFETY_MARGIN, context_limit, count_tokens, invoke_llm
 from .repositories import get_repositories
+
+log = logging.getLogger("glucopilot.report")
+
+# International consensus CGM targets (Battelino et al., Diabetes Care 2019).
+TBR70_TARGET_PCT = 4.0
+TBR54_TARGET_PCT = 1.0
 
 DEMO_NARRATIVE = {
     "headline": "A solid quarter — 91% time in range with steady, well-controlled glucose across the cycle.",
@@ -81,6 +91,84 @@ def _paged(etype: str, since_iso: str) -> list[dict]:
             break
         skip += 5000
     return out
+
+
+def _patient() -> dict[str, Any]:
+    """Who the report is about: name and date of birth for the header.
+
+    The name comes from the health profile; an owner display name saved under
+    account settings is the fallback. The login username is never used — it
+    names an account, not a patient.
+    """
+    from . import profile
+
+    prof = profile.get_profile()
+    name = prof.get("full_name") or ""
+    if not name:
+        try:
+            name = str(json.loads(get_setting("user_profile") or "{}").get("full_name") or "")
+        except (ValueError, AttributeError):
+            name = ""
+    return {
+        "name": " ".join(name.split()) or None,
+        "date_of_birth": prof.get("date_of_birth") or None,
+        "age": prof.get("age"),
+        "sex": prof.get("sex") or None,
+    }
+
+
+def _weight(start: date) -> dict[str, Any]:
+    """Body-weight trend: the full logged series plus change over the report
+    window and since the first entry. Weight loss is a headline finding for a
+    clinician, so it is reported whenever WeightLog has data, regardless of
+    whether the change looks favourable."""
+    from . import profile
+
+    by_day: dict[date, float] = {}
+    rows = get_repositories().entity("WeightLog").query({"owner_email": OWNER_EMAIL}, "date", 5000)
+    for row in rows:
+        try:
+            day = date.fromisoformat(str(row.get("date"))[:10])
+            weight = float(row.get("weight_kg"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(weight) and 20 <= weight <= 400:
+            by_day[day] = weight  # one point per day; the later-written row wins
+    units = profile.get_profile().get("units") or "imperial"
+    if not by_day:
+        return {"available": False, "units": units}
+
+    series = [{"date": day.isoformat(), "weight_kg": round(kg, 1)} for day, kg in sorted(by_day.items())]
+    first, latest = series[0], series[-1]
+    # Window baseline: the last weight on or before the window start, else the
+    # first weight inside the window.
+    before = [point for point in series if point["date"] <= start.isoformat()]
+    baseline = before[-1] if before else next(
+        (point for point in series if point["date"] >= start.isoformat()), None
+    )
+
+    def change(origin: dict[str, Any] | None) -> dict[str, Any] | None:
+        if origin is None or origin["date"] == latest["date"]:
+            return None
+        delta = latest["weight_kg"] - origin["weight_kg"]
+        return {
+            "from_date": origin["date"],
+            "from_kg": origin["weight_kg"],
+            "change_kg": round(delta, 1),
+            "change_pct": round(delta / origin["weight_kg"] * 100, 1),
+            "days": (date.fromisoformat(latest["date"]) - date.fromisoformat(origin["date"])).days,
+        }
+
+    return {
+        "available": True,
+        "units": units,
+        "latest": latest,
+        "first": first,
+        "entries": len(series),
+        "window_change": change(baseline),
+        "since_first_change": change(first),
+        "series": series[-200:],
+    }
 
 
 def _glucose(tz: ZoneInfo, since_iso: str) -> dict[str, Any]:
@@ -154,6 +242,44 @@ def _glucose(tz: ZoneInfo, since_iso: str) -> dict[str, Any]:
     }
 
 
+BOLUS_STREAM_MIN_SHARE = 0.10
+CARB_MIN_COVERAGE_PCT = 70.0
+
+
+def _temp_basal_corrections(treatments: list[dict], days: int) -> dict[str, Any]:
+    """Insulin delivered by manual-mode temp-basal corrections beyond the
+    programmed rate: ``rate * (1 - 1/multiplier) * hours`` (as in
+    correction_response). These corrections are not boluses, so the bolus
+    stream never counts them."""
+    seen: set[tuple[Any, ...]] = set()
+    extra = 0.0
+    count = 0
+    for row in treatments:
+        if row.get("type") != "tempbasal_correction":
+            continue
+        try:
+            rate = float(row.get("absolute"))
+            multiplier = float(row.get("multiplier"))
+            minutes = float(row.get("duration"))
+        except (TypeError, ValueError):
+            continue
+        if not all(math.isfinite(v) for v in (rate, multiplier, minutes)) or multiplier <= 1 or minutes <= 0:
+            continue
+        key = (row.get("timestamp"), rate, multiplier, minutes)
+        if key in seen:
+            continue
+        seen.add(key)
+        extra += rate * (1 - 1 / multiplier) * minutes / 60
+        count += 1
+    return {
+        "count": count,
+        "extra_units_total": round(extra, 1),
+        "extra_units_per_day": round(extra / max(days, 1), 1),
+        "per_day": round(count / max(days, 1), 1),
+        "source": "Glooko temporary basal (manual mode)",
+    }
+
+
 def _insulin(tz: ZoneInfo, since_iso: str, glucose_days: int) -> dict[str, Any]:
     treatments = _paged("Treatment", since_iso)
     days = max(glucose_days, 1)
@@ -212,11 +338,33 @@ def _insulin(tz: ZoneInfo, since_iso: str, glucose_days: int) -> dict[str, Any]:
     preferred_tdd = summary["pump_reported_avg_tdd"]
     if preferred_tdd is None:
         preferred_tdd = summary["calculated_avg_tdd"]
+    corrections = _temp_basal_corrections(treatments, days)
+    avg_daily_bolus = round(total_bolus / days, 1)
+    # Omnipod 5 automated delivery is not itemized in Glooko's event streams
+    # and its daily totals carry bolus as 0, so a bolus figure far below the
+    # TDD is a coverage gap, not a dosing record. Flag it rather than print a
+    # number that reads as missed doses.
+    bolus_stream_incomplete = bool(
+        preferred_tdd and (bolus_count == 0 or avg_daily_bolus < BOLUS_STREAM_MIN_SHARE * float(preferred_tdd))
+    )
+    carb_coverage = nutrition_quality.get("coverage_pct")
+    carbs_representative = bool(
+        carb_records and carb_coverage is not None and carb_coverage >= CARB_MIN_COVERAGE_PCT
+    )
     return {
-        "available": bool(bolus_count or reported_days or calculated_days or scheduled_days or carb_records),
-        "avg_daily_bolus": round(total_bolus / days, 1),
+        "available": bool(
+            bolus_count or reported_days or calculated_days or scheduled_days or carb_records
+            or corrections["count"]
+        ),
+        "avg_daily_bolus": avg_daily_bolus,
         "boluses_per_day": round(bolus_count / days, 1),
+        "bolus_source": "Glooko bolus event stream",
+        "bolus_stream_incomplete": bolus_stream_incomplete,
+        "temp_basal_corrections": corrections,
         "avg_daily_carbs": round(total_carbs / days),
+        "carb_logged_days": nutrition_quality.get("observed"),
+        "carb_expected_days": nutrition_quality.get("expected"),
+        "carbs_representative": carbs_representative,
         "pump_reported_avg_tdd": summary["pump_reported_avg_tdd"],
         "pump_reported_avg_basal": pump_reported_avg_basal,
         "pump_reported_days": summary["pump_reported_days"],
@@ -305,9 +453,41 @@ def _cycle(tz: ZoneInfo, since_iso: str, glucose: dict) -> dict[str, Any]:
     }
 
 
+# Plausible physiological ranges for wearable daily values. Devices write 0
+# (or nothing sensible) on days without a reading — an SpO2 of 0.0 is a missing
+# night, not a desaturation — so values outside these ranges are excluded from
+# averages rather than averaged in.
+WELLNESS_PLAUSIBLE: dict[str, tuple[float, float]] = {
+    "sleep_score": (1, 100),
+    "readiness_score": (1, 100),
+    "lowest_heart_rate": (25, 200),
+    "resting_heart_rate": (25, 200),
+    "spo2_average": (70, 100),
+    "spo2_avg": (70, 100),
+    "steps": (1, 100_000),
+    "sleep_minutes": (1, 24 * 60),
+}
+
+
 def _avg(rows: list[dict], field: str) -> float | None:
-    vals = [float(r[field]) for r in rows if r.get(field) is not None]
+    low, high = WELLNESS_PLAUSIBLE.get(field, (-math.inf, math.inf))
+    vals = []
+    for r in rows:
+        try:
+            value = float(r.get(field))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and low <= value <= high:
+            vals.append(value)
     return sum(vals) / len(vals) if vals else None
+
+
+def _mean(rows: list[dict], field: str, digits: int = 0, scale: float = 1.0) -> float | int | None:
+    value = _avg(rows, field)
+    if value is None:
+        return None
+    rounded = round(value / scale, digits)
+    return int(rounded) if digits == 0 else rounded
 
 
 def _wellness(days: int) -> dict[str, Any]:
@@ -339,21 +519,195 @@ def _wellness(days: int) -> dict[str, Any]:
         temps = [float(r["readiness_temperature_deviation"]) for r in oura if r.get("readiness_temperature_deviation") is not None]
         out["oura"] = {
             "days": len(oura),
-            "avg_sleep_score": round(_avg(oura, "sleep_score")) if _avg(oura, "sleep_score") else None,
-            "avg_readiness_score": round(_avg(oura, "readiness_score")) if _avg(oura, "readiness_score") else None,
-            "avg_resting_hr": round(_avg(oura, "lowest_heart_rate")) if _avg(oura, "lowest_heart_rate") else None,
-            "avg_spo2": round(_avg(oura, "spo2_average"), 1) if _avg(oura, "spo2_average") else None,
+            "avg_sleep_score": _mean(oura, "sleep_score"),
+            "avg_readiness_score": _mean(oura, "readiness_score"),
+            "avg_resting_hr": _mean(oura, "lowest_heart_rate"),
+            "avg_spo2": _mean(oura, "spo2_average", 1),
             "temp_range": f"{min(temps):+.1f} to {max(temps):+.1f} °C" if temps else None,
         }
     if fitbit:
         out["fitbit"] = {
             "days": len(fitbit),
-            "avg_steps": round(_avg(fitbit, "steps")) if _avg(fitbit, "steps") else None,
-            "avg_resting_hr": round(_avg(fitbit, "resting_heart_rate")) if _avg(fitbit, "resting_heart_rate") else None,
-            "avg_sleep_hours": round(_avg(fitbit, "sleep_minutes") / 60, 1) if _avg(fitbit, "sleep_minutes") else None,
-            "avg_spo2": round(_avg(fitbit, "spo2_avg"), 1) if _avg(fitbit, "spo2_avg") else None,
+            "avg_steps": _mean(fitbit, "steps"),
+            "avg_resting_hr": _mean(fitbit, "resting_heart_rate"),
+            "avg_sleep_hours": _mean(fitbit, "sleep_minutes", 1, scale=60),
+            "avg_spo2": _mean(fitbit, "spo2_avg", 1),
         }
     return out
+
+
+_MONTHS = {
+    name: index
+    for index, names in enumerate(
+        (
+            ("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"),
+            ("may",), ("jun", "june"), ("jul", "july"), ("aug", "august"),
+            ("sep", "sept", "september"), ("oct", "october"), ("nov", "november"), ("dec", "december"),
+        ),
+        1,
+    )
+    for name in names
+}
+_ISO_DATE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})")
+_SLASH_DATE = re.compile(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2}|\d{4})\b")
+_YMD_SLASH_DATE = re.compile(r"^(\d{4})/(\d{1,2})/(\d{1,2})\b")
+_NAMED_DATE = re.compile(r"^([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})\b")
+
+
+def _lab_date(value: Any) -> date | None:
+    """Parse a collected date written the ways lab reports write them.
+
+    Returns None for text with no recoverable calendar date (e.g. "5/16 PM",
+    which has no year), so such rows can never sort ahead of a real draw.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if match := _ISO_DATE.match(text):
+            return date(int(match[1]), int(match[2]), int(match[3]))
+        if match := _YMD_SLASH_DATE.match(text):
+            return date(int(match[1]), int(match[2]), int(match[3]))
+        if match := _SLASH_DATE.match(text):
+            year = int(match[3])
+            if year < 100:
+                year += 2000 if year <= (date.today().year % 100) else 1900
+            return date(year, int(match[1]), int(match[2]))
+        if match := _NAMED_DATE.match(text):
+            month = _MONTHS.get(match[1].lower())
+            if month:
+                return date(int(match[3]), month, int(match[2]))
+    except ValueError:
+        return None
+    return None
+
+
+# Common synonyms for the same assay, keyed by a punctuation-free lowercase
+# form of the reported name. Names not listed keep their reported form.
+_LAB_SYNONYMS = {
+    "Hemoglobin A1c": (
+        "hba1c", "hb a1c", "a1c", "hemoglobin a1c", "haemoglobin a1c", "hgb a1c",
+        "hemoglobin a1c hba1c", "glycated hemoglobin", "glycosylated hemoglobin",
+        "glycohemoglobin", "hba1c ngsp",
+    ),
+    "TSH": ("tsh", "thyroid stimulating hormone", "thyrotropin", "tsh 3rd generation", "tsh sensitive"),
+    "Free T4": ("free t4", "t4 free", "ft4", "free thyroxine", "thyroxine free", "t4 free direct"),
+    "Free T3": ("free t3", "t3 free", "ft3", "free triiodothyronine", "triiodothyronine free"),
+    "TPO antibodies": (
+        "tpo", "tpo ab", "tpo abs", "tpo antibody", "tpo antibodies", "anti tpo", "anti tpo ab",
+        "antitpo", "thyroid peroxidase", "thyroid peroxidase ab", "thyroid peroxidase abs",
+        "thyroid peroxidase antibody", "thyroid peroxidase antibodies", "thyroid peroxidase tpo ab",
+        "thyroid peroxidase tpo abs", "thyroid peroxidase tpo antibodies", "thyroperoxidase ab",
+    ),
+    "Cortisol (AM)": (
+        "cortisol am", "am cortisol", "cortisol am specimen", "cortisol morning", "morning cortisol",
+        "cortisol total am", "cortisol 8 am", "cortisol 8am",
+    ),
+    "Prolactin": ("prolactin", "prl", "prolactin serum"),
+    "FSH": ("fsh", "follicle stimulating hormone"),
+    "LH": ("lh", "luteinizing hormone"),
+    "Estradiol": ("estradiol", "e2", "estradiol e2"),
+    "ACTH": ("acth", "adrenocorticotropic hormone", "corticotropin"),
+    "IGF-1": ("igf 1", "igf1", "insulin like growth factor 1", "insulin like growth factor i", "somatomedin c"),
+    "C-peptide": ("c peptide", "cpeptide"),
+    "Glucose": ("glucose", "glucose serum", "glucose plasma", "glucose fasting", "fasting glucose"),
+    "Creatinine": ("creatinine", "creatinine serum"),
+    "eGFR": ("egfr", "estimated gfr", "gfr estimated", "egfr ckd epi", "egfr if non africn am"),
+    "Urine albumin/creatinine ratio": (
+        "uacr", "albumin creatinine ratio", "microalbumin creatinine ratio", "albumin creatinine ratio urine",
+        "microalbumin creatinine ratio urine", "urine albumin creatinine ratio",
+    ),
+    "LDL cholesterol": ("ldl", "ldl c", "ldl cholesterol", "ldl chol calc", "ldl cholesterol calc", "ldl calculated"),
+    "HDL cholesterol": ("hdl", "hdl c", "hdl cholesterol"),
+    "Total cholesterol": ("cholesterol", "cholesterol total", "total cholesterol"),
+    "Triglycerides": ("triglycerides", "triglyceride", "trig"),
+    "Vitamin D, 25-OH": (
+        "vitamin d", "vitamin d 25 hydroxy", "vitamin d 25 oh", "25 oh vitamin d", "25 hydroxyvitamin d",
+        "vitamin d 25 oh total", "25 hydroxy vitamin d",
+    ),
+    "Ferritin": ("ferritin", "ferritin serum"),
+    "Hemoglobin": ("hemoglobin", "hgb", "hb", "haemoglobin"),
+    "Sodium": ("sodium", "na", "sodium serum"),
+    "Potassium": ("potassium", "k", "potassium serum"),
+}
+_LAB_CANONICAL = {alias: canonical for canonical, aliases in _LAB_SYNONYMS.items() for alias in aliases}
+
+# Core labs for the key-results panel, in display order.
+KEY_LABS = (
+    "Hemoglobin A1c", "TSH", "Free T4", "TPO antibodies", "Cortisol (AM)", "Prolactin",
+    "FSH", "LH", "Estradiol", "Glucose", "C-peptide", "Creatinine", "eGFR",
+    "Urine albumin/creatinine ratio", "LDL cholesterol", "Vitamin D, 25-OH", "Ferritin", "Hemoglobin",
+    "Sodium", "Potassium",
+)
+
+
+def _lab_key(name: str) -> str:
+    text = str(name or "").lower().replace(".", "")
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", text).split())
+
+
+def canonical_lab_name(name: str) -> str:
+    return _LAB_CANONICAL.get(_lab_key(name), " ".join(str(name or "").split()))
+
+
+def _lab_value_key(value: Any) -> str:
+    try:
+        return f"{float(value):.6g}"
+    except (TypeError, ValueError):
+        return str(value).strip().lower()
+
+
+_VERIFIED_RANK = {"approved": 0, "edited": 0}
+
+
+def _lab_flag(point: dict[str, Any]) -> str:
+    """The reported flag; when absent, derived from the reference range."""
+    flag = str(point.get("flag") or "").strip().lower()
+    if flag:
+        return flag
+    try:
+        value = float(point["value"])
+    except (TypeError, ValueError, KeyError):
+        return ""
+    low, high = point.get("reference_low"), point.get("reference_high")
+    try:
+        if high is not None and value > float(high):
+            return "high"
+        if low is not None and value < float(low):
+            return "low"
+    except (TypeError, ValueError):
+        return ""
+    return "normal" if low is not None or high is not None else ""
+
+
+def _dedupe_lab_points(points: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """Collapse rows that report the same result more than once.
+
+    Identical (date, value, unit) rows are one result — typically the same
+    draw extracted from two documents. A row with no parseable date that
+    repeats a dated row's value and unit is the same result with a damaged
+    date. Verified copies win over unverified ones.
+    """
+    def rank(point: dict[str, Any]) -> tuple[int, str]:
+        status = str(point.get("verification_status") or "unverified").lower()
+        return (_VERIFIED_RANK.get(status, 1), str(point.get("id") or ""))
+
+    kept: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for point in sorted(points, key=rank):
+        parsed = point["_date"]
+        key = (
+            parsed.isoformat() if parsed else "raw:" + str(point.get("collected_date") or "").strip().lower(),
+            _lab_value_key(point.get("value")),
+            str(point.get("unit") or "").strip().lower(),
+        )
+        kept.setdefault(key, point)
+    dated_values = {(value, unit) for (day, value, unit) in kept if not day.startswith("raw:")}
+    result = [
+        point
+        for (day, value, unit), point in kept.items()
+        if not (day.startswith("raw:") and (value, unit) in dated_values)
+    ]
+    return result, len(points) - len(result)
 
 
 def _labs() -> dict[str, Any]:
@@ -361,6 +715,7 @@ def _labs() -> dict[str, Any]:
         {"owner_email": OWNER_EMAIL}, "collected_date", 5000
     )
     by_test: dict[str, list[dict]] = {}
+    reported_names: dict[str, set[str]] = {}
     qualification_counts = {"approved": 0, "edited": 0, "unverified": 0, "rejected": 0, "invalid": 0}
     for r in rows:
         if r.get("value") is None or not r.get("test_name"):
@@ -372,7 +727,9 @@ def _labs() -> dict[str, Any]:
             qualification_counts["invalid"] += 1
         if not lab_summary_eligible(r):
             continue
-        by_test.setdefault(r["test_name"], []).append(r)
+        canonical = canonical_lab_name(r["test_name"])
+        by_test.setdefault(canonical, []).append({**r, "_date": _lab_date(r.get("collected_date"))})
+        reported_names.setdefault(canonical, set()).add(" ".join(str(r["test_name"]).split()))
 
     timezone_name = config_value("app_timezone", APP_TIMEZONE)
 
@@ -380,24 +737,42 @@ def _labs() -> dict[str, Any]:
         times = temporal_metadata("LabResult", point, default_timezone=timezone_name)
         return {"event_time": times.get("observed"), "ingestion_time": times.get("received")}
 
+    def iso(point: dict[str, Any]) -> str | None:
+        return point["_date"].isoformat() if point["_date"] else None
+
     categories: dict[str, list[dict]] = {}
     flagged = []
-    for test, points in by_test.items():
-        points.sort(key=lambda p: str(p.get("collected_date") or ""))
+    key_results = []
+    duplicates_removed = 0
+    undated_results = 0
+    for test, raw_points in by_test.items():
+        points, removed = _dedupe_lab_points(raw_points)
+        duplicates_removed += removed
+        undated_results += sum(1 for p in points if p["_date"] is None)
+        # Real calendar dates order the series; rows whose date could not be
+        # parsed sort first, so they can never become the "latest" result
+        # while a dated result exists.
+        points.sort(key=lambda p: (p["_date"] is not None, p["_date"] or date.min, str(p.get("collected_date") or "")))
         latest = points[-1]
         prev = points[-2] if len(points) >= 2 else None
         trend = None
-        if prev and prev.get("value") is not None:
+        if (
+            prev and prev.get("value") is not None
+            and str(prev.get("unit") or "").lower() == str(latest.get("unit") or "").lower()
+        ):
             delta = latest["value"] - prev["value"]
             trend = "up" if delta > 0 else "down" if delta < 0 else "flat"
+        flag = _lab_flag(latest)
         entry = {
             "test_name": test,
+            "reported_names": sorted(reported_names.get(test, set()) - {test}),
             "value": latest["value"],
             "unit": latest.get("unit", ""),
             "reference_low": latest.get("reference_low"),
             "reference_high": latest.get("reference_high"),
-            "flag": latest.get("flag", ""),
+            "flag": flag,
             "collected_date": latest.get("collected_date", ""),
+            "date": iso(latest),
             **time_fields(latest),
             "count": len(points),
             "trend": trend,
@@ -410,7 +785,9 @@ def _labs() -> dict[str, Any]:
             "history": [
                 {
                     "date": p.get("collected_date", ""),
+                    "parsed_date": iso(p),
                     "value": p["value"],
+                    "unit": p.get("unit", ""),
                     "verification": lab_qualification(p),
                     **time_fields(p),
                 }
@@ -418,12 +795,20 @@ def _labs() -> dict[str, Any]:
             ],
         }
         categories.setdefault(latest.get("category") or "Other", []).append(entry)
-        if latest.get("flag") and latest["flag"] not in ("normal", ""):
+        if flag and flag not in ("normal", ""):
             flagged.append(entry)
+        if test in KEY_LABS:
+            key_results.append(entry)
+    for tests in categories.values():
+        tests.sort(key=lambda entry: entry["test_name"].lower())
+    key_results.sort(key=lambda entry: KEY_LABS.index(entry["test_name"]))
     return {
         "available": bool(by_test),
         "categories": categories,
         "flagged": flagged,
+        "key_results": key_results,
+        "duplicates_removed": duplicates_removed,
+        "undated_results": undated_results,
         "verification": {
             "counts": qualification_counts,
             "note": "Machine-extracted results are labeled unverified until approved or corrected against the source document.",
@@ -431,14 +816,64 @@ def _labs() -> dict[str, Any]:
     }
 
 
-async def _narrative(payload: dict) -> dict[str, Any] | None:
+NARRATIVE_MAX_TOKENS = 1500
+# The full evidence dossier runs to ~1.3M characters on a real record (long
+# document notes and summaries), far past any model window. The narrative
+# gets the deterministic metrics plus a bounded, clipped slice of evidence.
+NARRATIVE_EVIDENCE_ITEMS = 40
+NARRATIVE_LIST_LIMIT = 20
+NARRATIVE_TEXT_LIMIT = 400
+NARRATIVE_UNAVAILABLE_NOTE = (
+    "Every figure in this report is computed directly from the data and is unaffected."
+)
+_INSULIN_AI_FIELDS = (
+    "avg_tdd_est", "pump_reported_avg_tdd", "pump_reported_days", "calculated_avg_tdd",
+    "calculated_days", "scheduled_avg_daily_basal", "incomplete_days", "discrepancy_days",
+    "limitations", "temp_basal_corrections", "bolus_source", "bolus_stream_incomplete",
+)
+_QUALITY_AI_FIELDS = (
+    "ai_eligible", "coverage_pct", "reliability", "data_through", "exclusion_reasons", "limitations",
+)
+
+
+class NarrativeUnavailable(RuntimeError):
+    """The narrative was not generated; the message is safe to show the user."""
+
+
+def _clip(value: Any, depth: int = 0) -> Any:
+    """Bound a JSON-like value: long strings truncated, long lists shortened."""
+    if isinstance(value, str):
+        return value if len(value) <= NARRATIVE_TEXT_LIMIT else value[:NARRATIVE_TEXT_LIMIT] + "…"
+    if isinstance(value, dict):
+        return {key: _clip(item, depth + 1) for key, item in value.items()} if depth < 6 else "…"
+    if isinstance(value, list):
+        return [_clip(item, depth + 1) for item in value[:NARRATIVE_LIST_LIMIT]] if depth < 6 else "…"
+    return value
+
+
+def _quality_for_ai(envelope: Any) -> Any:
+    if not isinstance(envelope, dict):
+        return None
+    if "ai_eligible" not in envelope:  # a per-provider map (wearables)
+        return {key: _quality_for_ai(value) for key, value in envelope.items()}
+    return {key: envelope.get(key) for key in _QUALITY_AI_FIELDS if key in envelope}
+
+
+def _narrative_metrics(payload: dict) -> dict[str, Any]:
     g = payload["glucose"]
     insulin_payload = payload["insulin"]
     insulin_for_ai = None
     if insulin_payload.get("available") and insulin_payload.get("quality", {}).get("ai_eligible"):
-        insulin_for_ai = dict(insulin_payload)
-        if not insulin_payload.get("nutrition_quality", {}).get("ai_eligible"):
-            insulin_for_ai.pop("avg_daily_carbs", None)
+        insulin_for_ai = {key: insulin_payload.get(key) for key in _INSULIN_AI_FIELDS if key in insulin_payload}
+        # A bolus figure from an incomplete stream reads as missed doses; leave it out.
+        if not insulin_payload.get("bolus_stream_incomplete"):
+            insulin_for_ai["avg_daily_bolus"] = insulin_payload.get("avg_daily_bolus")
+            insulin_for_ai["boluses_per_day"] = insulin_payload.get("boluses_per_day")
+        if (
+            insulin_payload.get("nutrition_quality", {}).get("ai_eligible")
+            and insulin_payload.get("carbs_representative", True)
+        ):
+            insulin_for_ai["avg_daily_carbs"] = insulin_payload.get("avg_daily_carbs")
     response_payload = payload.get("insulin_response") or {}
     activity_position_payload = payload.get("activity_position") or {}
     response_for_ai = None
@@ -461,18 +896,33 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
         and payload["wellness"].get("quality", {}).get(provider, {}).get("ai_eligible")
     }
     quality = {
-        "glucose": g.get("quality"),
-        "pump_tdd": insulin_payload.get("quality"),
-        "nutrition": insulin_payload.get("nutrition_quality"),
-        "insulin_response": response_payload.get("quality"),
-        "cycle": payload["cycle"].get("quality"),
-        "wearables": payload["wellness"].get("quality"),
+        "glucose": _quality_for_ai(g.get("quality")),
+        "pump_tdd": _quality_for_ai(insulin_payload.get("quality")),
+        "nutrition": _quality_for_ai(insulin_payload.get("nutrition_quality")),
+        "insulin_response": _quality_for_ai(response_payload.get("quality")),
+        "cycle": _quality_for_ai(payload["cycle"].get("quality")),
+        "wearables": _quality_for_ai(payload["wellness"].get("quality")),
     }
-    deterministic_metrics = {
+    fingersticks = g.get("fingerstick_reconciliation") or {}
+    weight = payload.get("weight") or {}
+    labs = payload.get("labs") or {}
+    patient = payload.get("patient") or {}
+    return {
         "period_days": payload["days"],
+        "patient": {"age": patient.get("age"), "sex": patient.get("sex")} if patient.get("age") else None,
+        "weight": {
+            key: weight.get(key)
+            for key in ("latest", "first", "entries", "window_change", "since_first_change")
+        }
+        if weight.get("available") else None,
         "glucose": {
-            **{k: g.get(k) for k in ("avg", "gmi", "cv", "tir", "tbr70", "tar180")},
-            "fingerstick_reconciliation": g.get("fingerstick_reconciliation"),
+            **{k: g.get(k) for k in ("avg", "gmi", "cv", "tir", "tbr70", "tbr54", "tar180", "tar250", "days")},
+            "consensus_targets_pct": {"tbr70_below": TBR70_TARGET_PCT, "tbr54_below": TBR54_TARGET_PCT, "tir_above": 70},
+            "fingerstick_reconciliation": {
+                key: fingersticks.get(key)
+                for key in ("paired", "mean_abs_delta", "persistent_bias", "low_reconciliation", "semantics")
+                if key in fingersticks
+            } or None,
         }
         if g.get("available") and g.get("quality", {}).get("ai_eligible") else None,
         "insulin": insulin_for_ai,
@@ -493,36 +943,104 @@ async def _narrative(payload: dict) -> dict[str, Any] | None:
         if payload["cycle"].get("available") and payload["cycle"].get("quality", {}).get("ai_eligible")
         else None,
         "wellness": wellness_for_ai,
+        "key_labs": [
+            {
+                "test": entry.get("test_name"),
+                "value": entry.get("value"),
+                "unit": entry.get("unit"),
+                "date": entry.get("date") or entry.get("collected_date"),
+                "flag": entry.get("flag"),
+                "verification_status": (entry.get("verification") or {}).get("verification_status"),
+            }
+            for entry in labs.get("key_results") or []
+        ] or None,
         "data_quality": quality,
     }
+
+
+def _narrative_evidence(evidence_reasoning: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    slim, alias_to_id = prompt_evidence_view(evidence_reasoning)
+    items = slim.get("items") or []
+    bounded = {
+        "data_through": slim.get("data_through"),
+        "contradictions": [_clip(entry) for entry in (slim.get("contradictions") or [])[:NARRATIVE_LIST_LIMIT]],
+        "missing_data_caveats": [
+            _clip(entry) for entry in (slim.get("missing_data_caveats") or [])[:NARRATIVE_LIST_LIMIT]
+        ],
+        "items": [_clip(item) for item in items[:NARRATIVE_EVIDENCE_ITEMS]],
+    }
+    if len(items) > NARRATIVE_EVIDENCE_ITEMS:
+        bounded["items_truncated"] = {"kept": NARRATIVE_EVIDENCE_ITEMS, "available": len(items)}
+    kept = {item["id"] for item in bounded["items"]}
+    return bounded, {alias: real for alias, real in alias_to_id.items() if alias in kept}
+
+
+def _narrative_prompt(days: int, metrics: dict[str, Any], evidence: dict[str, Any]) -> str:
+    data = json.dumps(
+        {"deterministic_metrics": metrics, "shared_evidence_context": evidence},
+        default=str,
+        ensure_ascii=False,
+    )
+    return f"""You are a diabetes data analyst preparing a summary for a Type 1 diabetes patient to bring to her endocrinologist. You are NOT a physician; this is an observational data summary to support the clinical conversation, never a diagnosis or treatment recommendation.
+
+Data for the last {days} days (JSON):
+{data}
+
+Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. Judge hypoglycemia against the consensus targets supplied (time below 70 mg/dL under 4%, below 54 mg/dL under 1%); when either is exceeded, say so plainly in the headline or glucose summary — a high time in range does not offset excess time below range. When weight data shows a loss, state the amount, percentage, and period. Insulin figures marked bolus_stream_incomplete have no reliable bolus/basal split; never describe that as missed or skipped doses. Explicitly call machine-extracted labs "unverified" unless their verification status is approved or edited; never imply that parser confidence is clinical verification. For every unresolved contradiction, present both sides and say it remains unresolved; never silently choose one value, especially for a blocking contradiction. If health-history or symptom evidence is present, use it as context without treating it as a clinician-confirmed fact. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Distinguish explicitly recorded/imported cycle phase days from algorithm-inferred days. Scale every analytics claim to its supplied discovery status and numerical confidence metadata; exploratory, emerging, or not-reproduced results cannot be presented as definitive. Copy the IDs of every Evidence Bundle item used into evidence_item_ids; never invent an ID. Keep it factual and readable."""
+
+
+async def _fitted_narrative_prompt(days: int, metrics: dict[str, Any], evidence: dict[str, Any]) -> str:
+    """Shed evidence items until the prompt fits the serving model's window.
+    With no advertised limit or tokenizer the bounded prompt goes out as is."""
+    limit = await context_limit()
+    items = evidence.get("items") or []
+    if not limit:
+        return _narrative_prompt(days, metrics, evidence)
+    budget = limit - NARRATIVE_MAX_TOKENS - CONTEXT_SAFETY_MARGIN
+    for keep in sorted({len(items), *(n for n in (24, 12, 6, 0) if n < len(items))}, reverse=True):
+        trimmed = evidence if keep == len(items) else {
+            **evidence,
+            "items": items[:keep],
+            "items_truncated": {"kept": keep, "available": len(items)},
+        }
+        candidate = _narrative_prompt(days, metrics, trimmed)
+        used = await count_tokens(candidate)
+        if used is None or used <= budget:
+            if keep < len(items):
+                log.info("visit narrative evidence trimmed to %s of %s items (%s tokens, budget %s)",
+                         keep, len(items), used, budget)
+            return candidate
+    raise NarrativeUnavailable("the report data did not fit the language model's context window")
+
+
+async def _narrative(payload: dict) -> dict[str, Any] | None:
+    """Generate the quarter-in-review narrative, or None when it can't be.
+
+    A failure is logged and recorded in payload["narrative_status"] so the
+    page can say the narrative is unavailable instead of silently omitting it.
+    """
     evidence_reasoning = payload.get("_evidence_reasoning") or {
         "bundle_id": None,
         "items": [],
         "contradictions": [],
         "missing_data_caveats": [],
     }
-    summary = {
-        "deterministic_metrics": deterministic_metrics,
-        "shared_evidence_context": evidence_reasoning,
-    }
+    metrics = _narrative_metrics(payload)
+    evidence, alias_to_id = _narrative_evidence(evidence_reasoning)
     # Fast default model: the quality (27B) model is currently GPU-starved and
     # takes minutes for 1500 tokens, which hangs the report. The fast model
     # produces a solid structured narrative in seconds.
     try:
+        prompt = await _fitted_narrative_prompt(payload["days"], metrics, evidence)
         generated = await invoke_llm(
-            f"""You are a diabetes data analyst preparing a summary for a Type 1 diabetes patient to bring to her endocrinologist. You are NOT a physician; this is an observational data summary to support the clinical conversation, never a diagnosis or treatment recommendation.
-
-Data for the last {payload['days']} days:
-{summary}
-
-Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. Explicitly call machine-extracted labs "unverified" unless their verification status is approved or edited; never imply that parser confidence is clinical verification. For every unresolved contradiction, present both sides and say it remains unresolved; never silently choose one value, especially for a blocking contradiction. If health-history or symptom evidence is present, use it as context without treating it as a clinician-confirmed fact. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Distinguish explicitly recorded/imported cycle phase days from algorithm-inferred days. Scale every analytics claim to its supplied discovery status and numerical confidence metadata; exploratory, emerging, or not-reproduced results cannot be presented as definitive. Copy the IDs of every Evidence Bundle item used into evidence_item_ids; never invent an ID. Keep it factual and readable.""",
+            prompt,
             response_json_schema={
                 "type": "object",
                 "properties": {
                     "headline": {"type": "string", "description": "One-sentence overall summary of the quarter"},
                     "glucose_summary": {"type": "string", "description": "2-3 sentences on glucose control"},
                     "cycle_summary": {"type": "string", "description": "1-2 sentences on cycle-phase patterns, or empty if no cycle data"},
-                    "lifestyle_summary": {"type": "string", "description": "1-2 sentences tying in sleep/activity/labs, or empty"},
+                    "lifestyle_summary": {"type": "string", "description": "1-2 sentences tying in weight/sleep/activity/labs, or empty"},
                     "discussion_points": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -536,12 +1054,29 @@ Write a concise, professional "quarter in review" for the care team. Reference t
                 },
                 "required": ["headline", "glucose_summary", "discussion_points", "evidence_item_ids"],
             },
-            max_tokens=1500,
+            max_tokens=NARRATIVE_MAX_TOKENS,
             site="visit_narrative",
         )
-        return link_generated_narrative(generated, evidence_reasoning)
-    except Exception:
+    except NarrativeUnavailable as err:
+        log.warning("visit report narrative skipped: %s", err)
+        payload["narrative_status"] = {"available": False, "reason": f"The written summary is unavailable: {err}."}
         return None
+    except Exception as err:  # noqa: BLE001 — any provider failure degrades to "unavailable"
+        log.exception("visit report narrative failed (%s)", type(err).__name__)
+        payload["narrative_status"] = {
+            "available": False,
+            "reason": "The written summary is unavailable: the language model request failed.",
+        }
+        return None
+    if not isinstance(generated, dict) or not generated.get("headline"):
+        log.warning("visit report narrative returned no headline")
+        payload["narrative_status"] = {
+            "available": False,
+            "reason": "The written summary is unavailable: the language model returned an empty response.",
+        }
+        return None
+    generated = resolve_prompt_aliases(generated, alias_to_id)
+    return link_generated_narrative(generated, evidence_reasoning)
 
 
 class ReportBody(BaseModel):
@@ -622,6 +1157,8 @@ async def visit_report(body: ReportBody):
         "days": days,
         "start_date": since_iso[:10],
         "end_date": datetime.now(timezone.utc).date().isoformat(),
+        "patient": _patient(),
+        "weight": _weight(since.astimezone(tz).date()),
         "glucose": glucose,
         "insulin": insulin,
         "pump_settings": pump_settings.report_block(),
@@ -655,5 +1192,15 @@ async def visit_report(body: ReportBody):
             {**DEMO_NARRATIVE, "evidence_item_ids": []},
             evidence_reasoning,
         )
+    if payload["narrative"]:
+        payload["narrative_status"] = {"available": True, "reason": None}
+    else:
+        payload.setdefault("narrative_status", {
+            "available": False,
+            "reason": "The written summary is unavailable: it was not generated.",
+        })
+    payload["narrative_status"]["note"] = (
+        None if payload["narrative_status"]["available"] else NARRATIVE_UNAVAILABLE_NOTE
+    )
     payload.pop("_evidence_reasoning", None)
     return payload

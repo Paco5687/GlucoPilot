@@ -28,6 +28,7 @@ from .lab_audit import qualification as lab_qualification
 from .lab_audit import summary_eligible as lab_summary_eligible
 from .repositories import get_repositories
 from .unit_of_work import unit_of_work
+from .wellness_ranges import plausible_avg
 
 log = logging.getLogger("glucopilot.health_summary")
 
@@ -101,8 +102,8 @@ def _wearable_trends() -> dict[str, Any]:
     )
 
     def avg(field: str, sl: list):
-        vals = [r[field] for r in sl if r.get(field) is not None]
-        return round(sum(vals) / len(vals), 1) if vals else None
+        value = plausible_avg(sl, field)
+        return round(value, 1) if value is not None else None
 
     recent, prior = rows[:14], rows[14:42]
     out = {}
