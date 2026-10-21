@@ -231,20 +231,20 @@ def _clinician(days: int, generated: datetime) -> dict[str, Any]:
             "management_burden",
             "labs",
             "documents",
-            "labs_imaging",
             "hypotheses",
         )
     }
     sections["reassuring_evidence"] = [
-        {
+        _safe({
             "evidence": brief_item(item.get("evidence")),
-            "reason": _safe(item.get("reason")),
-        }
+            "reason": item.get("reason"),
+            **({"display": item["display"]} if item.get("display") else {}),
+        })
         for item in brief["sections"].get("reassuring_evidence", [])
         if isinstance(item, dict)
     ]
     sections["opposing_evidence"] = [
-        _safe({"reason": item.get("reason")})
+        _safe({"reason": item.get("reason"), **({"display": item["display"]} if item.get("display") else {})})
         for item in brief["sections"].get("opposing_evidence", [])
         if isinstance(item, dict)
     ]
@@ -260,7 +260,7 @@ def _clinician(days: int, generated: datetime) -> dict[str, Any]:
     sections["limitations"] = [
         _safe({
             field: item.get(field)
-            for field in ("code", "domain", "message")
+            for field in ("code", "domain", "message", "display")
             if field in item
         })
         for item in brief["sections"].get("limitations", [])

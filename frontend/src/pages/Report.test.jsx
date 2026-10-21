@@ -257,12 +257,16 @@ describe("visit report clinical framing", () => {
     weight: {
       available: true,
       units: "imperial",
-      entries: 3,
+      entries: 4,
       latest: { date: "2026-10-15", weight_kg: 61.0 },
-      first: { date: "2026-03-01", weight_kg: 70.0 },
+      // A years-old baseline below today's weight: change since it is a gain.
+      first: { date: "2021-05-01", weight_kg: 50.0 },
+      peak: { date: "2026-03-01", weight_kg: 70.0 },
+      peak_change: { from_date: "2026-03-01", from_kg: 70.0, change_kg: -9.0, change_pct: -12.9, days: 228 },
       window_change: { from_date: "2026-07-20", from_kg: 64.0, change_kg: -3.0, change_pct: -4.7, days: 87 },
-      since_first_change: { from_date: "2026-03-01", from_kg: 70.0, change_kg: -9.0, change_pct: -12.9, days: 228 },
+      since_first_change: { from_date: "2021-05-01", from_kg: 50.0, change_kg: 11.0, change_pct: 22.0, days: 1994 },
       series: [
+        { date: "2021-05-01", weight_kg: 50.0 },
         { date: "2026-03-01", weight_kg: 70.0 },
         { date: "2026-07-20", weight_kg: 64.0 },
         { date: "2026-10-15", weight_kg: 61.0 },
@@ -338,14 +342,19 @@ describe("visit report clinical framing", () => {
     expect(screen.getByText(/DOB 1990-02-03 · 36 y · Female/)).toBeTruthy();
   });
 
-  it("shows the weight trend with change over the window and since the first entry", async () => {
+  it("headlines weight change from the 12-month high, not from a years-old first entry", async () => {
     render(<Report />);
 
     expect(await screen.findByText("Weight")).toBeTruthy();
     expect(screen.getByText("134.5 lb")).toBeTruthy();
+    const fromPeak = screen.getByText("Change from 12-month high").parentElement;
+    expect(fromPeak.textContent).toContain("−19.8 lb (−12.9%)");
+    expect(fromPeak.textContent).toContain("from 154.3 lb on 2026-03-01 · 228 days");
+    expect(fromPeak.querySelector(".text-red-600")).toBeTruthy();
     expect(screen.getByText("−6.6 lb (−4.7%)")).toBeTruthy();
-    expect(screen.getByText("−19.8 lb (−12.9%)")).toBeTruthy();
-    expect(screen.getByText(/since 2026-03-01 · 228 days/)).toBeTruthy();
+    // The long-run baseline is secondary context, never a headline tile.
+    expect(screen.queryByText("Change since first entry")).toBeNull();
+    expect(screen.getByText(/First logged weight: 110.2 lb on 2021-05-01 \(\+24.3 lb \(\+22.0%\) to latest\)/)).toBeTruthy();
     expect(screen.getByText(/Weight loss of 5% or more of body weight is recorded/)).toBeTruthy();
   });
 

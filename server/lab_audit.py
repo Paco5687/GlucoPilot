@@ -943,6 +943,69 @@ def summary_eligible(lab: dict[str, Any]) -> bool:
     return qualification(lab)["summary_eligible"]
 
 
+_RANGE_BETWEEN = re.compile(r"^\s*(-?\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(-?\d+(?:\.\d+)?)", re.IGNORECASE)
+_RANGE_BOUND = re.compile(r"^\s*(<=|>=|=<|=>|≤|≥|<|>)\s*(-?\d+(?:\.\d+)?)")
+_HIGH_FLAGS = {"high", "h", "hh", "critical_high"}
+_LOW_FLAGS = {"low", "l", "ll", "critical_low"}
+_DIRECTIONLESS_ABNORMAL = {"abnormal", "a", "critical", "out_of_range"}
+
+
+def _reference_bounds(lab: dict[str, Any]) -> tuple[float | None, float | None, bool, bool] | None:
+    """(low, high, low_exclusive, high_exclusive) from the row's numeric bounds,
+    or failing those its reference-range text ("<30", "≥ 60", "0.4–4.5")."""
+    low, high = _finite(lab.get("reference_low")), _finite(lab.get("reference_high"))
+    if high is not None and low is not None and low > high:
+        return None  # an impossible range proves nothing
+    if high is not None or (low is not None and low != 0):
+        return low, high, False, False
+    text = _text(lab.get("reference_range") or lab.get("original_reference_range"))
+    if match := _RANGE_BETWEEN.match(text):
+        low, high = float(match[1]), float(match[2])
+        return (low, high, False, False) if low <= high else None
+    if match := _RANGE_BOUND.match(text):
+        operator, bound = match[1], float(match[2])
+        if operator in ("<", "<=", "=<", "≤"):
+            return None, bound, False, operator == "<"
+        return bound, None, operator == ">", False
+    return None
+
+
+def range_flag(lab: dict[str, Any]) -> str | None:
+    """'high', 'low' or 'normal' from the numeric value against its reference
+    range; None when the row has no numeric value or no usable range."""
+    value = _finite(lab.get("value"))
+    bounds = _reference_bounds(lab)
+    if value is None or bounds is None:
+        return None
+    low, high, low_exclusive, high_exclusive = bounds
+    if high is not None and (value >= high if high_exclusive else value > high):
+        return "high"
+    if low is not None and (value <= low if low_exclusive else value < low):
+        return "low"
+    return "normal"
+
+
+def effective_flag(lab: dict[str, Any]) -> tuple[str, str | None]:
+    """The flag to trust for a result, and the stored flag it replaced.
+
+    Extraction sometimes stores a flag its own reference range contradicts
+    (9 mg/g flagged high against <30). When the value and range are both
+    numeric they decide; a stored flag that agrees in direction is kept for
+    its detail (critical, say). Without a usable range the stored flag stands.
+    """
+    stored = _text(lab.get("normalized_flag") or lab.get("flag")).lower().replace(" ", "_")
+    derived = range_flag(lab)
+    if derived is None:
+        return stored, None
+    abnormal_stored = stored in _HIGH_FLAGS | _LOW_FLAGS | _DIRECTIONLESS_ABNORMAL
+    if derived == "normal":
+        return ("normal", stored) if abnormal_stored else (stored or "normal", None)
+    agreeing = _HIGH_FLAGS if derived == "high" else _LOW_FLAGS
+    if stored in agreeing or stored in _DIRECTIONLESS_ABNORMAL:
+        return stored, None
+    return derived, stored or None
+
+
 class SqliteLabAuditRepository:
     """Production compatibility repository backed by migration-7 tables."""
 

@@ -31,6 +31,7 @@ from .db import config_value, get_setting
 from .data_quality import assess_cgm, assess_daily, assess_nutrition, assess_pump_tdd, cgm_points
 from .glucose_reconciliation import summarize as summarize_fingersticks
 from .insulin_reconciliation import reconcile_treatments
+from .lab_audit import effective_flag
 from .lab_audit import qualification as lab_qualification
 from .lab_audit import summary_eligible as lab_summary_eligible
 from .llm import CONTEXT_SAFETY_MARGIN, context_limit, count_tokens, invoke_llm
@@ -117,11 +118,19 @@ def _patient() -> dict[str, Any]:
     }
 
 
+WEIGHT_PEAK_LOOKBACK_DAYS = 365
+
+
 def _weight(start: date) -> dict[str, Any]:
-    """Body-weight trend: the full logged series plus change over the report
-    window and since the first entry. Weight loss is a headline finding for a
-    clinician, so it is reported whenever WeightLog has data, regardless of
-    whether the change looks favourable."""
+    """Body-weight trend: the full logged series plus change from the recent
+    peak, over the report window, and since the first entry.
+
+    The headline is change from the 12-month high to the latest weight. The
+    first entry can be years old (a pre-pregnancy baseline, say), so change
+    since it can read as a gain while the patient is losing weight; it stays
+    in the payload as secondary context only. Weight loss is a headline
+    finding for a clinician, so it is reported whenever WeightLog has data,
+    regardless of whether the change looks favourable."""
     from . import profile
 
     by_day: dict[date, float] = {}
@@ -147,6 +156,12 @@ def _weight(start: date) -> dict[str, Any]:
         (point for point in series if point["date"] >= start.isoformat()), None
     )
 
+    # Peak: the highest weight in the year up to the latest entry; the
+    # earliest date wins a tie so the period covers the whole decline.
+    lookback = (date.fromisoformat(latest["date"]) - timedelta(days=WEIGHT_PEAK_LOOKBACK_DAYS)).isoformat()
+    recent = [point for point in series if point["date"] >= lookback]
+    peak = max(recent, key=lambda point: (point["weight_kg"], -date.fromisoformat(point["date"]).toordinal()))
+
     def change(origin: dict[str, Any] | None) -> dict[str, Any] | None:
         if origin is None or origin["date"] == latest["date"]:
             return None
@@ -165,6 +180,9 @@ def _weight(start: date) -> dict[str, Any]:
         "latest": latest,
         "first": first,
         "entries": len(series),
+        "peak": peak,
+        "peak_lookback_days": WEIGHT_PEAK_LOOKBACK_DAYS,
+        "peak_change": change(peak),
         "window_change": change(baseline),
         "since_first_change": change(first),
         "series": series[-200:],
@@ -661,23 +679,9 @@ _VERIFIED_RANK = {"approved": 0, "edited": 0}
 
 
 def _lab_flag(point: dict[str, Any]) -> str:
-    """The reported flag; when absent, derived from the reference range."""
-    flag = str(point.get("flag") or "").strip().lower()
-    if flag:
-        return flag
-    try:
-        value = float(point["value"])
-    except (TypeError, ValueError, KeyError):
-        return ""
-    low, high = point.get("reference_low"), point.get("reference_high")
-    try:
-        if high is not None and value > float(high):
-            return "high"
-        if low is not None and value < float(low):
-            return "low"
-    except (TypeError, ValueError):
-        return ""
-    return "normal" if low is not None or high is not None else ""
+    """The flag the value and reference range support; the reported flag when
+    there is no numeric range to check it against."""
+    return effective_flag(point)[0]
 
 
 def _dedupe_lab_points(points: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
@@ -817,12 +821,29 @@ def _labs() -> dict[str, Any]:
 
 
 NARRATIVE_MAX_TOKENS = 1500
-# The full evidence dossier runs to ~1.3M characters on a real record (long
-# document notes and summaries), far past any model window. The narrative
-# gets the deterministic metrics plus a bounded, clipped slice of evidence.
-NARRATIVE_EVIDENCE_ITEMS = 40
-NARRATIVE_LIST_LIMIT = 20
-NARRATIVE_TEXT_LIMIT = 400
+# Hard cap on the narrative prompt in tokens, whatever window the serving
+# model advertises. The full evidence dossier runs to ~1.3M characters on a
+# real record (long document notes, dozens of TDD contradictions), so the
+# prompt is built at the most detailed level that fits this budget: the
+# deterministic metrics always, then a shrinking slice of clipped evidence.
+NARRATIVE_PROMPT_BUDGET = 8000
+NARRATIVE_EVIDENCE_ITEMS = 24
+NARRATIVE_LIST_LIMIT = 10
+NARRATIVE_TEXT_LIMIT = 240
+NARRATIVE_ITEM_CHARS = 800
+# With no tokenizer to ask, estimate tokens from length. Dense JSON runs
+# under 2 characters per token, so 1.5 keeps the estimate on the safe side.
+FALLBACK_CHARS_PER_TOKEN = 1.5
+# Shedding ladder, most detailed first:
+# (evidence items, contradictions and caveats kept, key labs, full detail).
+_NARRATIVE_LEVELS = (
+    (NARRATIVE_EVIDENCE_ITEMS, 10, "key", True),
+    (12, 6, "key", True),
+    (12, 6, "abnormal", False),
+    (6, 4, "abnormal", False),
+    (0, 3, "abnormal", False),
+    (0, 0, None, False),
+)
 NARRATIVE_UNAVAILABLE_NOTE = (
     "Every figure in this report is computed directly from the data and is unaffected."
 )
@@ -840,14 +861,23 @@ class NarrativeUnavailable(RuntimeError):
     """The narrative was not generated; the message is safe to show the user."""
 
 
-def _clip(value: Any, depth: int = 0) -> Any:
+def _clip(
+    value: Any,
+    text_limit: int = NARRATIVE_TEXT_LIMIT,
+    list_limit: int = NARRATIVE_LIST_LIMIT,
+    depth: int = 0,
+) -> Any:
     """Bound a JSON-like value: long strings truncated, long lists shortened."""
     if isinstance(value, str):
-        return value if len(value) <= NARRATIVE_TEXT_LIMIT else value[:NARRATIVE_TEXT_LIMIT] + "…"
+        return value if len(value) <= text_limit else value[:text_limit] + "…"
+    if depth >= 5 and isinstance(value, (dict, list)):
+        return "…"
     if isinstance(value, dict):
-        return {key: _clip(item, depth + 1) for key, item in value.items()} if depth < 6 else "…"
+        # A block's own fields are kept; nested maps are capped like lists.
+        kept = list(value.items()) if depth == 0 else list(value.items())[: list_limit * 3]
+        return {key: _clip(item, text_limit, list_limit, depth + 1) for key, item in kept}
     if isinstance(value, list):
-        return [_clip(item, depth + 1) for item in value[:NARRATIVE_LIST_LIMIT]] if depth < 6 else "…"
+        return [_clip(item, text_limit, list_limit, depth + 1) for item in value[:list_limit]]
     return value
 
 
@@ -856,7 +886,7 @@ def _quality_for_ai(envelope: Any) -> Any:
         return None
     if "ai_eligible" not in envelope:  # a per-provider map (wearables)
         return {key: _quality_for_ai(value) for key, value in envelope.items()}
-    return {key: envelope.get(key) for key in _QUALITY_AI_FIELDS if key in envelope}
+    return {key: _clip(envelope.get(key), 160, 3) for key in _QUALITY_AI_FIELDS if key in envelope}
 
 
 def _narrative_metrics(payload: dict) -> dict[str, Any]:
@@ -907,12 +937,12 @@ def _narrative_metrics(payload: dict) -> dict[str, Any]:
     weight = payload.get("weight") or {}
     labs = payload.get("labs") or {}
     patient = payload.get("patient") or {}
-    return {
+    metrics = {
         "period_days": payload["days"],
         "patient": {"age": patient.get("age"), "sex": patient.get("sex")} if patient.get("age") else None,
         "weight": {
             key: weight.get(key)
-            for key in ("latest", "first", "entries", "window_change", "since_first_change")
+            for key in ("latest", "entries", "peak", "peak_change", "window_change")
         }
         if weight.get("available") else None,
         "glucose": {
@@ -956,23 +986,103 @@ def _narrative_metrics(payload: dict) -> dict[str, Any]:
         ] or None,
         "data_quality": quality,
     }
+    # Key labs are already a fixed short panel; everything else is bounded.
+    return {key: value if key == "key_labs" else _clip(value, 160, 5) for key, value in metrics.items()}
+
+
+_SEVERITY_ORDER = {"blocking": 0, "warning": 1}
+
+
+def _compact_contradiction(entry: dict[str, Any]) -> dict[str, Any]:
+    """Both sides of a contradiction, without its detection plumbing."""
+    return {
+        key: _clip(entry.get(key), 160, 4)
+        for key in ("domain", "severity", "explanation", "left", "right")
+        if entry.get(key) not in (None, "", {}, [])
+    }
+
+
+def _abnormal_lab(entry: dict[str, Any]) -> bool:
+    return entry.get("test") == "Hemoglobin A1c" or str(entry.get("flag") or "normal") != "normal"
+
+
+def _narrative_level(
+    metrics: dict[str, Any], evidence: dict[str, Any], level: tuple[int, int, str | None, bool]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The metrics and evidence at one rung of the shedding ladder."""
+    item_count, note_count, labs_mode, detail = level
+    metrics = dict(metrics)
+    if labs_mode is None:
+        metrics.pop("key_labs", None)
+    elif labs_mode == "abnormal" and metrics.get("key_labs"):
+        metrics["key_labs"] = [entry for entry in metrics["key_labs"] if _abnormal_lab(entry)] or None
+    if not detail:
+        # The headline numbers stay; algorithm metadata and quality prose go.
+        metrics.pop("activity_position", None)
+        if metrics.get("insulin_response"):
+            metrics["insulin_response"] = {
+                key: metrics["insulin_response"].get(key) for key in ("counts", "confidence")
+            }
+        if metrics.get("insulin"):
+            metrics["insulin"] = {key: value for key, value in metrics["insulin"].items() if key != "limitations"}
+        if metrics.get("cycle"):
+            metrics["cycle"] = {key: value for key, value in metrics["cycle"].items() if key != "phase_provenance"}
+        metrics["data_quality"] = {
+            domain: _clip(envelope, 60, 3) for domain, envelope in (metrics.get("data_quality") or {}).items()
+        }
+    items = evidence["items"]
+    contradictions = evidence["contradictions"]
+    caveats = evidence["missing_data_caveats"]
+    trimmed = {
+        "data_through": evidence.get("data_through"),
+        "contradictions": contradictions[:note_count],
+        "missing_data_caveats": caveats[:note_count],
+        "items": items[:item_count],
+    }
+    available = evidence.get("items_available", len(items))
+    if available > item_count:
+        trimmed["items_truncated"] = {"kept": min(item_count, len(items)), "available": available}
+    if len(contradictions) > note_count:
+        trimmed["contradictions_truncated"] = {
+            "kept": note_count,
+            "unresolved": len(contradictions),
+            "blocking": sum(entry.get("severity") == "blocking" for entry in contradictions),
+        }
+    return metrics, trimmed
 
 
 def _narrative_evidence(evidence_reasoning: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    """The evidence at its most detailed level: the first items, clipped,
+    and the unresolved contradictions with blocking ones first."""
     slim, alias_to_id = prompt_evidence_view(evidence_reasoning)
     items = slim.get("items") or []
+    contradictions = sorted(
+        slim.get("contradictions") or [],
+        key=lambda entry: _SEVERITY_ORDER.get(str(entry.get("severity")), 2),
+    )
     bounded = {
         "data_through": slim.get("data_through"),
-        "contradictions": [_clip(entry) for entry in (slim.get("contradictions") or [])[:NARRATIVE_LIST_LIMIT]],
+        "contradictions": [_compact_contradiction(entry) for entry in contradictions],
         "missing_data_caveats": [
-            _clip(entry) for entry in (slim.get("missing_data_caveats") or [])[:NARRATIVE_LIST_LIMIT]
+            _clip(entry, 160, 4) for entry in (slim.get("missing_data_caveats") or [])[:NARRATIVE_LIST_LIMIT]
         ],
-        "items": [_clip(item) for item in items[:NARRATIVE_EVIDENCE_ITEMS]],
+        "items": [_clip_item(item) for item in items[:NARRATIVE_EVIDENCE_ITEMS]],
+        "items_available": len(items),
     }
-    if len(items) > NARRATIVE_EVIDENCE_ITEMS:
-        bounded["items_truncated"] = {"kept": NARRATIVE_EVIDENCE_ITEMS, "available": len(items)}
     kept = {item["id"] for item in bounded["items"]}
     return bounded, {alias: real for alias, real in alias_to_id.items() if alias in kept}
+
+
+def _clip_item(item: dict[str, Any]) -> dict[str, Any]:
+    """One evidence item, clipped harder when its data is unusually wide."""
+    clipped = _clip(item, 160, 4)
+    if len(json.dumps(clipped, default=str, ensure_ascii=False)) > NARRATIVE_ITEM_CHARS:
+        clipped = _clip(item, 60, 3)
+    return clipped
+
+
+def _estimate_tokens(text: str) -> int:
+    return math.ceil(len(text) / FALLBACK_CHARS_PER_TOKEN)
 
 
 def _narrative_prompt(days: int, metrics: dict[str, Any], evidence: dict[str, Any]) -> str:
@@ -986,30 +1096,32 @@ def _narrative_prompt(days: int, metrics: dict[str, Any], evidence: dict[str, An
 Data for the last {days} days (JSON):
 {data}
 
-Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. Judge hypoglycemia against the consensus targets supplied (time below 70 mg/dL under 4%, below 54 mg/dL under 1%); when either is exceeded, say so plainly in the headline or glucose summary — a high time in range does not offset excess time below range. When weight data shows a loss, state the amount, percentage, and period. Insulin figures marked bolus_stream_incomplete have no reliable bolus/basal split; never describe that as missed or skipped doses. Explicitly call machine-extracted labs "unverified" unless their verification status is approved or edited; never imply that parser confidence is clinical verification. For every unresolved contradiction, present both sides and say it remains unresolved; never silently choose one value, especially for a blocking contradiction. If health-history or symptom evidence is present, use it as context without treating it as a clinician-confirmed fact. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Distinguish explicitly recorded/imported cycle phase days from algorithm-inferred days. Scale every analytics claim to its supplied discovery status and numerical confidence metadata; exploratory, emerging, or not-reproduced results cannot be presented as definitive. Copy the IDs of every Evidence Bundle item used into evidence_item_ids; never invent an ID. Keep it factual and readable."""
+Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. Judge hypoglycemia against the consensus targets supplied (time below 70 mg/dL under 4%, below 54 mg/dL under 1%); when either is exceeded, say so plainly in the headline or glucose summary — a high time in range does not offset excess time below range. Weight change is given from the 12-month high (peak_change) and over the report window (window_change); when either shows a loss, state the amount, percentage, and period. When contradictions_truncated is present, say how many unresolved contradictions exist in total. Insulin figures marked bolus_stream_incomplete have no reliable bolus/basal split; never describe that as missed or skipped doses. Explicitly call machine-extracted labs "unverified" unless their verification status is approved or edited; never imply that parser confidence is clinical verification. For every unresolved contradiction, present both sides and say it remains unresolved; never silently choose one value, especially for a blocking contradiction. If health-history or symptom evidence is present, use it as context without treating it as a clinician-confirmed fact. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Distinguish explicitly recorded/imported cycle phase days from algorithm-inferred days. Scale every analytics claim to its supplied discovery status and numerical confidence metadata; exploratory, emerging, or not-reproduced results cannot be presented as definitive. Copy the IDs of every Evidence Bundle item used into evidence_item_ids; never invent an ID. Keep it factual and readable."""
 
 
 async def _fitted_narrative_prompt(days: int, metrics: dict[str, Any], evidence: dict[str, Any]) -> str:
-    """Shed evidence items until the prompt fits the serving model's window.
-    With no advertised limit or tokenizer the bounded prompt goes out as is."""
+    """The most detailed prompt that fits NARRATIVE_PROMPT_BUDGET tokens, or
+    the serving model's window when that is smaller.
+
+    Tokens are counted by the serving model's tokenizer when it has one, and
+    estimated conservatively from length when it doesn't — the budget holds
+    either way.
+    """
+    budget = NARRATIVE_PROMPT_BUDGET
     limit = await context_limit()
-    items = evidence.get("items") or []
-    if not limit:
-        return _narrative_prompt(days, metrics, evidence)
-    budget = limit - NARRATIVE_MAX_TOKENS - CONTEXT_SAFETY_MARGIN
-    for keep in sorted({len(items), *(n for n in (24, 12, 6, 0) if n < len(items))}, reverse=True):
-        trimmed = evidence if keep == len(items) else {
-            **evidence,
-            "items": items[:keep],
-            "items_truncated": {"kept": keep, "available": len(items)},
-        }
-        candidate = _narrative_prompt(days, metrics, trimmed)
+    if limit:
+        budget = min(budget, limit - NARRATIVE_MAX_TOKENS - CONTEXT_SAFETY_MARGIN)
+    used = None
+    for rung, level in enumerate(_NARRATIVE_LEVELS):
+        candidate = _narrative_prompt(days, *_narrative_level(metrics, evidence, level))
         used = await count_tokens(candidate)
-        if used is None or used <= budget:
-            if keep < len(items):
-                log.info("visit narrative evidence trimmed to %s of %s items (%s tokens, budget %s)",
-                         keep, len(items), used, budget)
+        if used is None:
+            used = _estimate_tokens(candidate)
+        if used <= budget:
+            if rung:
+                log.info("visit narrative prompt trimmed to level %s (%s tokens, budget %s)", rung, used, budget)
             return candidate
+    log.warning("visit narrative prompt does not fit: %s tokens at the smallest level, budget %s", used, budget)
     raise NarrativeUnavailable("the report data did not fit the language model's context window")
 
 
