@@ -203,6 +203,8 @@ def _clinician(days: int, generated: datetime) -> dict[str, Any]:
         "evidence_strength",
         "display_label",
         "description",
+        "display",
+        "concern",
     )
 
     def brief_item(item: Any) -> dict[str, Any]:
@@ -218,9 +220,17 @@ def _clinician(days: int, generated: datetime) -> dict[str, Any]:
         name: [brief_item(item) for item in brief["sections"].get(name, [])]
         for name in (
             "concerns",
+            "problems",
+            "medications",
+            "allergies",
+            "weight",
+            "symptoms_history",
             "objective_patterns",
             "glucose_insulin",
+            "wearables_cycle",
             "management_burden",
+            "labs",
+            "documents",
             "labs_imaging",
             "hypotheses",
         )

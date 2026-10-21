@@ -24,6 +24,28 @@ async function generate(mode, days) {
   return response.json();
 }
 
+const CONCERN_LABELS = {
+  abnormal_lab: "Abnormal lab",
+  weight_loss: "Weight loss",
+  hypoglycemia: "Hypoglycemia",
+  reported_symptoms: "Reported symptoms",
+};
+
+function readableType(entityType = "") {
+  const words = String(entityType).replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function isAbnormal(flag) {
+  return /high|low|abnormal|critical|out of range/i.test(flag || "");
+}
+
+function Flag({ flag }) {
+  if (!flag) return null;
+  const tone = isAbnormal(flag) ? "border-red-300 bg-red-50 text-red-800" : "border-border bg-muted text-muted-foreground";
+  return <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase ${tone}`}>{flag}</span>;
+}
+
 function SourceLinks({ links = [] }) {
   if (!links.length) return <span className="text-muted-foreground">No direct source link</span>;
   return links.map((link, index) => (
@@ -33,39 +55,153 @@ function SourceLinks({ links = [] }) {
   ));
 }
 
-function EvidenceList({ items = [], empty = "No specialty-relevant evidence selected.", onReview = null }) {
+function strengthNote(strength) {
+  if (!strength || ["observed", "confirmed"].includes(strength.status)) return null;
+  return `${String(strength.status).replaceAll("_", " ")} — ${strength.lead}`;
+}
+
+function ReviewButton({ item, onReview }) {
+  if (!onReview) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => onReview({
+        target_kind: "evidence_item",
+        target_type: item.entity_type,
+        target_id: item.id,
+        target_label: item.display?.label || item.title || item.entity_type,
+      })}
+      className="print:hidden mt-2 rounded-md border px-2 py-1 text-xs"
+    >
+      Annotate or review
+    </button>
+  );
+}
+
+function ItemCard({ item, onReview }) {
+  const display = item.display || {};
+  const strength = strengthNote(item.evidence_strength);
+  const reference = display.reference && (item.entity_type === "LabResult" ? `Reference ${display.reference}` : display.reference);
+  return (
+    <div className="report-section rounded-lg border border-border p-3 text-xs">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <span className="flex flex-wrap items-baseline gap-2">
+          {item.concern && <span className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-red-800">{CONCERN_LABELS[item.concern.kind] || item.concern.kind}</span>}
+          <b className="text-sm">{display.label || item.title || readableType(item.entity_type)}</b>
+        </span>
+        {display.date && <span className="text-muted-foreground">{display.date}</span>}
+      </div>
+      {(display.value || display.flag || display.status) && (
+        <p className="mt-1 flex flex-wrap items-center gap-2">
+          {display.value && <span className="font-semibold">{display.value}{display.unit ? ` ${display.unit}` : ""}</span>}
+          <Flag flag={display.flag} />
+          {display.status && <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">{display.status}</span>}
+        </p>
+      )}
+      {reference && <p className="mt-1 text-muted-foreground">{reference}</p>}
+      {item.concern?.reason ? <p className="mt-1">{item.concern.reason}</p> : display.detail && <p className="mt-1">{display.detail}</p>}
+      {item.data?.repeat_count > 1 && <p className="mt-1 text-muted-foreground">Detected in {item.data.repeat_count} analysis runs; the latest is shown.</p>}
+      {strength && <p className="mt-1 text-muted-foreground">{strength}</p>}
+      <p className="mt-1 print:hidden"><SourceLinks links={item.source_links} /></p>
+      <ReviewButton item={item} onReview={onReview} />
+    </div>
+  );
+}
+
+function EvidenceList({ items = [], empty = "None recorded in this window.", onReview = null }) {
+  if (!items.length) return <p className="text-xs text-muted-foreground">{empty}</p>;
+  return <div className="space-y-2">{items.map((item) => <ItemCard key={item.id} item={item} onReview={onReview} />)}</div>;
+}
+
+function RecordList({ items = [], empty = "None recorded." }) {
   if (!items.length) return <p className="text-xs text-muted-foreground">{empty}</p>;
   return (
-    <div className="space-y-2">
-      {items.map((item) => (
-        <div key={item.id} className="rounded-lg border border-border p-3 text-xs">
-          <div className="flex flex-wrap justify-between gap-2">
-            <b>{item.title || item.entity_type}</b>
-            <span className="text-muted-foreground">{item.entity_type}</span>
-          </div>
-          {item.evidence_strength && (
-            <p className="mt-1">
-              <span className="font-medium capitalize">{String(item.evidence_strength.status).replaceAll("_", " ")}</span>
-              {" — "}{item.evidence_strength.lead}
-            </p>
-          )}
-          <p className="mt-1"><SourceLinks links={item.source_links} /></p>
-          {onReview && (
-            <button
-              type="button"
-              onClick={() => onReview({
-                target_kind: "evidence_item",
-                target_type: item.entity_type,
-                target_id: item.id,
-                target_label: item.title || item.entity_type,
-              })}
-              className="mt-2 rounded-md border px-2 py-1 text-xs"
-            >
-              Annotate or review
-            </button>
-          )}
-        </div>
-      ))}
+    <ul className="divide-y divide-border text-sm">
+      {items.map((item) => {
+        const display = item.display || {};
+        const meta = [display.flag, display.status, display.date].filter(Boolean).join(" · ");
+        return (
+          <li key={item.id} className="flex flex-wrap justify-between gap-2 py-1">
+            <span>
+              <b>{display.label}</b>
+              {display.value && <span> — {display.value}</span>}
+              {display.detail && <span className="text-muted-foreground"> · {display.detail}</span>}
+            </span>
+            {meta && <span className="text-xs text-muted-foreground">{meta}</span>}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function LabTable({ items = [], onReview = null }) {
+  if (!items.length) return <p className="text-xs text-muted-foreground">No lab results recorded.</p>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-border text-left text-muted-foreground">
+            <th className="py-1 pr-2 font-medium">Test</th>
+            <th className="py-1 pr-2 font-medium">Result</th>
+            <th className="py-1 pr-2 font-medium">Reference</th>
+            <th className="py-1 pr-2 font-medium">Flag</th>
+            <th className="py-1 pr-2 font-medium">Collected</th>
+            <th className="py-1 font-medium print:hidden">Source</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item) => {
+            const display = item.display || {};
+            return (
+              <tr key={item.id} className="border-b border-border align-top">
+                <td className="py-1 pr-2 font-medium">
+                  {display.label}
+                  {display.status && <span className="block text-[10px] font-normal text-amber-700">{display.status}</span>}
+                </td>
+                <td className={`py-1 pr-2 ${isAbnormal(display.flag) ? "font-semibold text-red-800" : ""}`}>{display.value}{display.unit ? ` ${display.unit}` : ""}</td>
+                <td className="py-1 pr-2 text-muted-foreground">{display.reference || "—"}</td>
+                <td className="py-1 pr-2"><Flag flag={display.flag} /></td>
+                <td className="py-1 pr-2 whitespace-nowrap">{display.date || "—"}</td>
+                <td className="py-1 print:hidden">
+                  <SourceLinks links={item.source_links} />
+                  <ReviewButton item={item} onReview={onReview} />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function AppendixTable({ items = [] }) {
+  if (!items.length) return <p className="text-xs text-muted-foreground">No evidence selected.</p>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-border text-left text-muted-foreground">
+            <th className="py-1 pr-2 font-medium">Item</th>
+            <th className="py-1 pr-2 font-medium">Type</th>
+            <th className="py-1 pr-2 font-medium">Date</th>
+            <th className="py-1 pr-2 font-medium">Evidence</th>
+            <th className="py-1 font-medium print:hidden">Source</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item) => (
+            <tr key={item.id} className="border-b border-border align-top">
+              <td className="py-1 pr-2">{item.display?.label || item.title}</td>
+              <td className="py-1 pr-2 text-muted-foreground">{readableType(item.entity_type)}</td>
+              <td className="py-1 pr-2 whitespace-nowrap">{item.display?.date || "—"}</td>
+              <td className="py-1 pr-2 capitalize">{String(item.evidence_strength?.status || "").replaceAll("_", " ")}</td>
+              <td className="py-1 print:hidden"><SourceLinks links={item.source_links} /></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -164,6 +300,7 @@ export default function ClinicianBrief() {
   }
 
   const sections = brief?.sections || {};
+  const reviewer = isProvider ? chooseReviewTarget : null;
   return (
     <div className="space-y-4 max-w-5xl mx-auto">
       <div className="print:hidden flex flex-wrap items-center justify-between gap-3">
@@ -212,24 +349,40 @@ export default function ClinicianBrief() {
             <p className="text-xs text-muted-foreground">{brief.language.hypotheses} {brief.language.associations}</p>
           </div>
 
-          <Section title="Concerns"><EvidenceList items={sections.concerns} onReview={isProvider ? chooseReviewTarget : null} /></Section>
-          <Section title="Objective patterns"><EvidenceList items={sections.objective_patterns} onReview={isProvider ? chooseReviewTarget : null} /></Section>
-          <Section title="Glucose & insulin"><EvidenceList items={sections.glucose_insulin} onReview={isProvider ? chooseReviewTarget : null} /></Section>
-          <Section title="Management burden"><EvidenceList items={sections.management_burden} onReview={isProvider ? chooseReviewTarget : null} /></Section>
-          <Section title="Labs & imaging"><EvidenceList items={sections.labs_imaging} onReview={isProvider ? chooseReviewTarget : null} /></Section>
+          <Section title="Concerns">
+            <EvidenceList items={sections.concerns} empty="No concerns met the brief's rules (abnormal labs, weight loss, time below range, reported symptoms)." onReview={reviewer} />
+          </Section>
+          <div className="grid gap-4 md:grid-cols-2 print:grid-cols-2">
+            <Section title="Active problems"><RecordList items={sections.problems} empty="No diagnoses recorded." /></Section>
+            <Section title="Medications & supplements"><RecordList items={sections.medications} empty="No active medications recorded." /></Section>
+            <Section title="Allergies"><RecordList items={sections.allergies} empty="No allergies recorded." /></Section>
+            <Section title="Weight"><EvidenceList items={sections.weight} empty="No weight entries recorded." /></Section>
+          </div>
+          <Section title="Glucose & insulin"><EvidenceList items={sections.glucose_insulin} empty="No CGM or pump data in this window." onReview={reviewer} /></Section>
+          <Section title="Labs — most recent value of each test"><LabTable items={sections.labs} onReview={reviewer} /></Section>
+          <Section title="Imaging & clinical documents"><EvidenceList items={sections.documents} empty="No clinical documents in this window." onReview={reviewer} /></Section>
+          <Section title="Symptoms & history"><EvidenceList items={sections.symptoms_history} onReview={reviewer} /></Section>
+          <Section title="Objective patterns"><EvidenceList items={sections.objective_patterns} empty="No active patterns or insights." onReview={reviewer} /></Section>
+          {(sections.wearables_cycle || []).length > 0 && (
+            <Section title="Wearables & cycle"><EvidenceList items={sections.wearables_cycle} onReview={reviewer} /></Section>
+          )}
+          <Section title="Management burden"><EvidenceList items={sections.management_burden} onReview={reviewer} /></Section>
           <Section title="Hypotheses — not diagnoses">
-            {!sections.hypotheses?.length ? <p className="text-xs text-muted-foreground">No specialty-relevant hypotheses selected.</p> : sections.hypotheses.map((item) => (
-              <div key={item.id} className={`rounded-lg border p-3 text-xs ${item.evidence_state === "not_evaluated" ? "border-dashed bg-muted/20" : ""}`}>
-                <p className={item.evidence_state === "not_evaluated" ? "text-muted-foreground" : "font-semibold"}>{item.title}</p>
+            {!sections.hypotheses?.length ? <p className="text-xs text-muted-foreground">No hypotheses listed for this brief.</p> : sections.hypotheses.map((item) => (
+              <div key={item.id} className={`report-section rounded-lg border p-3 text-xs ${item.evidence_state === "not_evaluated" ? "border-dashed bg-muted/20" : ""}`}>
+                <p className="flex flex-wrap items-center gap-2">
+                  {!item.definitive_allowed && <span className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-800">{item.status_label || "Unconfirmed"}</span>}
+                  <span className={item.evidence_state === "not_evaluated" ? "text-muted-foreground" : "font-semibold"}>{item.title}</span>
+                </p>
                 <p className={item.evidence_state === "not_evaluated" ? "text-muted-foreground" : item.definitive_allowed ? "" : "text-amber-700"}>{item.display_label}</p>
-                <p>{item.description}</p>
+                {item.description && <p>{item.description}</p>}
                 {isProvider && (
                   <button type="button" onClick={() => chooseReviewTarget({
                     target_kind: "hypothesis",
                     target_type: "HealthHypothesis",
                     target_id: item.id,
                     target_label: item.title,
-                  })} className="mt-2 rounded-md border px-2 py-1 text-xs">
+                  })} className="print:hidden mt-2 rounded-md border px-2 py-1 text-xs">
                     Review hypothesis
                   </button>
                 )}
@@ -238,7 +391,12 @@ export default function ClinicianBrief() {
           </Section>
           <Section title="Reassuring & opposing evidence">
             <p className="text-xs font-medium">Reassuring</p>
-            <EvidenceList items={(sections.reassuring_evidence || []).map((entry) => entry.evidence).filter(Boolean)} />
+            {(sections.reassuring_evidence || []).length === 0 ? <p className="text-xs text-muted-foreground">No selected reassuring evidence.</p> : (
+              <p className="text-xs">
+                {sections.reassuring_evidence.length} result(s) labelled normal by their source
+                {sections.reassuring_evidence.length <= 8 && `: ${sections.reassuring_evidence.filter((entry) => entry.evidence).map((entry) => entry.evidence.display?.label || entry.evidence.title).join(", ")}`}.
+              </p>
+            )}
             <p className="text-xs font-medium pt-2">Opposing / contradictory</p>
             {(sections.opposing_evidence || []).length === 0 ? <p className="text-xs text-muted-foreground">No selected opposing evidence.</p> : (
               <p className="text-xs">{sections.opposing_evidence.length} opposing or contradiction entries retained.</p>
@@ -252,7 +410,7 @@ export default function ClinicianBrief() {
             <ul className="list-disc pl-5 text-sm space-y-1">{sections.questions.map((question) => <li key={question}>{question}</li>)}</ul>
           </Section>
           <Section title="Evidence appendix">
-            <EvidenceList items={brief.appendix} onReview={isProvider ? chooseReviewTarget : null} />
+            <AppendixTable items={brief.appendix} />
           </Section>
           <Section title="Clinical review history">
             {!reviews.length && <p className="text-xs text-muted-foreground">No provider reviews recorded.</p>}
