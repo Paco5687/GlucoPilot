@@ -2,6 +2,7 @@
 
 import base64
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -55,9 +56,12 @@ def export_api(tmp_path, monkeypatch):
         "member_id": "member-must-not-leak",
         "rx_bin": "bin-must-not-leak",
     })
+    # Relative to now: exports only include observations inside the requested
+    # window, so a fixed date silently ages out of it.
+    recent = datetime.now(timezone.utc) - timedelta(days=1)
     db.create_entity("GlucoseReading", {
         "owner_email": OWNER,
-        "timestamp": "2026-07-20T12:00:00Z",
+        "timestamp": recent.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "value": 123,
         "source": "synthetic",
         "access_token": "token-must-not-leak",
