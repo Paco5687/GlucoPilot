@@ -1,4 +1,4 @@
-"""Body profile — height, weight, date of birth, sex.
+"""Patient profile — name, height, weight, date of birth, sex.
 
 The basis for body-relative dosing analytics: BMI, TDD/kg, and the insulin
 resistance / absorption estimates. Stored canonically in metric (height_cm,
@@ -21,7 +21,7 @@ log = logging.getLogger("glucopilot.profile")
 
 router = APIRouter()
 
-FIELDS = ("height_cm", "weight_kg", "date_of_birth", "sex", "units")
+FIELDS = ("full_name", "height_cm", "weight_kg", "date_of_birth", "sex", "units")
 
 
 def _get() -> dict[str, Any] | None:
@@ -52,6 +52,7 @@ def get_profile() -> dict[str, Any]:
         except (TypeError, ValueError, ZeroDivisionError):
             bmi = None
     return {
+        "full_name": row.get("full_name") or "",
         "height_cm": height_cm,
         "weight_kg": weight_kg,
         "date_of_birth": row.get("date_of_birth") or "",
@@ -68,6 +69,7 @@ def get():
 
 
 class ProfileBody(BaseModel):
+    full_name: str | None = None
     height_cm: float | None = None
     weight_kg: float | None = None
     date_of_birth: str | None = None
@@ -80,6 +82,12 @@ def save(body: ProfileBody):
     existing = _get()
     prior_weight = (existing or {}).get("weight_kg")
     data = {
+        # Omitted (None) keeps the stored name, so older clients don't erase it.
+        "full_name": (
+            " ".join(body.full_name.split())[:200]
+            if body.full_name is not None
+            else (existing or {}).get("full_name") or ""
+        ),
         "height_cm": body.height_cm,
         "weight_kg": body.weight_kg,
         "date_of_birth": (body.date_of_birth or "").strip(),

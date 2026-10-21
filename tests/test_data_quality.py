@@ -197,7 +197,11 @@ def test_report_ai_prompt_omits_low_quality_metric_values(monkeypatch):
         captured["prompt"] = prompt
         return {}
 
+    async def no_limit(*_args, **_kwargs):
+        return None
+
     monkeypatch.setattr(report, "invoke_llm", fake_llm)
+    monkeypatch.setattr(report, "context_limit", no_limit)
     payload = {
         "days": 5,
         "glucose": {"available": True, "avg": 999, "quality": low_cgm},
