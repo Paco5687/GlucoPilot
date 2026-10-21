@@ -4,7 +4,7 @@ import DataQualityNote from "@/components/DataQualityNote";
 import EvidenceContextBlock from "@/components/evidence/EvidenceContextBlock";
 import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope, ScrollText, Beaker, CalendarRange, ChevronDown, ChevronRight, ClipboardList } from "lucide-react";
 import {
-  ResponsiveContainer, AreaChart, Area, Line, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
+  ResponsiveContainer, AreaChart, Area, Line, LineChart, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
 } from "recharts";
 
 // Clinical AGP color convention (not brand palette) — this is a medical report.
@@ -224,6 +224,140 @@ function EvidenceDetails({ hypothesis }) {
   );
 }
 
+// International consensus CGM targets (Battelino et al., Diabetes Care 2019).
+const TBR70_TARGET = 4;
+const TBR54_TARGET = 1;
+const LB_PER_KG = 2.20462;
+const SIGNIFICANT_WEIGHT_LOSS_PCT = 5;
+
+function PatientLine({ patient }) {
+  if (!patient?.name && !patient?.date_of_birth) return null;
+  const details = [
+    patient.date_of_birth ? `DOB ${patient.date_of_birth}` : null,
+    patient.age != null ? `${patient.age} y` : null,
+    patient.sex ? patient.sex.charAt(0).toUpperCase() + patient.sex.slice(1) : null,
+  ].filter(Boolean);
+  return (
+    <p className="text-base mt-1">
+      {patient.name && <span className="font-semibold">{patient.name}</span>}
+      {patient.name && details.length > 0 && " · "}
+      {details.join(" · ")}
+    </p>
+  );
+}
+
+function formatWeight(kg, units) {
+  if (kg == null) return "—";
+  return units === "metric" ? `${kg.toFixed(1)} kg` : `${(kg * LB_PER_KG).toFixed(1)} lb`;
+}
+
+function formatWeightChange(change, units) {
+  if (!change) return "—";
+  const sign = change.change_kg > 0 ? "+" : change.change_kg < 0 ? "−" : "";
+  const magnitude = Math.abs(change.change_kg);
+  const amount = units === "metric" ? `${magnitude.toFixed(1)} kg` : `${(magnitude * LB_PER_KG).toFixed(1)} lb`;
+  return `${sign}${amount} (${sign}${Math.abs(change.change_pct).toFixed(1)}%)`;
+}
+
+function weightTone(change) {
+  return change && change.change_pct <= -SIGNIFICANT_WEIGHT_LOSS_PCT ? "text-red-600" : "";
+}
+
+function WeightBlock({ weight }) {
+  if (!weight?.available) return null;
+  const units = weight.units;
+  const series = (weight.series || []).map((point) => ({
+    date: point.date,
+    value: units === "metric" ? point.weight_kg : Math.round(point.weight_kg * LB_PER_KG * 10) / 10,
+  }));
+  const significantLoss = [weight.window_change, weight.since_first_change].some(
+    (change) => change && change.change_pct <= -SIGNIFICANT_WEIGHT_LOSS_PCT,
+  );
+  return (
+    <div className="report-section space-y-3">
+      <h2 className="font-semibold text-base">Weight</h2>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <Metric label="Latest weight" value={formatWeight(weight.latest?.weight_kg, units)} sub={weight.latest?.date} />
+        <Metric
+          label="Change over report window"
+          value={formatWeightChange(weight.window_change, units)}
+          sub={weight.window_change ? `since ${weight.window_change.from_date}` : "no earlier entry"}
+          tone={weightTone(weight.window_change)}
+        />
+        <Metric
+          label="Change since first entry"
+          value={formatWeightChange(weight.since_first_change, units)}
+          sub={weight.since_first_change ? `since ${weight.since_first_change.from_date} · ${weight.since_first_change.days} days` : "one entry"}
+          tone={weightTone(weight.since_first_change)}
+        />
+      </div>
+      {significantLoss && (
+        <p className="text-xs font-medium text-red-700">
+          Weight loss of {SIGNIFICANT_WEIGHT_LOSS_PCT}% or more of body weight is recorded.
+        </p>
+      )}
+      {series.length > 1 && (
+        <div className="report-card bg-card rounded-lg border border-border p-4">
+          <p className="text-xs font-medium mb-2">
+            Logged weight · {weight.entries} entr{weight.entries === 1 ? "y" : "ies"} ({units === "metric" ? "kg" : "lb"})
+          </p>
+          <div className="h-40">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={series} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 10 }} minTickGap={24} />
+                <YAxis domain={["auto", "auto"]} tick={{ fontSize: 10 }} width={36} />
+                <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                <Line dataKey="value" stroke="#1d4ed8" strokeWidth={2} dot={{ r: 2 }} type="monotone" isAnimationActive={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function labFlagTone(flag) {
+  if (!flag || flag === "normal") return "text-green-700";
+  return "text-red-600";
+}
+
+function KeyLabResults({ results }) {
+  if (!results?.length) return null;
+  return (
+    <div className="report-card bg-card rounded-lg border border-border overflow-hidden">
+      <div className="bg-muted/50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        Key results · most recent value
+      </div>
+      <table className="w-full text-sm">
+        <tbody>
+          {results.map((t) => (
+            <tr key={t.test_name} className="border-t border-border">
+              <td className="px-3 py-1.5 font-medium">
+                {t.test_name}
+                {t.verification?.qualified && <span className="ml-1.5 text-[9px] uppercase text-amber-700">{t.verification.verification_status}</span>}
+              </td>
+              <td className="px-3 py-1.5 text-right tabular-nums">
+                {t.value} <span className="text-muted-foreground">{t.unit}</span>
+              </td>
+              <td className="px-3 py-1.5 text-right text-xs text-muted-foreground tabular-nums">
+                {t.reference_low != null || t.reference_high != null ? `ref ${t.reference_low ?? ""}–${t.reference_high ?? ""}` : "no reference range"}
+              </td>
+              <td className={`px-3 py-1.5 text-center text-[10px] uppercase font-semibold ${labFlagTone(t.flag)}`}>
+                {t.flag || "—"}
+              </td>
+              <td className="px-3 py-1.5 text-right text-[11px] text-muted-foreground tabular-nums">
+                {t.date || t.collected_date || "date unknown"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function Report() {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -309,6 +443,7 @@ export default function Report() {
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <FileText className="w-6 h-6 text-primary" /> Health Summary
           </h1>
+          <PatientLine patient={report.patient} />
           <p className="text-sm text-muted-foreground mt-1">
             {report.days}-day review · {report.start_date} to {report.end_date}
           </p>
@@ -320,6 +455,8 @@ export default function Report() {
           Generated {new Date(report.generated_at).toLocaleDateString()}
         </div>
       </div>
+
+      <WeightBlock weight={report.weight} />
 
       {report.contradictions?.unresolved?.length > 0 && (
         <div className="report-section space-y-2">
@@ -626,6 +763,14 @@ export default function Report() {
         </div>
       )}
 
+      {!n && report.narrative_status?.available === false && (
+        <div className="report-section print:hidden rounded-lg border border-dashed border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+          <p className="font-semibold">Narrative unavailable</p>
+          <p>{report.narrative_status.reason}</p>
+          {report.narrative_status.note && <p className="text-amber-800">{report.narrative_status.note}</p>}
+        </div>
+      )}
+
       <EvidenceContextBlock
         context={report.evidence_context}
         narrativeEvidenceIds={n?.evidence_item_ids}
@@ -636,12 +781,31 @@ export default function Report() {
       <div className="report-section space-y-3">
         <h2 className="font-semibold text-base">Glucose</h2>
         <DataQualityNote label="CGM" quality={g.quality} />
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <Metric label="Time in range" value={`${g.tir}%`} sub="70–180 mg/dL · target >70%" tone={g.tir >= 70 ? "text-green-600" : "text-amber-600"} />
+          <Metric
+            label="Time below 70 mg/dL"
+            value={`${g.tbr70}%`}
+            sub={`target <${TBR70_TARGET}% · ${g.tbr70 > TBR70_TARGET ? "above target" : "within target"}`}
+            tone={g.tbr70 > TBR70_TARGET ? "text-red-600" : "text-green-600"}
+          />
+          <Metric
+            label="Time below 54 mg/dL"
+            value={`${g.tbr54}%`}
+            sub={`target <${TBR54_TARGET}% · ${g.tbr54 > TBR54_TARGET ? "above target" : "within target"}`}
+            tone={g.tbr54 > TBR54_TARGET ? "text-red-600" : "text-green-600"}
+          />
           <Metric label="Average glucose" value={`${g.avg}`} sub="mg/dL" />
-          <Metric label="GMI (est. A1c)" value={`${g.gmi}%`} tone={g.gmi >= 7 ? "text-amber-600" : "text-green-600"} />
-          <Metric label="Time in range" value={`${g.tir}%`} sub="70–180 mg/dL" tone={g.tir >= 70 ? "text-green-600" : "text-amber-600"} />
-          <Metric label="Variability (CV)" value={`${g.cv}%`} sub={g.cv <= 36 ? "stable" : "elevated"} tone={g.cv <= 36 ? "text-green-600" : "text-amber-600"} />
+          <Metric label="GMI (est. A1c)" value={`${g.gmi}%`} tone={g.gmi >= 7 ? "text-amber-600" : ""} />
+          <Metric label="Variability (CV)" value={`${g.cv}%`} sub={g.cv <= 36 ? "target ≤36%" : "above 36% target"} tone={g.cv <= 36 ? "" : "text-amber-600"} />
         </div>
+        {(g.tbr70 > TBR70_TARGET || g.tbr54 > TBR54_TARGET) && (
+          <p className="text-xs font-medium text-red-700">
+            Time below range exceeds the consensus target
+            {g.tbr70 > TBR70_TARGET ? ` (below 70 mg/dL: ${g.tbr70}% vs <${TBR70_TARGET}%)` : ""}
+            {g.tbr54 > TBR54_TARGET ? ` (below 54 mg/dL: ${g.tbr54}% vs <${TBR54_TARGET}%)` : ""}.
+          </p>
+        )}
         <div className="report-card bg-card rounded-lg border border-border p-4">
           <p className="text-xs font-medium mb-2">Time in ranges · {g.readings.toLocaleString()} readings over {g.days} days</p>
           <TIRBar g={g} />
@@ -665,13 +829,36 @@ export default function Report() {
             {i.calculated_avg_tdd != null && (
               <Metric label="Calculated TDD" value={`${i.calculated_avg_tdd}`} sub={`${i.calculated_days} full-coverage day${i.calculated_days === 1 ? "" : "s"}`} />
             )}
-            <Metric label="Bolus insulin" value={`${i.avg_daily_bolus}`} sub={`${i.boluses_per_day}/day`} />
+            {!i.bolus_stream_incomplete && (
+              <Metric label="Bolus insulin" value={`${i.avg_daily_bolus}`} sub={`units/day · ${i.boluses_per_day}/day · ${i.bolus_source || "bolus events"}`} />
+            )}
+            {i.temp_basal_corrections?.count > 0 && (
+              <Metric
+                label="Temp-basal corrections"
+                value={`${i.temp_basal_corrections.extra_units_per_day}`}
+                sub={`units/day above programmed rate · ${i.temp_basal_corrections.per_day}/day · ${i.temp_basal_corrections.source}`}
+              />
+            )}
             {i.calculated_avg_daily_basal != null && <Metric label="Delivered basal (calc.)" value={`${i.calculated_avg_daily_basal}`} sub="units/day · full coverage only" />}
-            {i.scheduled_avg_daily_basal != null && <Metric label="Programmed basal" value={`${i.scheduled_avg_daily_basal}`} sub="units/day · not confirmed delivery" />}
-            <Metric label="Carbs logged" value={`${i.avg_daily_carbs}`} sub="g/day" />
+            {i.scheduled_avg_daily_basal != null && <Metric label="Programmed basal schedule" value={`${i.scheduled_avg_daily_basal}`} sub="units/day · Glooko pump settings, not delivered amount" />}
+            {i.carbs_representative !== false && <Metric label="Carbs logged" value={`${i.avg_daily_carbs}`} sub="g/day · logged entries only" />}
           </div>
+          {i.bolus_stream_incomplete && (
+            <p className="text-[11px] text-amber-800">
+              Bolus/basal split not available: bolus events in the {i.bolus_source || "bolus event stream"} total {i.avg_daily_bolus} units/day
+              against a total daily dose of {i.avg_tdd_est} units/day. Automated-mode delivery is not itemized in Glooko&apos;s event
+              streams and its daily totals record bolus as 0, so the bolus figure is a data gap, not a record of missed doses.
+              Temp-basal corrections are counted separately{i.temp_basal_corrections?.count > 0 ? "" : " (none recorded)"}.
+            </p>
+          )}
+          {i.carbs_representative === false && (
+            <p className="text-[11px] text-amber-800">
+              Carbs were logged on {i.carb_logged_days ?? 0} of {i.carb_expected_days ?? "the"} days; a daily carb average is not shown
+              because it would understate intake.
+            </p>
+          )}
           <p className="text-[11px] text-muted-foreground">
-            Pump-reported and calculated totals are kept separate. A calculated TDD is shown only for days with complete delivered-basal coverage; Glooko programmed basal is not treated as delivered. Carb totals reflect only logged entries.
+            Pump-reported and calculated totals are kept separate. A calculated TDD is shown only for days with complete delivered-basal coverage; the Glooko programmed basal schedule is not treated as delivered insulin.
           </p>
           <DataQualityNote label="Pump TDD" quality={i.quality} />
           <DataQualityNote label="Nutrition" quality={i.nutrition_quality} />
@@ -857,6 +1044,14 @@ export default function Report() {
               </span>
             )}
           </div>
+          <KeyLabResults results={labs.key_results} />
+          {(labs.duplicates_removed > 0 || labs.undated_results > 0) && (
+            <p className="text-[11px] text-muted-foreground">
+              {labs.duplicates_removed > 0 ? `${labs.duplicates_removed} duplicate result${labs.duplicates_removed === 1 ? "" : "s"} (same test, date, and value) merged. ` : ""}
+              {labs.undated_results > 0 ? `${labs.undated_results} result${labs.undated_results === 1 ? " has" : "s have"} no readable collection date and ${labs.undated_results === 1 ? "sorts" : "sort"} before dated results. ` : ""}
+              Common test-name variants are combined under one name.
+            </p>
+          )}
           {labs.flagged.length > 0 && (
             <div className="report-card bg-red-50 border border-red-200 rounded-lg p-3">
               <p className="text-xs font-semibold text-red-700 flex items-center gap-1 mb-1">
@@ -882,6 +1077,9 @@ export default function Report() {
                         <td className="px-3 py-2 font-medium">
                           {t.test_name}
                           {t.verification?.qualified && <span className="ml-1.5 text-[9px] uppercase text-amber-700">{t.verification.verification_status}</span>}
+                          {t.reported_names?.length > 0 && (
+                            <div className="text-[10px] font-normal text-muted-foreground">also reported as {t.reported_names.join(", ")}</div>
+                          )}
                         </td>
                         <td className={`px-3 py-2 text-right tabular-nums ${outOfRange ? "text-red-600 font-semibold" : ""}`}>
                           {t.value} <span className="text-muted-foreground font-normal">{t.unit}</span>
@@ -893,7 +1091,7 @@ export default function Report() {
                           {TrendIcon && <TrendIcon className={`w-3.5 h-3.5 inline ${t.trend === "up" ? "text-amber-500" : t.trend === "down" ? "text-sky-500" : "text-muted-foreground"}`} />}
                         </td>
                         <td className="px-3 py-2 text-right text-[11px] text-muted-foreground">
-                          <div>Collected {t.event_time?.source_text || t.collected_date || "unknown"}</div>
+                          <div>Collected {t.date || t.event_time?.source_text || t.collected_date || "unknown"}</div>
                           {importDate(t.ingestion_time) && <div>Imported {importDate(t.ingestion_time)}</div>}
                         </td>
                       </tr>

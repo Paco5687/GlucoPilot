@@ -14,6 +14,7 @@ export default function ProfileSettings() {
   const [inch, setInch] = useState("");
   const [cm, setCm] = useState("");
   const [weight, setWeight] = useState(""); // lbs or kg per units
+  const [fullName, setFullName] = useState("");
   const [dob, setDob] = useState("");
   const [sex, setSex] = useState("");
   const [derived, setDerived] = useState({ age: null, bmi: null });
@@ -26,6 +27,7 @@ export default function ProfileSettings() {
       .then((p) => {
         const u = p.units || "imperial";
         setUnits(u);
+        setFullName(p.full_name || "");
         setDob(p.date_of_birth || "");
         setSex(p.sex || "");
         setDerived({ age: p.age, bmi: p.bmi });
@@ -60,7 +62,7 @@ export default function ProfileSettings() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         credentials: "same-origin",
-        body: JSON.stringify({ height_cm, weight_kg, date_of_birth: dob, sex, units }),
+        body: JSON.stringify({ full_name: fullName, height_cm, weight_kg, date_of_birth: dob, sex, units }),
       });
       if (!res.ok) throw new Error("Save failed");
       const p = await res.json();
@@ -80,8 +82,8 @@ export default function ProfileSettings() {
         <div className="flex items-center gap-2">
           <User className="w-5 h-5 text-primary" />
           <div>
-            <h3 className="font-semibold text-sm">Body profile</h3>
-            <p className="text-xs text-muted-foreground">Feeds BMI, TDD/kg, and the insulin resistance &amp; absorption estimates.</p>
+            <h3 className="font-semibold text-sm">Patient profile</h3>
+            <p className="text-xs text-muted-foreground">Name and date of birth head the Visit Report. Body measurements feed BMI, TDD/kg, and the insulin resistance &amp; absorption estimates.</p>
           </div>
         </div>
         <div className="flex rounded-lg border border-border overflow-hidden text-xs">
@@ -93,6 +95,10 @@ export default function ProfileSettings() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="sm:col-span-2">
+          <Label htmlFor="full-name" className="text-xs">Full name</Label>
+          <Input id="full-name" value={fullName} onChange={(e) => setFullName(e.target.value)} className="mt-1 text-sm" autoComplete="name" />
+        </div>
         <div>
           <Label className="text-xs">Height</Label>
           {units === "metric" ? (
