@@ -2479,6 +2479,32 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        23,
+        "pump_settings_registry",
+        # Registers the PumpSettings entity: programmed pump-settings snapshots
+        # (carb ratio, ISF, target and basal schedules) synced from Glooko.
+        (
+            Statement(
+                """
+                INSERT INTO entity_schema_registry (
+                    entity_type, schema_version, storage_kind, domain, owner_scope,
+                    api_exposure, lifecycle, description
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "PumpSettings",
+                    1,
+                    "json",
+                    "insulin",
+                    "deployment_owner",
+                    "dedicated",
+                    "observation",
+                    "Programmed pump settings snapshot: carb ratio, ISF, target, basal schedules",
+                ),
+            ),
+        ),
+    ),
 )
 
 

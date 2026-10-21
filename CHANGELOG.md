@@ -6,6 +6,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **Pump settings from Glooko** — carb ratios, correction factor (ISF), targets,
+  correction threshold, active insulin time, max bolus/basal and basal programs,
+  synced once a day from Glooko's settings snapshots. Shown read-only on the
+  Insulin and Connections pages and in the Visit Report, each with the
+  snapshot's as-of date and age; the Companion can answer from the latest one.
+
 ## [0.1.2] — 2026-07-21
 
 ### Added

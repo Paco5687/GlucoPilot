@@ -7,6 +7,7 @@ import FitbitSetup from "../components/connections/FitbitSetup";
 import GoogleHealthSetup from "../components/connections/GoogleHealthSetup";
 import TandemSetup from "../components/connections/TandemSetup";
 import GlookoSetup from "../components/connections/GlookoSetup";
+import PumpSettingsCard from "../components/insulin/PumpSettingsCard";
 import { Plug, FileSpreadsheet } from "lucide-react";
 import { Link } from "react-router-dom";
 
@@ -36,6 +37,7 @@ export default function Connections() {
 
       {/* Glooko — failsafe treatment source (Tandem + Omnipod 5) */}
       <GlookoSetup />
+      <PumpSettingsCard />
 
       {/* Nightscout — per-user setup */}
       <NightscoutSetup />

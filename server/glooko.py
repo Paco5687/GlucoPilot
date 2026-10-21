@@ -38,6 +38,12 @@ Endpoint discovery oracle, if more is ever needed: a real path answers 422
 asking for `lastGuid`/`lastUpdatedAt`, a fake one answers 404. That found
 `modes`, `events`, `alarms`, `extended_boluses`, `pumps/readings`,
 `pumps/settings`, `exercises` and `notes` beyond the endpoints synced here.
+
+Programmed pump settings (carb ratios, ISF, targets, correction threshold,
+active insulin time, max bolus/basal, basal programs) come from
+`/api/v3/devices_and_settings`, once a day. Glooko records those snapshots only
+occasionally, so the newest can be months old; each is stored with its own
+timestamp. Shape and handling are in pump_settings.py.
 """
 
 import asyncio
@@ -67,6 +73,8 @@ WEB_ORIGINS = {
 }
 
 DAILY_TOTALS_LOOKBACK_DAYS = 14  # Glooko settles a day's total up to ~a week late
+PUMP_SETTINGS_INTERVAL = timedelta(hours=20)  # snapshots change rarely; once a day is plenty
+PUMP_SETTINGS_FETCHED_KEY = "glooko_pump_settings_fetched_at"
 DEVICE_INFO = {
     "applicationType": "logbook",
     "os": "ios",
@@ -680,13 +688,66 @@ def _map_daily_total(row: dict[str, Any]) -> dict[str, Any] | None:
 
 
 
+def _pump_settings_due(force: bool) -> bool:
+    if force:
+        return True
+    last = _parse_ts(db.get_setting(PUMP_SETTINGS_FETCHED_KEY))
+    return last is None or datetime.now(timezone.utc) - last >= PUMP_SETTINGS_INTERVAL
+
+
+async def _fetch_pump_settings(client: httpx.AsyncClient) -> Any:
+    """The devices-and-settings payload, or None on failure. A settings outage
+    is logged, not raised: it must not block the treatment sync or its
+    freshness."""
+    response = await client.get(f"{_base_url()}/api/v3/devices_and_settings", headers=_headers())
+    if response.status_code >= 400:
+        log.warning("glooko devices_and_settings failed: %s %s", response.status_code, response.text[:200])
+        return None
+    try:
+        return response.json() if response.text else None
+    except ValueError:
+        log.warning("glooko devices_and_settings returned non-JSON")
+        return None
+
+
+def _store_pump_settings(payload: Any) -> dict[str, Any]:
+    from . import pump_settings
+
+    guid, snapshots = pump_settings.snapshots_from_payload(payload)
+    if not snapshots:
+        return {"status": "empty", "snapshots": 0}
+    capture_records(
+        [{"snapshotKey": key, **snapshot} for key, snapshot in snapshots],
+        external_id="/api/v3/devices_and_settings",
+        observed_at=max(key for key, _snapshot in snapshots),
+        metadata={"path": "/api/v3/devices_and_settings", "device_guid": guid},
+    )
+    mapped = [
+        row for row in (
+            pump_settings.map_snapshot(snapshot, device_guid=guid, snapshot_key=key)
+            for key, snapshot in snapshots
+        )
+        if row
+    ]
+    result = pump_settings.persist(guid, mapped)
+    return {"status": "ok", "snapshots": len(snapshots), **result}
+
+
 # ── actions ──────────────────────────────────────────────────────────────
 
 
-async def _sync(days: int, include_cgm: bool) -> dict[str, Any]:
+async def _sync(days: int, include_cgm: bool, force_settings: bool = False) -> dict[str, Any]:
     since = datetime.now(timezone.utc) - timedelta(days=days)
+    settings_payload = None
+    settings_due = _pump_settings_due(force_settings)
     async with httpx.AsyncClient(timeout=90, follow_redirects=True) as client:
         await _login(client)
+
+        if settings_due:
+            try:
+                settings_payload = await _fetch_pump_settings(client)
+            except httpx.HTTPError as err:
+                log.warning("glooko devices_and_settings failed: %s", err)
 
         boluses = await _fetch_list(client, "/api/v2/pumps/normal_boluses", "normalBoluses", since)
         basals = await _fetch_list(client, "/api/v2/pumps/scheduled_basals", "scheduledBasals", since)
@@ -725,6 +786,17 @@ async def _sync(days: int, include_cgm: bool) -> dict[str, Any]:
         mapped_readings = [m for m in (_map_reading(r) for r in readings) if m]
         r_created, r_skipped = _persist_readings(mapped_readings)
 
+    settings_result: dict[str, Any] = {"status": "not_due"}
+    if settings_due:
+        settings_result = {"status": "failed"}
+        if settings_payload is not None:
+            try:
+                settings_result = _store_pump_settings(settings_payload)
+            except Exception:
+                log.exception("glooko pump settings could not be stored")
+            else:
+                db.set_setting(PUMP_SETTINGS_FETCHED_KEY, _iso(datetime.now(timezone.utc)))
+
     return {
         "ok": True,
         "treatments_synced": t_created,
@@ -732,6 +804,7 @@ async def _sync(days: int, include_cgm: bool) -> dict[str, Any]:
         "treatments_updated": t_updated,
         "readings_synced": r_created,
         "readings_skipped": r_skipped,
+        "pump_settings": settings_result,
         "fetched": {
             "boluses": len(boluses),
             "basals": len(basals),
@@ -792,7 +865,7 @@ async def handle(body: dict[str, Any]) -> dict[str, Any]:
         include_cgm = bool(body.get("include_cgm"))
         async with _sync_lock:
             try:
-                result = await _sync(days, include_cgm)
+                result = await _sync(days, include_cgm, force_settings=action == "backfill")
             except Exception as err:
                 log.exception("glooko sync failed")
                 return {"error": f"Glooko sync failed: {err}", "_status": 502}

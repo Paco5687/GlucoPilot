@@ -69,6 +69,7 @@ storage and are reported as unmappable.
 | `InsuranceInfo` | Owner singleton; carrier/plan/member/Rx/contact/effective-date fields and notes. | First owner row patched; card extraction is preview-only until save. | Unread fields empty; confidence/source location not stored. |
 | `HistoryEntry` | Owner; title, kind, entry date, details. Standing narrative is in `app_settings`. | Random ID; append/delete. | Undated entries retained and sorted last. |
 | `NightscoutProfile` | Owner + profile name; timezone, units, DIA, carb absorption and serialized basal/ISF/carb-ratio/target schedules. | Application upsert by profile name. | Missing profile means unavailable; schedule provenance/version absent. |
+| `PumpSettings` | Owner + `device_guid` + `snapshot_at`; carb-ratio, ISF, target and correction-threshold segments, active insulin time, max bolus/basal, basal programs, `is_latest`. | Glooko `/api/v3/devices_and_settings`, active pump only; create-once per `dedupe_key`, history kept; only `is_latest` moves. | Snapshots are occasional and can be months old; `snapshot_at` is shown as the as-of date, never presented as live. |
 
 ## Connections and credentials
 

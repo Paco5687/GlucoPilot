@@ -78,6 +78,7 @@ BASELINE_ENTITY_SCHEMAS = (
 # registry-insert migration; the baseline tuple above never changes.
 ADDITIONAL_ENTITY_SCHEMAS = (
     _schema("CareTeamNote", "clinical", "Care-team authored note: routines, protocols, prescription instructions", lifecycle="event"),
+    _schema("PumpSettings", "insulin", "Programmed pump settings snapshot: carb ratio, ISF, target, basal schedules", lifecycle="observation"),
 )
 
 ENTITY_SCHEMAS = BASELINE_ENTITY_SCHEMAS + ADDITIONAL_ENTITY_SCHEMAS

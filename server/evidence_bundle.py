@@ -128,6 +128,7 @@ _ENTITY_DOMAIN: dict[str, EvidenceDomain] = {
     "FingerstickReading": EvidenceDomain.GLUCOSE,
     "Treatment": EvidenceDomain.INSULIN,
     "NightscoutProfile": EvidenceDomain.INSULIN,
+    "PumpSettings": EvidenceDomain.INSULIN,
     "OuraDaily": EvidenceDomain.WEARABLES,
     "OuraHeartRate": EvidenceDomain.WEARABLES,
     "FitbitDaily": EvidenceDomain.WEARABLES,
@@ -186,6 +187,11 @@ _TIME_FIELDS: dict[str, tuple[str, Literal["instant", "date"], bool]] = {
     "WeeklySummary": ("week_start", "date", True),
     "HealthSummary": ("generated_at", "instant", True),
 }
+
+# Untimed types with a timestamp worth showing. PumpSettings is deliberately not
+# window-filtered: Glooko's newest snapshot can be months old yet still be what
+# the pump runs, so only the latest snapshot is eligible (see _entity_where).
+_UNFILTERED_TIME_FIELDS = {"PumpSettings": "snapshot_at"}
 
 _DERIVED_TYPES = {"Pattern", "Insight", "DailySummary", "WeeklySummary", "HealthSummary"}
 _CANONICAL_EPISODE_TYPES = {"HealthEpisode", "MedicationExposure"}
@@ -381,6 +387,9 @@ def _entity_where(entity_type: str, query: EvidenceBundleQuery) -> tuple[str, li
         # Legacy suspected entries are tentative and must never be presented as
         # confirmed clinical facts. G10 exposes them through the hypothesis ledger.
         where.append("COALESCE(json_extract(data, '$.status'), 'active')!='suspected'")
+    if entity_type == "PumpSettings":
+        # Older snapshots are history for the settings view, not current evidence.
+        where.append("json_extract(data, '$.is_latest')=1")
     time_contract = _TIME_FIELDS.get(entity_type)
     if time_contract:
         field, precision, include_undated = time_contract
@@ -397,7 +406,8 @@ def _entity_where(entity_type: str, query: EvidenceBundleQuery) -> tuple[str, li
 
 def _observed_at(entity_type: str, row: sqlite3.Row, data: dict[str, Any]) -> str | None:
     contract = _TIME_FIELDS.get(entity_type)
-    value = data.get(contract[0]) if contract else None
+    field = contract[0] if contract else _UNFILTERED_TIME_FIELDS.get(entity_type)
+    value = data.get(field) if field else None
     return str(value) if value not in (None, "") else None
 
 

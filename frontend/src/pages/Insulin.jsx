@@ -4,6 +4,7 @@ import SafetyBanner from "../components/SafetyBanner";
 import DataQualityNote from "@/components/DataQualityNote";
 import ContradictionPanel from "@/components/ContradictionPanel";
 import ManagementBurdenCard from "@/components/insulin/ManagementBurdenCard";
+import PumpSettingsCard from "@/components/insulin/PumpSettingsCard";
 import { Syringe, Loader2, TrendingUp, TrendingDown, AlertTriangle, ChevronRight } from "lucide-react";
 import {
   ResponsiveContainer, LineChart, Line, AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ReferenceArea, CartesianGrid, Legend,
@@ -296,6 +297,8 @@ export default function Insulin() {
           </p>
         </Section>
       )}
+
+      <PumpSettingsCard />
 
       {(Object.keys(r?.per_phase_tdd_per_kg || {}).length > 0 || Object.keys(r?.mode_split?.modes || {}).length > 0 || strata.length > 0) && (
         <Section title="Patterns">

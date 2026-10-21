@@ -580,6 +580,15 @@ ENTITY_CONTRACTS = {
         ),
         _contract("NightscoutProfile", IdentityPolicy.OWNER_NATURAL_KEY, FACT, DEVICE_SOURCE),
         _contract(
+            # One row per Glooko snapshot, keyed by device guid + snapshot time.
+            # snapshot_at is when Glooko recorded the settings, not "now".
+            "PumpSettings",
+            IdentityPolicy.OWNER_NATURAL_KEY,
+            FACT,
+            DEVICE_SOURCE,
+            _time("snapshot_at", TimeMeaning.RECORDED, *UTC_INSTANT),
+        ),
+        _contract(
             "OuraConnection",
             IdentityPolicy.OWNER_SINGLETON,
             FACT,
@@ -752,5 +761,5 @@ ENTITY_CONTRACTS = {
     )
 }
 
-if len(ENTITY_CONTRACTS) != 35:
-    raise RuntimeError("entity contract mapping must contain all 35 registered entities")
+if len(ENTITY_CONTRACTS) != 36:
+    raise RuntimeError("entity contract mapping must contain all 36 registered entities")
