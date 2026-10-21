@@ -601,6 +601,7 @@ async def visit_report(body: ReportBody):
         insurance,
         management_burden,
         meds,
+        pump_settings,
         symptoms,
     )
     insulin_response = insulin_analytics.absorption()
@@ -623,6 +624,7 @@ async def visit_report(body: ReportBody):
         "end_date": datetime.now(timezone.utc).date().isoformat(),
         "glucose": glucose,
         "insulin": insulin,
+        "pump_settings": pump_settings.report_block(),
         "insulin_response": insulin_response,
         "cycle": cycle,
         "wellness": wellness,

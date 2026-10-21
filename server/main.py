@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import activity_position, auth, bug_report, care_notes, clinical_reviews, clinician_briefs, companion, conditions, contradictions, dexcom, diagnostics, entities, episodes, evidence_bundle, functions, history, hypotheses, ingest, insurance, llm, management_burden, meds, profile, records, relationship_api, report, scheduler, settings_api, share_exports, symptoms
+from . import activity_position, auth, bug_report, care_notes, clinical_reviews, clinician_briefs, companion, conditions, contradictions, dexcom, diagnostics, entities, episodes, evidence_bundle, functions, history, hypotheses, ingest, insurance, llm, management_burden, meds, profile, pump_settings, records, relationship_api, report, scheduler, settings_api, share_exports, symptoms
 from .config import DEMO_MODE, FRONTEND_DIST, env
 from .db import init_db
 
@@ -53,6 +53,7 @@ app.include_router(settings_api.router)
 app.include_router(records.router)
 app.include_router(ingest.router)
 app.include_router(report.router)
+app.include_router(pump_settings.router)
 app.include_router(insurance.router)
 app.include_router(profile.router)
 app.include_router(conditions.router)

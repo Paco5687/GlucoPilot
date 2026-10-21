@@ -36,7 +36,7 @@ LINKABLE_ENTITY_TYPES = {
     "dexcom_share": {"GlucoseReading"},
     "nightscout": {"GlucoseReading", "Treatment", "NightscoutProfile"},
     "tandem": {"Treatment"},
-    "glooko": {"GlucoseReading", "Treatment"},
+    "glooko": {"GlucoseReading", "Treatment", "PumpSettings"},
     "fitbit": {"FitbitDaily"},
     "google_health": {"FitbitDaily", "FitbitHeartRate"},
     "oura": {"OuraDaily", "OuraHeartRate"},

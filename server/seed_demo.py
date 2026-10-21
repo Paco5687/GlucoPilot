@@ -29,7 +29,7 @@ CYCLE_LEN = 28  # days, for the temperature/phase model
 SEED_TYPES = (
     "GlucoseReading", "Treatment", "OuraDaily", "OuraHeartRate", "FitbitDaily",
     "PeriodLog", "MedicalRecord", "LabResult", "Pattern", "Insight", "AIConversation",
-    "HealthProfile", "CareTeamNote", "WeightLog",
+    "HealthProfile", "CareTeamNote", "WeightLog", "PumpSettings",
 )
 
 
@@ -343,6 +343,30 @@ def _seed_profile_and_care_notes() -> None:
         })
 
 
+def _seed_pump_settings() -> None:
+    """One synthetic Glooko settings snapshot, dated weeks back like real ones."""
+    from . import pump_settings
+
+    def segments(*rows):
+        return {"data": [{"segmentStart": start, "duration": hours, "value": value} for start, hours, value in rows]}
+
+    snapshot = {
+        "generalSettings": {"activeInsulinTime": 3.0},
+        "basalSettings": {"maxBasalRate": 2.5, "activeBasalProgram": "Weekday"},
+        "bolusSettings": {"maxBolus": 10.0, "bolusCalculatorMinBg": 70},
+        "profilesBolus": [{
+            "insulinToCarbRatioSegments": segments((0, 6, 12), (6, 5, 9), (11, 13, 11)),
+            "isfSegments": segments((0, 6, 50), (6, 18, 45)),
+            "targetBgSegments": segments((0, 6, 120), (6, 18, 110)),
+            "bgCorrectionThresholdSegments": segments((0, 24, 130)),
+        }],
+        "pumpProfilesBasal": [{"name": "Weekday", "data": segments((0, 3, 0.65), (3, 5, 0.85), (8, 16, 0.75))["data"]}],
+    }
+    key = _iso(NOW - timedelta(days=45))
+    row = pump_settings.map_snapshot(snapshot, device_guid="demo-pump", snapshot_key=key)
+    pump_settings.persist("demo-pump", [row])
+
+
 def _seed_chat() -> None:
     msgs = [
         {"role": "user", "content": "How did my mornings look this week?"},
@@ -367,6 +391,7 @@ def seed(force: bool = False) -> dict:
     r, t = _seed_glucose_and_treatments()
     _seed_pump_daily_and_modes()
     _seed_profile_and_care_notes()
+    _seed_pump_settings()
     _seed_oura_and_fitbit()
     _seed_cycle()
     _seed_labs()

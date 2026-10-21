@@ -37,6 +37,75 @@ function Metric({ label, value, sub = null, tone = "" }) {
   );
 }
 
+function settingValue(value) {
+  return Number.isInteger(value) ? String(value) : String(Math.round(value * 100) / 100);
+}
+
+function SettingsTable({ title, unit, segments }) {
+  return (
+    <div className="report-card bg-card rounded-lg border border-border p-3">
+      <p className="text-xs font-medium mb-1">{title} <span className="font-normal text-muted-foreground">({unit})</span></p>
+      <table className="w-full text-[11px] tabular-nums">
+        <thead>
+          <tr className="text-muted-foreground"><th className="text-left font-normal">Time</th><th className="text-right font-normal">Value</th></tr>
+        </thead>
+        <tbody>
+          {segments.map((s) => (
+            <tr key={`${s.start}-${s.end}`} className="border-t border-border/50">
+              <td className="py-0.5">{s.start}–{s.end}</td>
+              <td className="py-0.5 text-right font-medium">{settingValue(s.value)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function PumpSettingsSection({ ps }) {
+  const programs = [...(ps.basal_programs || [])].sort((a, b) => Number(b.active) - Number(a.active));
+  return (
+    <div className="report-section space-y-3">
+      <div>
+        <h2 className="font-semibold text-base">Programmed pump settings</h2>
+        <p className="text-[11px] text-muted-foreground">
+          As of {ps.as_of} ({ps.age_days} day{ps.age_days === 1 ? "" : "s"} before this report){ps.device_model ? ` · ${ps.device_model}` : ""}.
+          {" "}From the most recent settings snapshot Glooko recorded; Glooko records snapshots only occasionally, so later changes on the pump are not reflected.
+        </p>
+      </div>
+      {ps.scalars?.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {ps.scalars.map((s) => (
+            <Metric key={s.key} label={s.label} value={settingValue(s.value)} sub={s.unit} />
+          ))}
+        </div>
+      )}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {(ps.schedules || []).map((s) => (
+          <SettingsTable key={s.key} title={s.label} unit={s.unit} segments={s.segments} />
+        ))}
+      </div>
+      {programs.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {programs.map((p) => (
+            <SettingsTable
+              key={p.name}
+              title={`Basal: ${p.name}${p.active ? " (active)" : ""}`}
+              unit={`U/h · ${settingValue(p.units_per_day)} U/day`}
+              segments={p.segments}
+            />
+          ))}
+        </div>
+      )}
+      {ps.changes?.length > 0 && (
+        <p className="text-[11px] text-muted-foreground">
+          Recorded changes: {ps.changes.map((c) => `${c.snapshot_at.slice(0, 10)} (${c.changed.join(", ")})`).join("; ")}.
+        </p>
+      )}
+    </div>
+  );
+}
+
 function TIRBar({ g }) {
   // Non-overlapping band widths from cumulative thresholds.
   const segs = [
@@ -692,6 +761,8 @@ export default function Report() {
           )}
         </div>
       )}
+
+      {report.pump_settings && <PumpSettingsSection ps={report.pump_settings} />}
 
       {mb?.summary && (
         <div className="report-section report-card rounded-xl border border-border p-4 space-y-3">

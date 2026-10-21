@@ -230,6 +230,7 @@ are omitted from the time column below for brevity.
 | Companion / `AIConversation` | undefined | envelope only | patient report or hypothesis; patient, system, or algorithm legacy source |
 | Cycle / `PeriodLog` | owner + local date | `date` observed partial date | source fact, patient report, or derived statistic; device/import, patient, or algorithm |
 | Insulin / `NightscoutProfile` | owner + profile name | envelope only until an effective interval exists | source fact; device/provider or import |
+| Insulin / `PumpSettings` | owner + device guid + snapshot time | `snapshot_at` recorded UTC | source fact; device/provider or import |
 | Connections / `OuraConnection` | owner singleton | expiry effective; last sync recorded | source fact; device/provider or import |
 | Wearables / `OuraDaily` | owner + provider date | `date` observed day | source fact; device/provider or import |
 | Wearables / `OuraHeartRate` | source or legacy | `timestamp` observed UTC | source fact; device/provider or import |

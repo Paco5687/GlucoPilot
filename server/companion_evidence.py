@@ -100,8 +100,8 @@ SCOPES = (
             "basal", "bedtime", "bg", "bolus", "breakfast", "carb", "cgm", "correction",
             "dexcom", "diabetes", "dinner", "eat", "eating", "fingerstick", "food",
             "glooko", "glucose", "glycemic", "highs", "hypo", "hypoglycemia", "insulin",
-            "ketone", "lows", "lunch", "meal", "omnipod", "pump", "spike", "sugar",
-            "tdd", "tir",
+            "isf", "ketone", "lows", "lunch", "meal", "omnipod", "pump", "ratio", "spike",
+            "sugar", "tdd", "tir",
         }),
     ),
     Scope(
