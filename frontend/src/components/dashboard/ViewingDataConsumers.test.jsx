@@ -91,27 +91,41 @@ describe("other useViewingData consumers", () => {
     expect(apiMocks.ouraDaily).toHaveBeenCalledTimes(1);
   });
 
-  it("charts each ring's HRV as its own series without merging them", async () => {
-    // Same night, two baselines: Oura reads higher than Google Health. The card
-    // must keep them apart rather than averaging or overwriting.
-    apiMocks.fitbitDaily.mockResolvedValue([{ date: "2026-07-22", hrv: 24 }]);
-    apiMocks.ouraDaily.mockResolvedValue([{ date: "2026-07-22", hrv: 26 }]);
+  describe("HRV card", () => {
+    // Wearables only charts rows inside its trailing 90-day window, measured
+    // from the real clock. Pin the clock (Date only, so promises and timers
+    // still run) so the fixture dates below stay inside that window.
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-07-25T12:00:00Z"));
+    });
 
-    render(<Wearables />);
-    await settle();
+    afterEach(() => {
+      vi.useRealTimers();
+    });
 
-    expect(screen.getByText("Heart Rate Variability")).toBeTruthy();
-    // The headline number stays on the primary (Google Health) series.
-    expect(screen.getByText("24.0")).toBeTruthy();
-  });
+    it("charts each ring's HRV as its own series without merging them", async () => {
+      // Same night, two baselines: Oura reads higher than Google Health. The card
+      // must keep them apart rather than averaging or overwriting.
+      apiMocks.fitbitDaily.mockResolvedValue([{ date: "2026-07-22", hrv: 24 }]);
+      apiMocks.ouraDaily.mockResolvedValue([{ date: "2026-07-22", hrv: 26 }]);
 
-  it("still charts Oura HRV on days Google Health never reported", async () => {
-    apiMocks.fitbitDaily.mockResolvedValue([]);
-    apiMocks.ouraDaily.mockResolvedValue([{ date: "2026-07-22", hrv: 26 }]);
+      render(<Wearables />);
+      await settle();
 
-    render(<Wearables />);
-    await settle();
+      expect(screen.getByText("Heart Rate Variability")).toBeTruthy();
+      // The headline number stays on the primary (Google Health) series.
+      expect(screen.getByText("24.0")).toBeTruthy();
+    });
 
-    expect(screen.getByText("Heart Rate Variability")).toBeTruthy();
+    it("still charts Oura HRV on days Google Health never reported", async () => {
+      apiMocks.fitbitDaily.mockResolvedValue([]);
+      apiMocks.ouraDaily.mockResolvedValue([{ date: "2026-07-22", hrv: 26 }]);
+
+      render(<Wearables />);
+      await settle();
+
+      expect(screen.getByText("Heart Rate Variability")).toBeTruthy();
+    });
   });
 });
