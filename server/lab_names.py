@@ -28,6 +28,15 @@ _LAB_SYNONYMS = {
         "thyroid peroxidase antibody", "thyroid peroxidase antibodies", "thyroid peroxidase tpo ab",
         "thyroid peroxidase tpo abs", "thyroid peroxidase tpo antibodies", "thyroperoxidase ab",
     ),
+    "Thyroglobulin antibodies": (
+        "tgab", "tg ab", "thyroglobulin ab", "thyroglobulin abs", "thyroglobulin antibody",
+        "thyroglobulin antibodies", "anti thyroglobulin", "anti thyroglobulin ab", "antithyroglobulin ab",
+        "thyroglobulin antibody tgab",
+    ),
+    "Reverse T3": (
+        "reverse t3", "t3 reverse", "rt3", "reverse t3 rt3", "reverse t3 serum", "t3 reverse lc ms ms",
+        "reverse t3 lc ms ms",
+    ),
     "Cortisol (AM)": (
         "cortisol am", "am cortisol", "cortisol am specimen", "cortisol morning", "morning cortisol",
         "cortisol total am", "cortisol 8 am", "cortisol 8am",
@@ -55,7 +64,8 @@ _LAB_SYNONYMS = {
         "vitamin d 25 oh total", "25 hydroxy vitamin d",
     ),
     "Ferritin": ("ferritin", "ferritin serum"),
-    "Hemoglobin": ("hemoglobin", "hgb", "hb", "haemoglobin"),
+    "Hemoglobin": ("hemoglobin", "hgb", "hb", "haemoglobin", "hemoglobin female", "hemoglobin male"),
+    "WBC": ("wbc", "wbcs", "total wbc", "total wbcs", "white blood cells", "white blood cell count", "wbc count"),
     "Sodium": ("sodium", "na", "sodium serum"),
     "Potassium": ("potassium", "k", "potassium serum"),
 }

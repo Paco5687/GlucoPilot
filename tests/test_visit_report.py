@@ -237,6 +237,46 @@ def test_labs_sort_by_real_date_merge_synonyms_and_drop_duplicate_rows(report_db
     assert "Synthetic marker" not in [entry["test_name"] for entry in labs["key_results"]]
 
 
+def test_only_out_of_range_results_are_flagged_newest_first(report_db):
+    # Functional-medicine grades are not reference-range flags.
+    _lab("Synthetic estrogen metabolite", 60.5, "2026-06-24", flag="within_range")
+    _lab("Synthetic gut marker", 0.07, "2026-06-24", flag="optimal")
+    _lab("Synthetic cortisol metabolite", 3676.7, "2026-06-24", flag="high_end_of_range")
+    _lab("Synthetic wellness score", 68.8, "2026-06-24", flag="needs_improvement")
+    # Abnormal flags, including a qualitative positive, are flagged.
+    _lab("Leukocyte esterase", 1, "2026-05-27", flag="positive")
+    _lab("C-peptide", 0.16, "2026-08-24", unit="ng/mL", reference_low=0.8, reference_high=3.85)
+    _lab("Anion Gap", 15.8, "2026-04-25", unit="mmol/L", reference_low=7, reference_high=15)
+    # A case variant of the same test is one test; the newer draw is latest.
+    _lab("Anion gap", 17, "2026-06-23", unit="mmol/L", reference_low=7, reference_high=12)
+
+    labs = report._labs()
+
+    assert [entry["test_name"] for entry in labs["flagged"]] == ["C-peptide", "Anion gap", "Leukocyte esterase"]
+    anion = next(entry for entries in labs["categories"].values() for entry in entries if entry["test_name"] == "Anion gap")
+    assert (anion["value"], anion["count"], anion["reported_names"]) == (17, 2, ["Anion Gap"])
+
+
+def test_glucose_counts_low_episodes(report_db):
+    start = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=2)
+    readings = []
+    for step in range(2 * 288):
+        at = start + timedelta(minutes=5 * step)
+        # One 30-minute low at 50 mg/dL each day; in range otherwise.
+        value = 50 if step % 288 < 6 else 120
+        readings.append({
+            "owner_email": OWNER, "timestamp": at.isoformat().replace("+00:00", "Z"),
+            "value": value, "source": "synthetic-cgm",
+        })
+    db.bulk_create_entities("GlucoseReading", readings)
+
+    glucose = report._glucose(ZoneInfo("UTC"), (start - timedelta(minutes=1)).isoformat().replace("+00:00", "Z"))
+
+    lows = glucose["low_episodes"]
+    assert (lows["episodes"], lows["level2_episodes"]) == (2, 2)
+    assert lows["per_week"] == round(2 / glucose["days"] * 7, 1)
+
+
 def test_verified_copy_wins_when_duplicates_collapse(report_db):
     _lab("TSH", 2.0, "2026-01-05", unit="mIU/L")
     _lab("Thyroid Stimulating Hormone", 2.0, "2026-01-05", unit="mIU/L", verification_status="approved")
