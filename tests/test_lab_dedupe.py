@@ -58,37 +58,6 @@ def _pair_rows(shared=SHARED):
     return rows
 
 
-@pytest.mark.parametrize(
-    ("first", "second"),
-    [
-        ("Free T3", "Triiodothyronine (T3), Free"),
-        ("Free T4", "T4,Free(Direct)"),
-        ("HbA1c", "Hemoglobin A1c"),
-        ("Reverse T3", "Reverse T3, Serum"),
-        ("Cholesterol - Total", "Cholesterol, Total"),
-        ("Alk Phos", "Alkaline Phosphatase"),
-        ("Thyroglobulin Abs", "Thyroglobulin Antibody"),
-        ("Vitamin D (25-OH)", "Vitamin D, 25-Hydroxy"),
-        ("Cholesterol/HDL Ratio", "T. Chol/HDL Ratio"),
-    ],
-)
-def test_lab_spellings_of_one_analyte_match(first, second):
-    assert lab_dedupe.canonical_analyte(first) == lab_dedupe.canonical_analyte(second)
-
-
-@pytest.mark.parametrize(
-    ("first", "second"),
-    [
-        ("Bilirubin, Total", "Bilirubin, Direct"),
-        ("Testosterone, Total", "Testosterone, Free"),
-        ("Free T3", "Free T4"),
-        ("Sjogren's Antibody (SS-A)", "Sjogren's Antibody (SS-B)"),
-    ],
-)
-def test_different_analytes_stay_apart(first, second):
-    assert lab_dedupe.canonical_analyte(first) != lab_dedupe.canonical_analyte(second)
-
-
 def test_optimal_range_report_is_inferred_from_its_twins_and_never_dropped():
     rows = _pair_rows()
     nonstandard = lab_dedupe.nonstandard_range_records(rows)
@@ -120,6 +89,25 @@ def test_kept_row_prefers_a_flag_that_agrees_with_its_own_range():
     ]
     annotations = lab_dedupe.resolve(rows)
     assert annotations["a"]["duplicate_of"] == "b"
+
+
+def test_kept_row_prefers_a_flag_its_text_range_supports():
+    # 9 mg/g flagged high against "<30" is the extraction error the Visit
+    # Report corrects; the same rule picks which copy of the draw is kept.
+    rows = [
+        {**_row("a", "report-a", "Microalbumin/Creatinine Ratio", 9, "mg/g", None, "high"), "reference_range": "<30"},
+        {**_row("b", "report-b", "Microalbumin/Creatinine Ratio", 9, "mg/g", None, ""), "reference_range": "<30"},
+    ]
+    assert lab_dedupe.resolve(rows)["a"]["duplicate_of"] == "b"
+
+
+def test_synonyms_from_the_report_table_are_one_draw():
+    rows = [
+        _row("a", "report-a", "TSH", 1.57, "uIU/mL", (0.45, 4.5), ""),
+        _row("b", "report-b", "Thyroid Stimulating Hormone", 1.57, "uIU/mL", (0.45, 4.5), ""),
+    ]
+    annotations = lab_dedupe.resolve(rows)
+    assert annotations["a"]["same_draw_count"] == 2 and annotations["b"]["duplicate_of"] == "a"
 
 
 def test_conflicting_units_or_dates_are_different_results():

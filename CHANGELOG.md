@@ -22,6 +22,10 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Lab flags** — when a result has a numeric value and reference range, the
   range decides high/low/normal; a stored flag the range contradicts is noted
   and not used.
+- **Lab results read the same everywhere** — the Visit Report, Clinician Brief
+  and Companion share one table of test-name synonyms, and the Companion now
+  takes a lab's flag from its value and reference range when the source's flag
+  contradicts it, as the Report and Brief already did.
 - **Clinician Brief** — concerns are ranked (weight loss, hypoglycemia,
   reported symptoms, then one grouped abnormal-labs entry); each lab test is
   listed once; reassuring, opposing and limitation entries show their label,

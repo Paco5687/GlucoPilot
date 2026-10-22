@@ -36,6 +36,7 @@ from .evidence_sets import (
     StaleEvidenceError,
     evidence_set_reads_enabled,
 )
+from .lab_audit import effective_flag
 from .lab_audit import qualification as lab_qualification
 from .insulin_response import build_response_events
 from .management_burden import analysis_for_range as management_burden_analysis
@@ -359,11 +360,21 @@ def _confidence(
     return {"label": "not_assessed", "score": None, "method": None}
 
 
-def _explicit_stance(data: dict[str, Any]) -> tuple[str | None, str | None]:
+def _explicit_stance(entity_type: str, data: dict[str, Any]) -> tuple[str | None, str | None]:
     if data.get("reference_basis") == lab_dedupe.NONSTANDARD:
         # An "optimal range" flag is not the performing lab's judgement.
         return None, None
     flag = str(data.get("normalized_flag", data.get("flag", ""))).strip().lower().replace(" ", "_")
+    if entity_type == "LabResult" and flag:
+        # The value and its reference range overrule a stored flag they
+        # contradict, as on the Visit Report and Clinician Brief.
+        derived, replaced = effective_flag(data)
+        if replaced:
+            stance = "reassuring" if derived == "normal" else "opposing"
+            return stance, (
+                f"The value is {derived} against its own reference range; the source's "
+                f"{replaced.replace('_', ' ')} flag contradicts that range."
+            )
     if flag in {"normal", "within_range", "in_range"}:
         return "reassuring", f"Source explicitly labels this result {flag.replace('_', ' ')}."
     if flag in {"abnormal", "high", "low", "critical", "out_of_range"}:
@@ -1534,7 +1545,7 @@ def build_bundle(query: EvidenceBundleQuery) -> dict[str, Any]:
         sections[section].append(item)
         for link in raw["source_links"]:
             source_links[(link["kind"], link["href"])] = link
-        stance, reason = _explicit_stance(raw["data"])
+        stance, reason = _explicit_stance(raw["entity_type"], raw["data"])
         if stance:
             sections[f"{stance}_evidence"].append({
                 "evidence_item_id": raw["id"],

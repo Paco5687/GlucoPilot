@@ -32,6 +32,7 @@ from .data_quality import assess_cgm, assess_daily, assess_nutrition, assess_pum
 from .glucose_reconciliation import summarize as summarize_fingersticks
 from .insulin_reconciliation import reconcile_treatments
 from .lab_audit import effective_flag
+from .lab_names import canonical_lab_name
 from .lab_audit import qualification as lab_qualification
 from .lab_audit import summary_eligible as lab_summary_eligible
 from .llm import CONTEXT_SAFETY_MARGIN, context_limit, count_tokens, invoke_llm
@@ -600,56 +601,6 @@ def _lab_date(value: Any) -> date | None:
     return None
 
 
-# Common synonyms for the same assay, keyed by a punctuation-free lowercase
-# form of the reported name. Names not listed keep their reported form.
-_LAB_SYNONYMS = {
-    "Hemoglobin A1c": (
-        "hba1c", "hb a1c", "a1c", "hemoglobin a1c", "haemoglobin a1c", "hgb a1c",
-        "hemoglobin a1c hba1c", "glycated hemoglobin", "glycosylated hemoglobin",
-        "glycohemoglobin", "hba1c ngsp",
-    ),
-    "TSH": ("tsh", "thyroid stimulating hormone", "thyrotropin", "tsh 3rd generation", "tsh sensitive"),
-    "Free T4": ("free t4", "t4 free", "ft4", "free thyroxine", "thyroxine free", "t4 free direct"),
-    "Free T3": ("free t3", "t3 free", "ft3", "free triiodothyronine", "triiodothyronine free"),
-    "TPO antibodies": (
-        "tpo", "tpo ab", "tpo abs", "tpo antibody", "tpo antibodies", "anti tpo", "anti tpo ab",
-        "antitpo", "thyroid peroxidase", "thyroid peroxidase ab", "thyroid peroxidase abs",
-        "thyroid peroxidase antibody", "thyroid peroxidase antibodies", "thyroid peroxidase tpo ab",
-        "thyroid peroxidase tpo abs", "thyroid peroxidase tpo antibodies", "thyroperoxidase ab",
-    ),
-    "Cortisol (AM)": (
-        "cortisol am", "am cortisol", "cortisol am specimen", "cortisol morning", "morning cortisol",
-        "cortisol total am", "cortisol 8 am", "cortisol 8am",
-    ),
-    "Prolactin": ("prolactin", "prl", "prolactin serum"),
-    "FSH": ("fsh", "follicle stimulating hormone"),
-    "LH": ("lh", "luteinizing hormone"),
-    "Estradiol": ("estradiol", "e2", "estradiol e2"),
-    "ACTH": ("acth", "adrenocorticotropic hormone", "corticotropin"),
-    "IGF-1": ("igf 1", "igf1", "insulin like growth factor 1", "insulin like growth factor i", "somatomedin c"),
-    "C-peptide": ("c peptide", "cpeptide"),
-    "Glucose": ("glucose", "glucose serum", "glucose plasma", "glucose fasting", "fasting glucose"),
-    "Creatinine": ("creatinine", "creatinine serum"),
-    "eGFR": ("egfr", "estimated gfr", "gfr estimated", "egfr ckd epi", "egfr if non africn am"),
-    "Urine albumin/creatinine ratio": (
-        "uacr", "albumin creatinine ratio", "microalbumin creatinine ratio", "albumin creatinine ratio urine",
-        "microalbumin creatinine ratio urine", "urine albumin creatinine ratio",
-    ),
-    "LDL cholesterol": ("ldl", "ldl c", "ldl cholesterol", "ldl chol calc", "ldl cholesterol calc", "ldl calculated"),
-    "HDL cholesterol": ("hdl", "hdl c", "hdl cholesterol"),
-    "Total cholesterol": ("cholesterol", "cholesterol total", "total cholesterol"),
-    "Triglycerides": ("triglycerides", "triglyceride", "trig"),
-    "Vitamin D, 25-OH": (
-        "vitamin d", "vitamin d 25 hydroxy", "vitamin d 25 oh", "25 oh vitamin d", "25 hydroxyvitamin d",
-        "vitamin d 25 oh total", "25 hydroxy vitamin d",
-    ),
-    "Ferritin": ("ferritin", "ferritin serum"),
-    "Hemoglobin": ("hemoglobin", "hgb", "hb", "haemoglobin"),
-    "Sodium": ("sodium", "na", "sodium serum"),
-    "Potassium": ("potassium", "k", "potassium serum"),
-}
-_LAB_CANONICAL = {alias: canonical for canonical, aliases in _LAB_SYNONYMS.items() for alias in aliases}
-
 # Core labs for the key-results panel, in display order.
 KEY_LABS = (
     "Hemoglobin A1c", "TSH", "Free T4", "TPO antibodies", "Cortisol (AM)", "Prolactin",
@@ -657,15 +608,6 @@ KEY_LABS = (
     "Urine albumin/creatinine ratio", "LDL cholesterol", "Vitamin D, 25-OH", "Ferritin", "Hemoglobin",
     "Sodium", "Potassium",
 )
-
-
-def _lab_key(name: str) -> str:
-    text = str(name or "").lower().replace(".", "")
-    return " ".join(re.sub(r"[^a-z0-9]+", " ", text).split())
-
-
-def canonical_lab_name(name: str) -> str:
-    return _LAB_CANONICAL.get(_lab_key(name), " ".join(str(name or "").split()))
 
 
 def _lab_value_key(value: Any) -> str:
