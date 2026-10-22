@@ -13,6 +13,15 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Insulin and Connections pages and in the Visit Report, each with the
   snapshot's as-of date and age; the Companion can answer from the latest one.
 
+### Changed
+- **One report** — the Clinician Brief is merged into the Visit Report. A
+  "For" selector (or `/report?for=<specialty>`) gives the Brief's specialty
+  views: each shows its own data domains, with labs and documents filtered by
+  its keywords and insurance left out. Lab results, imaging studies and other
+  clinical documents link to the uploaded document they came from, and the
+  report lists the clinical documents on file. `/brief` now opens the Visit
+  Report; Share Export still builds briefs.
+
 ### Fixed
 - **Visit Report weight** — the headline is change from the 12-month high to
   the latest weight. Change since the first entry is shown as secondary context.

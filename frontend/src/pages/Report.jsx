@@ -97,6 +97,18 @@ function OptionalSection({ title, summary = null, includeInPrint, children }) {
   );
 }
 
+// A link to the uploaded document a result came from, opened at its page
+// when extraction recorded one. Screen only.
+function SourceLink({ recordId, page = null, label = "Source" }) {
+  if (!recordId) return null;
+  const href = `/api/records/file/${encodeURIComponent(recordId)}?inline=true${page != null ? `#page=${page}` : ""}`;
+  return (
+    <a href={href} target="_blank" rel="noreferrer" className="print:hidden ml-1.5 text-[10px] font-normal text-primary underline">
+      {label}
+    </a>
+  );
+}
+
 function settingValue(value) {
   return Number.isInteger(value) ? String(value) : String(Math.round(value * 100) / 100);
 }
@@ -531,6 +543,7 @@ function KeyLabResults({ results, perRow }) {
               <td className="px-3 py-1 font-medium">
                 {t.test_name}
                 <VerificationBadge entry={t} perRow={perRow} />
+                <SourceLink recordId={t.source?.record_id} page={t.source?.page} />
               </td>
               <td className="px-3 py-1 text-right tabular-nums whitespace-nowrap">
                 {t.value} <span className="text-muted-foreground">{t.unit}</span>
@@ -579,6 +592,7 @@ function OutOfRangeLabs({ results, panels, perRow }) {
               <td className="px-3 py-0.5 font-medium">
                 {t.test_name}
                 <VerificationBadge entry={t} perRow={perRow} />
+                <SourceLink recordId={t.source?.record_id} page={t.source?.page} />
               </td>
               <td className="px-3 py-0.5 text-right tabular-nums font-semibold text-red-700 whitespace-nowrap">{labResult(t)}</td>
               <td className="px-3 py-0.5 text-right tabular-nums text-muted-foreground whitespace-nowrap">{labReference(t)}</td>
@@ -607,6 +621,7 @@ function AllLabResults({ categories, perRow }) {
                 <td className="px-3 py-1 font-medium">
                   {t.test_name}
                   <VerificationBadge entry={t} perRow={perRow} />
+                <SourceLink recordId={t.source?.record_id} page={t.source?.page} />
                   {t.reported_names?.length > 0 && (
                     <div className="text-[10px] font-normal text-muted-foreground">also reported as {t.reported_names.join(", ")}</div>
                   )}
@@ -913,15 +928,49 @@ function InsulinByMonth({ months, units }) {
   );
 }
 
-function ImagingSection({ studies }) {
-  if (!studies?.length) return null;
+// Documents print as a list of what is on file; the machine-written summary
+// of each stays on screen behind a toggle.
+function DocumentList({ documents }) {
+  if (!documents?.length) return null;
+  return (
+    <TableCard title={`Other clinical documents on file (${documents.length})`}>
+      <table className="w-full text-xs">
+        <tbody>
+          {documents.map((doc) => (
+            <tr key={doc.id} className="border-t border-border align-top">
+              <td className="px-3 py-0.5 tabular-nums text-muted-foreground whitespace-nowrap w-24">{doc.date || doc.date_text || "undated"}</td>
+              <td className="px-3 py-0.5">
+                <span className="font-medium">{doc.title}</span>
+                <SourceLink recordId={doc.id} label="Open" />
+                {doc.summary && (
+                  <details className="print:hidden">
+                    <summary className="cursor-pointer text-[10px] text-muted-foreground">Machine-written summary</summary>
+                    <p className="mt-0.5 leading-relaxed">{doc.summary}</p>
+                  </details>
+                )}
+              </td>
+              <td className="px-3 py-0.5 text-muted-foreground whitespace-nowrap">{doc.type}</td>
+              <td className="px-3 py-0.5 text-right text-muted-foreground whitespace-nowrap">{doc.lab_count ? plural(doc.lab_count, "result") : ""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </TableCard>
+  );
+}
+
+function RecordsSection({ studies, documents }) {
+  if (!studies?.length && !documents?.length) return null;
   return (
     <div className="space-y-2">
-      <SectionTitle sub="Summaries machine-extracted from the uploaded reports.">Imaging</SectionTitle>
-      {studies.map((study) => (
+      <SectionTitle sub="Summaries machine-extracted from the uploaded reports.">Imaging &amp; clinical documents</SectionTitle>
+      {(studies || []).map((study) => (
         <div key={study.id} className="report-card bg-card rounded-lg border border-border p-3 space-y-1">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <p className="text-sm font-semibold">{study.title}</p>
+            <p className="text-sm font-semibold">
+              {study.title}
+              <SourceLink recordId={study.id} label="Open report" />
+            </p>
             <span className="text-xs text-muted-foreground tabular-nums">{study.date || "date unknown"}</span>
           </div>
           {study.summary && <p className="text-xs leading-relaxed">{study.summary}</p>}
@@ -937,12 +986,15 @@ function ImagingSection({ studies }) {
           )}
         </div>
       ))}
+      <DocumentList documents={documents} />
     </div>
   );
 }
 
 // Facts that need the clinician's attention, computed from the report data.
-function summaryFindings(report) {
+// Each carries the data domain it belongs to, so a specialty view keeps only
+// its own; conflicts and weight belong to every view.
+function summaryFindings(report, shows = () => true) {
   const findings = [];
   const g = report.glucose;
   const unresolved = report.contradictions?.unresolved || [];
@@ -958,6 +1010,7 @@ function summaryFindings(report) {
     const lows = g.low_episodes;
     const recentMonths = (report.trends?.glucose_by_month || []).slice(-FINDING_MONTHS_LISTED);
     findings.push({
+      domain: "glucose",
       tone: "red",
       label: "Hypoglycemia",
       text: `Time below range exceeds the consensus target: ${g.tbr70}% of readings below 70 mg/dL (target <${TBR70_TARGET}%), ${g.tbr54}% below 54 mg/dL (target <${TBR54_TARGET}%).`
@@ -969,6 +1022,7 @@ function summaryFindings(report) {
   const direction = a1c.every((row) => row.difference <= -A1C_GMI_GAP) ? "lower" : a1c.every((row) => row.difference >= A1C_GMI_GAP) ? "higher" : null;
   if (a1c.length > 1 && direction) {
     findings.push({
+      domain: "glucose",
       tone: "amber",
       label: "A1c vs GMI",
       text: `A1c is ${direction} than the CGM-estimated GMI at every draw: ${a1c.map((row) => `${row.a1c}% vs ${row.gmi}% (${row.date})`).join("; ")}.`,
@@ -976,15 +1030,16 @@ function summaryFindings(report) {
   }
   if (g.tar180 > TAR180_TARGET || g.tar250 > TAR250_TARGET) {
     findings.push({
+      domain: "glucose",
       tone: "amber",
       label: "Hyperglycemia",
       text: `${g.tar180}% of readings above 180 mg/dL (target <${TAR180_TARGET}%), ${g.tar250}% above 250 mg/dL (target <${TAR250_TARGET}%).`,
     });
   } else if (g.tir < TIR_TARGET) {
-    findings.push({ tone: "amber", label: "Time in range", text: `${g.tir}% (target >${TIR_TARGET}%).` });
+    findings.push({ domain: "glucose", tone: "amber", label: "Time in range", text: `${g.tir}% (target >${TIR_TARGET}%).` });
   }
   if (g.cv > CV_TARGET) {
-    findings.push({ tone: "amber", label: "Variability", text: `Coefficient of variation ${g.cv}% (target ≤${CV_TARGET}%).` });
+    findings.push({ domain: "glucose", tone: "amber", label: "Variability", text: `Coefficient of variation ${g.cv}% (target ≤${CV_TARGET}%).` });
   }
   const weight = report.weight;
   if (weight?.available && significantWeightLoss(weight)) {
@@ -999,6 +1054,7 @@ function summaryFindings(report) {
   if (abnormal.length) {
     const recent = abnormal.filter((entry) => entry.date).slice(0, FINDING_LABS_LISTED);
     findings.push({
+      domain: "labs",
       tone: "red",
       label: "Labs",
       text: `${plural(abnormal.length, "result")} outside the reference range at the latest draw.`
@@ -1011,6 +1067,7 @@ function summaryFindings(report) {
     // A topic ("Teeth") says nothing on its own; each entry's opening
     // sentence states the symptom in the patient's words.
     findings.push({
+      domain: "clinical",
       tone: "amber",
       label: "Reported symptoms",
       text: dates.length ? `Recorded ${dates.join(", ")}.` : "",
@@ -1020,6 +1077,7 @@ function summaryFindings(report) {
   const effort = report.management_burden;
   if (effort?.outcome_vs_effort?.sustainability_review_flag && effort.summary) {
     findings.push({
+      domain: "insulin",
       tone: "amber",
       label: "Management effort",
       text: `${effort.summary.average_active_management_minutes_per_day} min/day of recorded diabetes management`
@@ -1027,7 +1085,7 @@ function summaryFindings(report) {
         + `${effort.summary.days_with_measured_effort ? ` over ${effort.summary.days_with_measured_effort} days` : ""}.`,
     });
   }
-  return findings;
+  return findings.filter((finding) => !finding.domain || shows(finding.domain));
 }
 
 function Findings({ findings }) {
@@ -1394,6 +1452,9 @@ export default function Report() {
   const [includeUnevaluatedInPrint, setIncludeUnevaluatedInPrint] = useState(false);
   const [printAllLabs, setPrintAllLabs] = useState(false);
   const [printAnalyses, setPrintAnalyses] = useState(false);
+  // A specialty view ("?for=endocrinology") shows that specialty's domains and
+  // the labs and documents matching its keywords; empty is the full report.
+  const [specialty, setSpecialty] = useState(() => new URLSearchParams(window.location.search).get("for") || "");
 
   const generate = useCallback(async (d) => {
     setLoading(true);
@@ -1439,18 +1500,40 @@ export default function Report() {
   const reviewedHypotheses = hypotheses.filter((item) => (
     !item.legacy && hypothesisState(item) !== "not_evaluated"
   ));
-  const findings = summaryFindings(report);
   const latestKg = report.weight?.available ? report.weight.latest?.weight_kg : null;
   const tdd = i.pump_reported_avg_tdd ?? i.calculated_avg_tdd;
   const labCounts = labs.verification?.counts || {};
   const verifiedLabs = (labCounts.approved || 0) + (labCounts.edited || 0);
   const perRowVerification = verifiedLabs > 0 && (labCounts.unverified || 0) > 0;
-  const labTests = Object.values(labs.categories || {}).reduce((sum, tests) => sum + tests.length, 0);
   const labPanels = Object.fromEntries(
     Object.entries(labs.categories || {}).flatMap(([cat, tests]) => tests.map((t) => [t.test_name, cat])),
   );
   const hasAnalyses = (report.health_episodes?.episodes?.length || report.health_episodes?.medication_exposures?.length)
     || mb?.summary || ir?.counts?.total > 0 || ap?.effects?.length > 0;
+
+  const view = (report.specialties || []).find((item) => item.key === specialty) || null;
+  const shows = (domain) => !view || view.domains.includes(domain);
+  const relevant = (...texts) => !view?.keywords?.length
+    || view.keywords.some((keyword) => texts.filter(Boolean).join(" ").toLowerCase().includes(keyword));
+  const labRelevant = (t, panel) => relevant(t.test_name, panel, ...(t.reported_names || []));
+  const flagged = (labs.flagged || []).filter((t) => labRelevant(t, labPanels[t.test_name]));
+  const categories = Object.fromEntries(
+    Object.entries(labs.categories || {})
+      .map(([cat, tests]) => [cat, tests.filter((t) => labRelevant(t, cat))])
+      .filter(([, tests]) => tests.length),
+  );
+  const labTests = Object.values(categories).reduce((sum, tests) => sum + tests.length, 0);
+  // Imaging studies are few and cross specialties (a brain MRI read for an
+  // endocrine work-up names no endocrine keyword), so every view keeps them.
+  const studies = report.imaging || [];
+  const documents = (report.documents || []).filter((doc) => relevant(doc.title, doc.summary, doc.type));
+  const findings = summaryFindings({ ...report, labs: { ...labs, flagged } }, shows);
+  // Primary care lists confirmed conditions, not specialist work-up questions.
+  const hideUnconfirmed = Boolean(view?.omit_unconfirmed_hypotheses);
+  const listedReviewed = hideUnconfirmed
+    ? reviewedHypotheses.filter((item) => hypothesisState(item) === "clinician_confirmed")
+    : reviewedHypotheses;
+  const listedUnevaluated = hideUnconfirmed ? [] : unevaluatedHypotheses;
 
   return (
     <div className="space-y-5 max-w-4xl mx-auto">
@@ -1473,6 +1556,18 @@ export default function Report() {
           <Button variant="outline" size="sm" onClick={() => generate(days)} className="gap-2">
             <RefreshCw className="w-3.5 h-3.5" /> Regenerate
           </Button>
+          <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+            For
+            <select
+              aria-label="Report view"
+              value={specialty}
+              onChange={(event) => setSpecialty(event.target.value)}
+              className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground"
+            >
+              <option value="">Full report</option>
+              {(report.specialties || []).map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+            </select>
+          </label>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
           <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -1498,6 +1593,7 @@ export default function Report() {
           <PatientLine patient={report.patient} />
           <p className="text-sm text-muted-foreground mt-1">
             {report.days}-day review · {report.start_date} to {report.end_date}
+            {view && <span className="font-medium text-foreground"> · {view.label} view</span>}
           </p>
           <DataSourcesLine report={report} />
         </div>
@@ -1510,28 +1606,34 @@ export default function Report() {
       </div>
 
       {/* Page 1: the numbers, what needs attention, and the clinical record */}
-      <div className="report-section grid grid-cols-2 md:grid-cols-6 print:grid-cols-6 gap-2">
-        <Metric label="Time in range" value={`${g.tir}%`} sub={`70–180 · target >${TIR_TARGET}%`} tone={g.tir >= TIR_TARGET ? "text-green-600" : "text-amber-600"} />
-        <Metric
-          label="Time below 70 mg/dL"
-          value={`${g.tbr70}%`}
-          sub={`target <${TBR70_TARGET}% · ${g.tbr70 > TBR70_TARGET ? "above target" : "within target"}`}
-          tone={g.tbr70 > TBR70_TARGET ? "text-red-600" : "text-green-600"}
-        />
-        <Metric
-          label="Time below 54 mg/dL"
-          value={`${g.tbr54}%`}
-          sub={`target <${TBR54_TARGET}% · ${g.tbr54 > TBR54_TARGET ? "above target" : "within target"}`}
-          tone={g.tbr54 > TBR54_TARGET ? "text-red-600" : "text-green-600"}
-        />
-        <Metric label="Average glucose" value={`${g.avg}`} sub={`mg/dL · GMI ${g.gmi}% (est. A1c)`} />
-        <Metric label="Variability (CV)" value={`${g.cv}%`} sub={g.cv <= CV_TARGET ? `target ≤${CV_TARGET}%` : `above ${CV_TARGET}% target`} tone={g.cv <= CV_TARGET ? "" : "text-amber-600"} />
-        <Metric
-          label="Total daily insulin"
-          value={tdd != null ? `${tdd}` : "—"}
-          sub={tdd != null ? `U/day${latestKg ? ` · ${(tdd / latestKg).toFixed(2)} U/kg` : ""}` : "no complete days"}
-        />
-      </div>
+      {(shows("glucose") || shows("insulin")) && (
+        <div className="report-section grid grid-cols-2 md:grid-cols-6 print:grid-cols-6 gap-2">
+          {shows("glucose") && (<>
+            <Metric label="Time in range" value={`${g.tir}%`} sub={`70–180 · target >${TIR_TARGET}%`} tone={g.tir >= TIR_TARGET ? "text-green-600" : "text-amber-600"} />
+            <Metric
+              label="Time below 70 mg/dL"
+              value={`${g.tbr70}%`}
+              sub={`target <${TBR70_TARGET}% · ${g.tbr70 > TBR70_TARGET ? "above target" : "within target"}`}
+              tone={g.tbr70 > TBR70_TARGET ? "text-red-600" : "text-green-600"}
+            />
+            <Metric
+              label="Time below 54 mg/dL"
+              value={`${g.tbr54}%`}
+              sub={`target <${TBR54_TARGET}% · ${g.tbr54 > TBR54_TARGET ? "above target" : "within target"}`}
+              tone={g.tbr54 > TBR54_TARGET ? "text-red-600" : "text-green-600"}
+            />
+            <Metric label="Average glucose" value={`${g.avg}`} sub={`mg/dL · GMI ${g.gmi}% (est. A1c)`} />
+            <Metric label="Variability (CV)" value={`${g.cv}%`} sub={g.cv <= CV_TARGET ? `target ≤${CV_TARGET}%` : `above ${CV_TARGET}% target`} tone={g.cv <= CV_TARGET ? "" : "text-amber-600"} />
+          </>)}
+          {shows("insulin") && (
+            <Metric
+              label="Total daily insulin"
+              value={tdd != null ? `${tdd}` : "—"}
+              sub={tdd != null ? `U/day${latestKg ? ` · ${(tdd / latestKg).toFixed(2)} U/kg` : ""}` : "no complete days"}
+            />
+          )}
+        </div>
+      )}
 
       <div className="report-section space-y-2">
         <SectionTitle>Findings to review</SectionTitle>
@@ -1582,44 +1684,46 @@ export default function Report() {
       )}
 
       {/* Glucose: the AGP page */}
-      <div className="report-page-break space-y-3">
-        <SectionTitle sub={`${g.readings.toLocaleString()} CGM readings over ${g.days} days.`}>Glucose</SectionTitle>
-        {n && (
-          <div className="report-card rounded-lg border border-border p-3 space-y-1.5">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Written summary</p>
-            <p className="text-sm font-medium">{n.headline}</p>
-            {[n.glucose_summary, n.cycle_summary, n.lifestyle_summary].filter(Boolean).map((text) => (
-              <p key={text} className="text-xs text-muted-foreground">{text}</p>
-            ))}
+      {shows("glucose") && (
+        <div className="report-page-break space-y-3">
+          <SectionTitle sub={`${g.readings.toLocaleString()} CGM readings over ${g.days} days.`}>Glucose</SectionTitle>
+          {n && (
+            <div className="report-card rounded-lg border border-border p-3 space-y-1.5">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Written summary</p>
+              <p className="text-sm font-medium">{n.headline}</p>
+              {[n.glucose_summary, n.cycle_summary, n.lifestyle_summary].filter(Boolean).map((text) => (
+                <p key={text} className="text-xs text-muted-foreground">{text}</p>
+              ))}
+            </div>
+          )}
+          <div className="report-card bg-card rounded-lg border border-border p-3">
+            <p className="text-xs font-medium mb-2">Time in ranges</p>
+            <TIRBar g={g} />
           </div>
-        )}
-        <div className="report-card bg-card rounded-lg border border-border p-3">
-          <p className="text-xs font-medium mb-2">Time in ranges</p>
-          <TIRBar g={g} />
-        </div>
-        {g.low_episodes && (
-          <div className="grid grid-cols-2 md:grid-cols-4 print:grid-cols-4 gap-2">
-            <Metric label="Low episodes (15+ min <70)" value={g.low_episodes.episodes} sub={`${g.low_episodes.per_week} per week`} tone={g.low_episodes.episodes ? "text-red-600" : ""} />
-            <Metric label="Overnight (00:00–06:00)" value={g.low_episodes.nocturnal_episodes} sub="episodes" />
-            <Metric label="Reaching below 54" value={g.low_episodes.level2_episodes} sub="episodes" tone={g.low_episodes.level2_episodes ? "text-red-600" : ""} />
-            <Metric label="Above 180 / above 250" value={`${g.tar180}% / ${g.tar250}%`} sub={`targets <${TAR180_TARGET}% / <${TAR250_TARGET}%`} />
+          {g.low_episodes && (
+            <div className="grid grid-cols-2 md:grid-cols-4 print:grid-cols-4 gap-2">
+              <Metric label="Low episodes (15+ min <70)" value={g.low_episodes.episodes} sub={`${g.low_episodes.per_week} per week`} tone={g.low_episodes.episodes ? "text-red-600" : ""} />
+              <Metric label="Overnight (00:00–06:00)" value={g.low_episodes.nocturnal_episodes} sub="episodes" />
+              <Metric label="Reaching below 54" value={g.low_episodes.level2_episodes} sub="episodes" tone={g.low_episodes.level2_episodes ? "text-red-600" : ""} />
+              <Metric label="Above 180 / above 250" value={`${g.tar180}% / ${g.tar250}%`} sub={`targets <${TAR180_TARGET}% / <${TAR250_TARGET}%`} />
+            </div>
+          )}
+          <div className="report-card bg-card rounded-lg border border-border p-3">
+            <p className="text-xs font-medium">Ambulatory Glucose Profile (typical day)</p>
+            <p className="text-[11px] text-muted-foreground mb-2">Median (line) with 25–75% and 5–95% bands by time of day. Green dashes mark the 70–180 target.</p>
+            <AGPChart agp={g.agp} />
           </div>
-        )}
-        <div className="report-card bg-card rounded-lg border border-border p-3">
-          <p className="text-xs font-medium">Ambulatory Glucose Profile (typical day)</p>
-          <p className="text-[11px] text-muted-foreground mb-2">Median (line) with 25–75% and 5–95% bands by time of day. Green dashes mark the 70–180 target.</p>
-          <AGPChart agp={g.agp} />
+          <GlucoseByMonth months={report.trends?.glucose_by_month} />
+          <LowTiming lows={report.trends?.lows_by_hour} walking={ap?.walking_response} />
+          <A1cVsGmi rows={report.trends?.a1c_vs_gmi} />
+          <FingerstickReconciliation g={g} />
         </div>
-        <GlucoseByMonth months={report.trends?.glucose_by_month} />
-        <LowTiming lows={report.trends?.lows_by_hour} walking={ap?.walking_response} />
-        <A1cVsGmi rows={report.trends?.a1c_vs_gmi} />
-        <FingerstickReconciliation g={g} />
-      </div>
+      )}
 
       <WeightBlock weight={report.weight} />
 
       {/* Insulin */}
-      {i.available && (
+      {i.available && shows("insulin") && (
         <div className="space-y-3">
           <SectionTitle>Insulin & carbs</SectionTitle>
           <div className="grid grid-cols-2 md:grid-cols-4 print:grid-cols-4 gap-2">
@@ -1675,11 +1779,11 @@ export default function Report() {
         </div>
       )}
 
-      {report.pump_settings && <PumpSettingsSection ps={report.pump_settings} />}
+      {report.pump_settings && shows("insulin") && <PumpSettingsSection ps={report.pump_settings} />}
 
       {/* What the patient reports, and open questions */}
       <div className="space-y-5">
-        <HistorySection history={report.history} />
+        {shows("clinical") && <HistorySection history={report.history} />}
 
         {report.care_notes?.length > 0 && (
           <div className="report-section report-card rounded-lg border border-border p-3">
@@ -1702,7 +1806,7 @@ export default function Report() {
         )}
 
         {/* Evidence-bearing hypotheses remain separate from diagnoses. */}
-        {reviewedHypotheses.length > 0 && (
+        {listedReviewed.length > 0 && (
           <div className="report-section space-y-2">
             <h2 className="font-semibold text-base flex items-center gap-2">
               <Beaker className="w-4 h-4 text-primary" /> Questions under review
@@ -1710,7 +1814,7 @@ export default function Report() {
             <p className="text-[11px] text-muted-foreground">
               Tentative interpretations with recorded evidence. They remain separate from confirmed diagnoses.
             </p>
-            {reviewedHypotheses.map((hypothesis) => {
+            {listedReviewed.map((hypothesis) => {
               const state = HYPOTHESIS_STATE[hypothesisState(hypothesis)];
               const supporting = hypothesis.evidence_by_role?.supporting?.length || 0;
               const opposing = hypothesis.evidence_by_role?.opposing?.length || 0;
@@ -1748,7 +1852,7 @@ export default function Report() {
         )}
 
         {/* Unsupported legacy suspicions are optional discussion reminders, not findings. */}
-        {unevaluatedHypotheses.length > 0 && (
+        {listedUnevaluated.length > 0 && (
           <div className={`report-section rounded-lg border border-dashed border-border bg-muted/20 p-3 ${includeUnevaluatedInPrint ? "" : "print:hidden"}`}>
             <div className="print:hidden flex flex-wrap items-center justify-between gap-3">
               <button
@@ -1757,7 +1861,7 @@ export default function Report() {
                 className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
               >
                 {showUnevaluated ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                Questions previously recorded ({unevaluatedHypotheses.length})
+                Questions previously recorded ({listedUnevaluated.length})
               </button>
               <label className="inline-flex items-center gap-2 text-[11px] text-muted-foreground">
                 <input
@@ -1774,7 +1878,7 @@ export default function Report() {
                 <p className="text-[11px] text-muted-foreground">
                   These entries have no recorded supporting or opposing evidence. They are reminders for discussion, not findings.
                 </p>
-                {unevaluatedHypotheses.map((hypothesis) => (
+                {listedUnevaluated.map((hypothesis) => (
                   <div key={hypothesis.id} className="rounded border border-border bg-background/70 px-3 py-2">
                     <p className="text-sm text-foreground">{hypothesis.title}</p>
                     <p className="text-[11px] text-muted-foreground">
@@ -1792,16 +1896,16 @@ export default function Report() {
           </div>
         )}
 
-        {(c.available || w.oura || w.fitbit) && (
+        {((c.available && shows("cycle")) || ((w.oura || w.fitbit) && shows("wearables"))) && (
           <div className="report-section grid grid-cols-1 md:grid-cols-2 print:grid-cols-2 gap-3">
-            {c.available && <CycleTable c={c} />}
-            {(w.oura || w.fitbit) && <WellnessTable w={w} />}
+            {c.available && shows("cycle") && <CycleTable c={c} />}
+            {(w.oura || w.fitbit) && shows("wearables") && <WellnessTable w={w} />}
           </div>
         )}
       </div>
 
       {/* Labs */}
-      {labs.available && (
+      {labs.available && shows("labs") && (
         <div className="space-y-3">
           <SectionTitle
             sub={(labCounts.unverified || 0) > 0
@@ -1811,7 +1915,7 @@ export default function Report() {
             Labs
           </SectionTitle>
           <KeyLabResults results={labs.key_results} perRow={perRowVerification} />
-          <OutOfRangeLabs results={labs.flagged} panels={labPanels} perRow={perRowVerification} />
+          <OutOfRangeLabs results={flagged} panels={labPanels} perRow={perRowVerification} />
           <OptionalSection
             title={`All lab results (${plural(labTests, "test")})`}
             summary={printAllLabs ? "included in print" : "not printed"}
@@ -1824,14 +1928,14 @@ export default function Report() {
                 Common test-name variants are combined under one name.
               </p>
             )}
-            <AllLabResults categories={labs.categories} perRow={perRowVerification} />
+            <AllLabResults categories={categories} perRow={perRowVerification} />
           </OptionalSection>
         </div>
       )}
 
-      <ImagingSection studies={report.imaging} />
+      {(shows("records") || shows("labs")) && <RecordsSection studies={studies} documents={documents} />}
 
-      {hasAnalyses && (
+      {hasAnalyses && shows("analytics") && (
         <OptionalSection
           title="Additional analyses"
           summary={printAnalyses ? "included in print" : "management effort, insulin response, activity · not printed"}
@@ -1850,7 +1954,8 @@ export default function Report() {
         collapsible
       />
 
-      {report.insurance?.available && <InsuranceBlock insurance={report.insurance} />}
+      {/* Specialty views leave insurance out, as the Clinician Brief did. */}
+      {report.insurance?.available && !view && <InsuranceBlock insurance={report.insurance} />}
 
       {/* Footer */}
       <div className="report-section text-[11px] text-muted-foreground border-t border-border pt-3 leading-relaxed">

@@ -24,7 +24,7 @@ from .analytics_confidence import phase_provenance
 from .auth import require_login
 from . import report_trends
 from .canonical_time import temporal_metadata
-from .clinician_briefs import low_episodes
+from .clinician_briefs import MODE_CONFIG, document_exclusion, low_episodes
 from .clinical_evidence import build_context as build_clinical_evidence
 from .clinical_evidence import link_generated_narrative, resolve_prompt_aliases
 from .clinical_evidence import prompt_view as prompt_evidence_view
@@ -1197,11 +1197,61 @@ def _history(tz: ZoneInfo, since: datetime, days: int, weight: dict[str, Any], l
     }
 
 
-def _imaging() -> list[dict[str, Any]]:
+DOC_TYPE_LABELS = {
+    "lab_report": "Lab report", "visit_summary": "Visit summary", "pathology_report": "Pathology report",
+    "discharge_summary": "Discharge summary", "procedure_report": "Procedure report",
+    "operative_report": "Operative report", "consult_note": "Consult note", "referral": "Referral",
+}
+
+
+def clinical_documents(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Clinical documents on file other than imaging, newest first, undated
+    last. Insurance and non-clinical uploads stay out by the rule the
+    Clinician Brief used (``document_exclusion``)."""
+    documents = []
+    for record in records:
+        doc_type = str(record.get("doc_type") or "").lower()
+        if doc_type in report_trends.IMAGING_DOC_TYPES or document_exclusion(record):
+            continue
+        # A date that does not parse ("5/11 AM") is kept as text and sorts
+        # with the undated documents.
+        parsed = _lab_date(record.get("record_date"))
+        documents.append({
+            "id": record.get("id"),
+            "title": record.get("title") or record.get("filename") or "Document",
+            "type": DOC_TYPE_LABELS.get(doc_type, doc_type.replace("_", " ").capitalize()),
+            "date": parsed.isoformat() if parsed else None,
+            "date_text": None if parsed else (str(record.get("record_date") or "").strip() or None),
+            "summary": (record.get("summary") or "").strip() or None,
+            "lab_count": record.get("lab_count"),
+        })
+    documents.sort(key=lambda doc: doc["title"].lower())
+    documents.sort(key=lambda doc: doc["date"] or "", reverse=True)
+    return documents
+
+
+def _records_on_file() -> dict[str, list[dict[str, Any]]]:
     repositories = get_repositories()
     records = repositories.entity("MedicalRecord").query({"owner_email": OWNER_EMAIL}, "-created_date", 1000)
     labs = repositories.labs.query({"owner_email": OWNER_EMAIL}, "collected_date", 5000)
-    return report_trends.imaging_studies(records, labs)
+    return {"imaging": report_trends.imaging_studies(records, labs), "documents": clinical_documents(records)}
+
+
+def _specialties() -> list[dict[str, Any]]:
+    """Specialty views of the report, from the Clinician Brief's mode table:
+    the data domains each shows and the keywords its labs and documents
+    must match. The concise-clinician mode is the full report itself."""
+    return [
+        {
+            "key": key,
+            "label": config["label"],
+            "domains": [str(domain) for domain in config["domains"]],
+            "keywords": list(config["keywords"]),
+            "omit_unconfirmed_hypotheses": bool(config.get("omit_unconfirmed_hypotheses")),
+        }
+        for key, config in MODE_CONFIG.items()
+        if key != "clinician"
+    ]
 
 
 def _demo_narrative_allowed(payload: dict[str, Any]) -> bool:
@@ -1282,7 +1332,8 @@ async def visit_report(body: ReportBody):
         "patient": _patient(),
         "weight": weight,
         "trends": _history(tz, since, glucose.get("days") or days, weight, labs),
-        "imaging": _imaging(),
+        **_records_on_file(),
+        "specialties": _specialties(),
         "glucose": glucose,
         "insulin": insulin,
         "pump_settings": pump_settings.report_block(),

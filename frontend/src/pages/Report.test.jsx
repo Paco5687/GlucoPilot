@@ -686,3 +686,109 @@ describe("visit report summary page", () => {
     expect(ferritin.textContent).not.toContain("44.4");
   });
 });
+
+describe("visit report specialty views", () => {
+  const specialties = [
+    { key: "endocrinology", label: "Endocrinology", domains: ["glucose", "insulin", "analytics", "labs", "clinical"], keywords: ["thyroid", "glucose"], omit_unconfirmed_hypotheses: false },
+    { key: "gastroenterology", label: "Gastroenterology", domains: ["clinical", "labs", "records", "analytics"], keywords: ["liver", "celiac"], omit_unconfirmed_hypotheses: false },
+    { key: "primary_care", label: "Primary care", domains: ["clinical", "labs", "records", "glucose", "insulin", "analytics", "wearables", "cycle"], keywords: [], omit_unconfirmed_hypotheses: true },
+  ];
+  const lab = (test_name, extra = {}) => ({
+    test_name, value: 1, unit: "U/L", flag: "high", date: "2026-04-01", verification: {}, ...extra,
+  });
+  const viewed = {
+    ...report,
+    contradictions: { unresolved: [] },
+    specialties,
+    insurance: { available: true, carrier: "Synthetic Carrier", member_name: "Synthetic Member" },
+    insulin: { available: true, quality: {}, nutrition_quality: {}, pump_reported_avg_tdd: 38, pump_reported_days: 30, bolus_stream_incomplete: true },
+    labs: {
+      available: true,
+      flagged: [lab("Synthetic ALT"), lab("Synthetic TPO")],
+      key_results: [lab("Synthetic A1c", { flag: "normal", source: { record_id: "rec-1", page: 2 } })],
+      categories: {
+        "Hepatic Function (liver)": [lab("Synthetic ALT")],
+        Thyroid: [lab("Synthetic TPO")],
+      },
+      verification: {},
+    },
+    imaging: [{ id: "mri", title: "Synthetic brain MRI", date: "2026-04-10", summary: "Unremarkable.", measurements: [] }],
+    documents: [
+      { id: "doc-liver", title: "Synthetic liver panel", type: "Lab report", date: "2026-04-01", summary: "Synthetic liver summary.", lab_count: 7 },
+      { id: "doc-thyroid", title: "Synthetic thyroid panel", type: "Lab report", date: "2026-03-01", summary: null, lab_count: 3 },
+    ],
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => viewed }));
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+    window.history.replaceState({}, "", "/");
+  });
+
+  it("is the full report until a specialty is chosen", async () => {
+    render(<Report />);
+
+    const select = await screen.findByLabelText("Report view");
+    expect(select).toHaveProperty("value", "");
+    expect(Array.from(select.querySelectorAll("option")).map((o) => o.textContent)).toEqual([
+      "Full report", "Endocrinology", "Gastroenterology", "Primary care",
+    ]);
+    expect(screen.getByText("Insulin & carbs")).toBeTruthy();
+    expect(screen.getByText("Synthetic Carrier")).toBeTruthy();
+    expect(screen.getByText("Synthetic brain MRI")).toBeTruthy();
+  });
+
+  it("shows a specialty's domains and keyword-matched labs and documents, without insurance", async () => {
+    render(<Report />);
+
+    fireEvent.change(await screen.findByLabelText("Report view"), { target: { value: "gastroenterology" } });
+
+    expect(screen.getByText(/Gastroenterology view/)).toBeTruthy();
+    expect(screen.queryByText("Insulin & carbs")).toBeNull();
+    expect(screen.queryByText("Time below 70 mg/dL")).toBeNull();
+    const outOfRange = screen.getByText(/Outside the reference range/).closest(".report-table");
+    expect(outOfRange.textContent).toContain("Synthetic ALT");
+    expect(outOfRange.textContent).not.toContain("Synthetic TPO");
+    expect(screen.getByText("Synthetic liver panel")).toBeTruthy();
+    expect(screen.queryByText("Synthetic thyroid panel")).toBeNull();
+    // Imaging is kept in every view that lists documents.
+    expect(screen.getByText("Synthetic brain MRI")).toBeTruthy();
+    expect(screen.queryByText("Synthetic Carrier")).toBeNull();
+  });
+
+  it("opens the view named in the address", async () => {
+    window.history.replaceState({}, "", "/report?for=endocrinology");
+    render(<Report />);
+
+    expect(await screen.findByText(/Endocrinology view/)).toBeTruthy();
+    expect(screen.getByText("Insulin & carbs")).toBeTruthy();
+    // Endocrinology has no documents domain of its own; its labs domain keeps them, keyword-matched.
+    expect(screen.getByText("Synthetic thyroid panel")).toBeTruthy();
+    expect(screen.queryByText("Synthetic liver panel")).toBeNull();
+  });
+
+  it("links results and documents to the uploaded document they came from", async () => {
+    render(<Report />);
+
+    const keyRow = (await screen.findByText("Synthetic A1c")).closest("tr");
+    const keyLink = Array.from(keyRow.querySelectorAll("a")).find((a) => a.textContent === "Source");
+    expect(keyLink.getAttribute("href")).toBe("/api/records/file/rec-1?inline=true#page=2");
+    expect(keyLink.className).toContain("print:hidden");
+
+    const docRow = screen.getByText("Synthetic liver panel").closest("tr");
+    expect(docRow.querySelector("a").getAttribute("href")).toBe("/api/records/file/doc-liver?inline=true");
+    expect(docRow.textContent).toContain("7 results");
+    expect(docRow.querySelector("details").className).toContain("print:hidden");
+    expect(screen.getByText("Synthetic brain MRI").querySelector("a").getAttribute("href")).toBe("/api/records/file/mri?inline=true");
+  });
+});

@@ -2,7 +2,7 @@ import {
   Outlet, Link, useLocation } from "react-router-dom";
 import {
   LayoutDashboard, LineChart, GitCompare, Plug, Menu, X, Shield,
-  Heart, LogOut, Settings, FolderHeart, FileText, FileHeart, Eye, Watch, Sparkles, Syringe, MessageCircleHeart, NotebookPen, ScrollText, Share2,
+  Heart, LogOut, Settings, FolderHeart, FileText, Eye, Watch, Sparkles, Syringe, MessageCircleHeart, NotebookPen, ScrollText, Share2,
   Activity, ClipboardList, KeyRound,
 } from "lucide-react";
 import { Bug } from "lucide-react";
@@ -42,7 +42,6 @@ const navGroups = [
       { path: "/records", label: "Records", icon: FolderHeart },
       { path: "/care-notes", label: "Care Notes", icon: ClipboardList },
       { path: "/report", label: "Visit Report", icon: FileText },
-      { path: "/brief", label: "Clinician Brief", icon: FileHeart },
       { path: "/exports", label: "Share Export", icon: Share2 },
     ],
   },
