@@ -45,7 +45,7 @@ _LAB_SYNONYMS = {
     "FSH": ("fsh", "follicle stimulating hormone"),
     "LH": ("lh", "luteinizing hormone"),
     "Estradiol": ("estradiol", "e2", "estradiol e2"),
-    "ACTH": ("acth", "adrenocorticotropic hormone", "corticotropin"),
+    "ACTH": ("acth", "adrenocorticotropic hormone", "corticotropin", "acth plasma", "plasma acth"),
     "IGF-1": ("igf 1", "igf1", "insulin like growth factor 1", "insulin like growth factor i", "somatomedin c"),
     "C-peptide": ("c peptide", "cpeptide"),
     "Glucose": ("glucose", "glucose serum", "glucose plasma", "glucose fasting", "fasting glucose"),
