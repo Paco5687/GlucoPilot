@@ -269,6 +269,37 @@ def test_imaging_measurements_stay_out_of_the_lab_tables(report_db):
     assert [entry["test_name"] for entry in labs["key_results"]] == ["Free T3"]
 
 
+def test_documents_on_file_leave_out_imaging_insurance_and_non_clinical_uploads():
+    records = [
+        {"id": "old", "doc_type": "lab_report", "title": "Synthetic panel A", "record_date": "2026-03-01", "summary": "Panel."},
+        {"id": "new", "doc_type": "lab_report", "title": "Synthetic panel B", "record_date": "2026-08-24", "lab_count": 12},
+        {"id": "visit", "doc_type": "visit_summary", "title": "Synthetic visit", "record_date": "5/11 AM"},
+        {"id": "ct", "doc_type": "imaging_report", "title": "Synthetic CT", "record_date": "2026-06-30"},
+        {"id": "card", "doc_type": "other", "title": "Synthetic insurance card", "summary": "Member ID 123"},
+        {"id": "form", "doc_type": "other", "title": "Synthetic application form"},
+    ]
+
+    documents = report.clinical_documents(records)
+
+    assert [doc["id"] for doc in documents] == ["new", "old", "visit"]
+    assert documents[0] == {
+        "id": "new", "title": "Synthetic panel B", "type": "Lab report", "date": "2026-08-24",
+        "date_text": None, "summary": None, "lab_count": 12,
+    }
+    # An unreadable date sorts with the undated and keeps its text.
+    assert (documents[2]["type"], documents[2]["date"], documents[2]["date_text"]) == ("Visit summary", None, "5/11 AM")
+
+
+def test_specialty_views_come_from_the_brief_modes():
+    views = {view["key"]: view for view in report._specialties()}
+
+    assert "clinician" not in views
+    assert views["endocrinology"]["label"] == "Endocrinology"
+    assert "glucose" in views["endocrinology"]["domains"] and "thyroid" in views["endocrinology"]["keywords"]
+    assert "glucose" not in views["gastroenterology"]["domains"]
+    assert views["primary_care"]["omit_unconfirmed_hypotheses"] is True
+
+
 def test_glucose_counts_low_episodes(report_db):
     start = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=2)
     readings = []

@@ -1,7 +1,7 @@
 import { Toaster } from "@/components/ui/toaster"
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClientInstance } from '@/lib/query-client'
-import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
+import { BrowserRouter as Router, Navigate, Route, Routes } from 'react-router-dom';
 import PageNotFound from './lib/PageNotFound';
 import { AuthProvider, useAuth } from '@/lib/AuthContext';
 import UserNotRegisteredError from '@/components/UserNotRegisteredError';
@@ -25,7 +25,6 @@ import ProviderSecurity from './pages/ProviderSecurity';
 import History from './pages/History';
 import Records from './pages/Records';
 import Report from './pages/Report';
-import ClinicianBrief from './pages/ClinicianBrief';
 import ShareExports from './pages/ShareExports';
 import Diagnostics from './pages/Diagnostics';
 import Settings from './pages/Settings';
@@ -64,7 +63,8 @@ const AuthenticatedApp = () => {
         <Route path="/history" element={<History />} />
         <Route path="/records" element={<Records />} />
         <Route path="/report" element={<Report />} />
-        <Route path="/brief" element={<ClinicianBrief />} />
+        {/* The Clinician Brief merged into the Visit Report; old links land there. */}
+        <Route path="/brief" element={<Navigate to="/report" replace />} />
         <Route path="/exports" element={<ShareExports />} />
         <Route path="/diagnostics" element={<Diagnostics />} />
         <Route path="/settings" element={<Settings />} />
