@@ -300,6 +300,36 @@ def test_specialty_views_come_from_the_brief_modes():
     assert views["primary_care"]["omit_unconfirmed_hypotheses"] is True
 
 
+def test_discussion_points_save_per_view_and_clear_back_to_suggestions(report_db):
+    assert report._agenda() == {}
+
+    saved = report.save_agenda(report.AgendaBody(
+        view="primary_care",
+        points=["  Nutrition:   is she getting the nutrients she needs? ", "", "Synthetic second point"],
+    ))["agenda"]
+
+    assert saved["primary_care"]["points"] == ["Nutrition: is she getting the nutrients she needs?", "Synthetic second point"]
+    assert saved["primary_care"]["updated_at"].endswith("Z")
+    assert report._agenda() == saved
+    report.save_agenda(report.AgendaBody(view="full", points=["Synthetic full-report point"]))
+    assert set(report._agenda()) == {"primary_care", "full"}
+
+    report.save_agenda(report.AgendaBody(view="primary_care", points=[]))
+    assert set(report._agenda()) == {"full"}
+
+
+def test_only_the_owner_saves_discussion_points():
+    route = next(route for route in report.router.routes if route.path == "/api/report/agenda")
+    assert route.methods == {"PUT"}
+    assert any(dependency.dependency is report.require_admin for dependency in route.dependencies)
+
+
+def test_discussion_points_reject_an_unknown_view(report_db):
+    with pytest.raises(report.HTTPException) as error:
+        report.save_agenda(report.AgendaBody(view="clinician", points=["Synthetic point"]))
+    assert error.value.status_code == 422
+
+
 def test_glucose_counts_low_episodes(report_db):
     start = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=2)
     readings = []

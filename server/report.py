@@ -17,11 +17,11 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from .analytics_confidence import phase_provenance
-from .auth import require_login
+from .auth import require_admin, require_login
 from . import report_trends
 from .canonical_time import temporal_metadata
 from .clinician_briefs import MODE_CONFIG, document_exclusion, low_episodes
@@ -29,7 +29,7 @@ from .clinical_evidence import build_context as build_clinical_evidence
 from .clinical_evidence import link_generated_narrative, resolve_prompt_aliases
 from .clinical_evidence import prompt_view as prompt_evidence_view
 from .config import APP_TIMEZONE, DEMO_MODE, OWNER_EMAIL
-from .db import config_value, get_setting
+from .db import config_value, get_setting, set_setting
 from .data_quality import assess_cgm, assess_daily, assess_nutrition, assess_pump_tdd, cgm_points
 from .glucose_reconciliation import summarize as summarize_fingersticks
 from .insulin_reconciliation import reconcile_treatments
@@ -1055,7 +1055,7 @@ def _narrative_prompt(days: int, metrics: dict[str, Any], evidence: dict[str, An
 Data for the last {days} days (JSON):
 {data}
 
-Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. Judge hypoglycemia against the consensus targets supplied (time below 70 mg/dL under 4%, below 54 mg/dL under 1%); when either is exceeded, say so plainly in the headline or glucose summary — a high time in range does not offset excess time below range. Weight change is given from the 12-month high (peak_change) and over the report window (window_change); when either shows a loss, state the amount, percentage, and period. When contradictions_truncated is present, say how many unresolved contradictions exist in total. Insulin figures marked bolus_stream_incomplete have no reliable bolus/basal split; never describe that as missed or skipped doses. Explicitly call machine-extracted labs "unverified" unless their verification status is approved or edited; never imply that parser confidence is clinical verification. For every unresolved contradiction, present both sides and say it remains unresolved; never silently choose one value, especially for a blocking contradiction. If health-history or symptom evidence is present, use it as context without treating it as a clinician-confirmed fact. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Distinguish explicitly recorded/imported cycle phase days from algorithm-inferred days. Scale every analytics claim to its supplied discovery status and numerical confidence metadata; exploratory, emerging, or not-reproduced results cannot be presented as definitive. Write discussion_points as short, direct items the patient can raise and the clinician can act on, most clinically important first (hypoglycemia, weight change measured from the 12-month high, out-of-range labs, reported symptoms); keep statistics vocabulary (correlation coefficients, replication, discovery status, algorithm names) out of the text. Copy the IDs of every Evidence Bundle item used into evidence_item_ids; never invent an ID. Keep it factual and readable."""
+Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. Judge hypoglycemia against the consensus targets supplied (time below 70 mg/dL under 4%, below 54 mg/dL under 1%); when either is exceeded, say so plainly in the headline or glucose summary — a high time in range does not offset excess time below range. Weight change is given from the 12-month high (peak_change) and over the report window (window_change); when either shows a loss, state the amount, percentage, and period. When contradictions_truncated is present, say how many unresolved contradictions exist in total. Insulin figures marked bolus_stream_incomplete have no reliable bolus/basal split; never describe that as missed or skipped doses. Explicitly call machine-extracted labs "unverified" unless their verification status is approved or edited; never imply that parser confidence is clinical verification. For every unresolved contradiction, present both sides and say it remains unresolved; never silently choose one value, especially for a blocking contradiction. If health-history or symptom evidence is present, use it as context without treating it as a clinician-confirmed fact. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Distinguish explicitly recorded/imported cycle phase days from algorithm-inferred days. Scale every analytics claim to its supplied discovery status and numerical confidence metadata; exploratory, emerging, or not-reproduced results cannot be presented as definitive. Write discussion_points as short, direct items the patient can raise and the clinician can act on, most clinically important first (hypoglycemia, weight change measured from the 12-month high, out-of-range labs, reported symptoms); keep statistics vocabulary (correlation coefficients, replication, discovery status, algorithm names) out of the text, and leave correlations between wearable signals (oxygen saturation, heart rate, sleep) and glucose out of discussion_points. Copy the IDs of every Evidence Bundle item used into evidence_item_ids; never invent an ID. Keep it factual and readable."""
 
 
 async def _fitted_narrative_prompt(days: int, metrics: dict[str, Any], evidence: dict[str, Any]) -> str:
@@ -1280,6 +1280,48 @@ def _evidence_quality(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+AGENDA_SETTING = "visit_agenda"
+FULL_VIEW = "full"
+AGENDA_MAX_POINTS = 12
+AGENDA_MAX_CHARS = 400
+
+
+def _agenda() -> dict[str, Any]:
+    """Discussion points written for a visit, keyed by report view ("full" or
+    a specialty key). Saved points replace the suggested ones in that view;
+    the patient and family know context the data does not."""
+    try:
+        stored = json.loads(get_setting(AGENDA_SETTING) or "{}")
+    except ValueError:
+        return {}
+    return stored if isinstance(stored, dict) else {}
+
+
+class AgendaBody(BaseModel):
+    view: str = FULL_VIEW
+    points: list[str] = []
+
+
+@router.put("/api/report/agenda", dependencies=[Depends(require_admin)])
+def save_agenda(body: AgendaBody):
+    """Save one view's discussion points; an empty list returns that view to
+    the suggested points."""
+    views = {FULL_VIEW} | {view["key"] for view in _specialties()}
+    if body.view not in views:
+        raise HTTPException(status_code=422, detail=f"unknown report view: {body.view}")
+    points = [" ".join(point.split())[:AGENDA_MAX_CHARS] for point in body.points if point.strip()]
+    agenda = _agenda()
+    if points:
+        agenda[body.view] = {
+            "points": points[:AGENDA_MAX_POINTS],
+            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        }
+    else:
+        agenda.pop(body.view, None)
+    set_setting(AGENDA_SETTING, json.dumps(agenda))
+    return {"agenda": agenda}
+
+
 @router.post("/api/report/visit")
 async def visit_report(body: ReportBody):
     days = max(7, min(body.days, 365))
@@ -1334,6 +1376,7 @@ async def visit_report(body: ReportBody):
         "trends": _history(tz, since, glucose.get("days") or days, weight, labs),
         **_records_on_file(),
         "specialties": _specialties(),
+        "agenda": _agenda(),
         "glucose": glucose,
         "insulin": insulin,
         "pump_settings": pump_settings.report_block(),

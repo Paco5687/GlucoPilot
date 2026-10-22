@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useContext } from "react";
 import { Button } from "@/components/ui/button";
+import { AuthContext } from "@/lib/AuthContext";
 import EvidenceContextBlock from "@/components/evidence/EvidenceContextBlock";
 import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Beaker, ChevronDown, ChevronRight, ClipboardList } from "lucide-react";
 import {
@@ -15,9 +16,11 @@ const TIR_COLORS = {
   veryHigh: "#d97706",
 };
 
-// The printout leads with a one-page summary; the clinical sections follow it
-// and flow across pages. Long tables break between rows, headings stay with
-// what follows them, and optional material stays off paper unless included.
+// The printout leads with the summary and every section flows on from it with
+// no forced page breaks: the summary's length varies (reported symptoms,
+// discussion points), so a fixed break left pages mostly blank. Long tables
+// break between rows, headings stay with what follows them, and optional
+// material stays off paper unless included.
 const PRINT_CSS = `
 @media print {
   html { font-size: 12.5px; }
@@ -27,8 +30,8 @@ const PRINT_CSS = `
   .report-card { break-inside: avoid; box-shadow: none !important; border-color: #ddd !important; }
   .report-table { box-shadow: none !important; border-color: #ddd !important; }
   .report-table tr, .report-section { break-inside: avoid; }
-  .report-page-break { break-before: page; }
-  h2, h3 { break-after: avoid; }
+  h2, h3, .report-heading { break-after: avoid; }
+  .report-heading { break-inside: avoid; }
   body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   @page { margin: 1.2cm; }
 }
@@ -65,7 +68,7 @@ function Metric({ label, value, sub = null, tone = "" }) {
 
 function SectionTitle({ children, sub = null }) {
   return (
-    <div>
+    <div className="report-heading">
       <h2 className="font-semibold text-base">{children}</h2>
       {sub && <p className="text-[11px] text-muted-foreground">{sub}</p>}
     </div>
@@ -1113,6 +1116,80 @@ function Findings({ findings }) {
   );
 }
 
+// Discussion points for the visit: those saved for this view, else the
+// suggestions written with the summary. The owner edits them before printing;
+// the family knows context the data does not, such as what another clinician
+// is already handling.
+function PointsToDiscuss({ saved, suggested, view, canEdit, onSaved }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState("");
+  const edited = saved?.points?.length > 0;
+  const points = edited ? saved.points : suggested || [];
+  if (!points.length && !canEdit) return null;
+
+  const save = async (next) => {
+    setError("");
+    try {
+      const res = await fetch("/api/report/agenda", {
+        method: "PUT",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ view, points: next }),
+      });
+      if (!res.ok) throw new Error(`Saving failed (${res.status}).`);
+      onSaved((await res.json()).agenda);
+      setEditing(false);
+    } catch (failure) {
+      setError(failure.message);
+    }
+  };
+
+  return (
+    <div className={`report-section report-card bg-primary/5 rounded-lg border border-primary/20 p-3 space-y-1 ${points.length ? "" : "print:hidden"}`}>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="font-semibold text-sm text-primary">Points to discuss</h2>
+        <span className="print:hidden text-[11px] text-muted-foreground">
+          {edited ? `Edited ${new Date(saved.updated_at).toLocaleDateString()}` : "Suggested from the data"}
+          {canEdit && !editing && (
+            <button
+              type="button"
+              onClick={() => { setDraft(points.join("\n")); setEditing(true); }}
+              className="ml-2 underline hover:text-foreground"
+            >
+              Edit
+            </button>
+          )}
+        </span>
+      </div>
+      {editing ? (
+        <div className="print:hidden space-y-2">
+          <textarea
+            aria-label="Points to discuss"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            rows={Math.max(4, points.length + 2)}
+            className="w-full rounded-md border border-border bg-background p-2 text-sm"
+          />
+          <p className="text-[11px] text-muted-foreground">One point per line. Saved for this view only.</p>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => save(draft.split("\n"))}>Save</Button>
+            <Button size="sm" variant="outline" onClick={() => setEditing(false)}>Cancel</Button>
+            {edited && <Button size="sm" variant="outline" onClick={() => save([])}>Use the suggestions</Button>}
+          </div>
+          {error && <p className="text-xs text-red-700">{error}</p>}
+        </div>
+      ) : points.length > 0 ? (
+        <ol className="text-sm space-y-1 list-decimal list-inside marker:text-primary">
+          {points.map((point, idx) => <li key={idx}>{point}</li>)}
+        </ol>
+      ) : (
+        <p className="text-xs text-muted-foreground">No points yet.</p>
+      )}
+    </div>
+  );
+}
+
 function RecordColumn({ title, children, empty }) {
   return (
     <div className="report-card rounded-lg border border-border p-3">
@@ -1455,6 +1532,9 @@ export default function Report() {
   // A specialty view ("?for=endocrinology") shows that specialty's domains and
   // the labs and documents matching its keywords; empty is the full report.
   const [specialty, setSpecialty] = useState(() => new URLSearchParams(window.location.search).get("for") || "");
+  // Read without useAuth so the page also renders outside an AuthProvider;
+  // only the owner edits the discussion points.
+  const canEdit = Boolean(useContext(AuthContext)?.isAdmin);
 
   const generate = useCallback(async (d) => {
     setLoading(true);
@@ -1512,6 +1592,7 @@ export default function Report() {
     || mb?.summary || ir?.counts?.total > 0 || ap?.effects?.length > 0;
 
   const view = (report.specialties || []).find((item) => item.key === specialty) || null;
+  const agendaView = view?.key || "full";
   const shows = (domain) => !view || view.domains.includes(domain);
   const relevant = (...texts) => !view?.keywords?.length
     || view.keywords.some((keyword) => texts.filter(Boolean).join(" ").toLowerCase().includes(keyword));
@@ -1640,14 +1721,13 @@ export default function Report() {
         <Findings findings={findings} />
       </div>
 
-      {n?.discussion_points?.length > 0 && (
-        <div className="report-section report-card bg-primary/5 rounded-lg border border-primary/20 p-3">
-          <h2 className="font-semibold text-sm text-primary mb-1">Points to discuss</h2>
-          <ol className="text-sm space-y-1 list-decimal list-inside marker:text-primary">
-            {n.discussion_points.map((p, idx) => <li key={idx}>{p}</li>)}
-          </ol>
-        </div>
-      )}
+      <PointsToDiscuss
+        saved={report.agenda?.[agendaView]}
+        suggested={n?.discussion_points}
+        view={agendaView}
+        canEdit={canEdit}
+        onSaved={(agenda) => setReport((current) => ({ ...current, agenda }))}
+      />
 
       {!n && report.narrative_status?.available === false && (
         <div className="report-section print:hidden rounded-lg border border-dashed border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900">
@@ -1685,7 +1765,7 @@ export default function Report() {
 
       {/* Glucose: the AGP page */}
       {shows("glucose") && (
-        <div className="report-page-break space-y-3">
+        <div className="space-y-3">
           <SectionTitle sub={`${g.readings.toLocaleString()} CGM readings over ${g.days} days.`}>Glucose</SectionTitle>
           {n && (
             <div className="report-card rounded-lg border border-border p-3 space-y-1.5">
