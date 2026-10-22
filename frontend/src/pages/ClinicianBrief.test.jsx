@@ -191,6 +191,85 @@ describe("ClinicianBrief", () => {
     expect(row.textContent).toContain("Source flagged High");
   });
 
+  it("lists reported-symptom concerns once, by title", async () => {
+    const symptom = (title, text) => ({
+      id: `entity:HistoryEntry:${title}`,
+      entity_type: "HistoryEntry",
+      display: { label: `Reported symptoms: ${title}`, date: "2026-07-02", status: "note", detail: text },
+      source_links: [],
+      evidence_strength: { status: "observed" },
+      concern: { kind: "reported_symptoms", reason: `Reported symptoms: ${title} (2026-07-02). ${text}` },
+    });
+    const bedtime = symptom("bedtime", "Synthetic bedtime text.");
+    const appetite = symptom("appetite", "Synthetic appetite text.");
+    const recorded = [bedtime, appetite].map(({ concern: _concern, ...entry }) => entry);
+    fetch.mockImplementation(async (url) => (String(url) === "/api/clinical-reviews"
+      ? { ok: true, json: async () => ({ reviews: [] }) }
+      : { ok: true, json: async () => ({
+        ...brief,
+        sections: { ...brief.sections, concerns: [bedtime, appetite], symptoms_history: recorded },
+      }) }));
+    render(<ClinicianBrief />);
+
+    const concerns = (await screen.findByRole("heading", { name: "Concerns" })).closest("section");
+    expect(within(concerns).getByText("Bedtime · Appetite")).toBeTruthy();
+    expect(within(concerns).queryByText(/Synthetic bedtime text/)).toBeNull();
+    const history = screen.getByRole("heading", { name: "Symptoms & history" }).closest("section");
+    expect(within(history).getByText("Bedtime")).toBeTruthy();
+    expect(within(history).getByText("Synthetic bedtime text.")).toBeTruthy();
+    expect(within(history).queryByText("note")).toBeNull();
+  });
+
+  it("opens labs on the abnormal results and lists the rest on request", async () => {
+    const normal = {
+      ...evidence,
+      id: "entity:LabResult:sodium",
+      display: { ...evidence.display, label: "Synthetic sodium", value: "140", unit: "mmol/L", reference: "135–145", flag: "Normal", status: "Unverified extraction" },
+    };
+    const low = { ...evidence, display: { ...evidence.display, status: "Unverified extraction" } };
+    fetch.mockImplementation(async (url) => (String(url) === "/api/clinical-reviews"
+      ? { ok: true, json: async () => ({ reviews: [] }) }
+      : { ok: true, json: async () => ({ ...brief, sections: { ...brief.sections, labs: [low, normal] } }) }));
+    render(<ClinicianBrief />);
+
+    const labs = (await screen.findByRole("heading", { name: /^Labs/ })).closest("section");
+    expect(within(labs).getByRole("row", { name: /Synthetic ferritin/ })).toBeTruthy();
+    expect(within(labs).queryByRole("row", { name: /Synthetic sodium/ })).toBeNull();
+    expect(within(labs).getByText("Status of every result: unverified extraction.")).toBeTruthy();
+    fireEvent.click(within(labs).getByRole("button", { name: "Show all 2" }));
+    expect(within(labs).getByRole("row", { name: /Synthetic sodium/ })).toBeTruthy();
+  });
+
+  it("keeps reference evidence and the appendix off paper", async () => {
+    render(<ClinicianBrief />);
+
+    const reference = (await screen.findByRole("heading", { name: "Reassuring & opposing evidence" })).closest("section");
+    expect(reference.className).toContain("print:hidden");
+    const appendix = screen.getByRole("heading", { name: "Evidence appendix" }).closest("section");
+    expect(appendix.className).toContain("print:hidden");
+  });
+
+  it("trims strength boilerplate from analytics text without splitting decimals", async () => {
+    const pattern = {
+      id: "entity:Insight:synthetic",
+      entity_type: "Insight",
+      display: {
+        label: "Synthetic phase pattern",
+        date: "2026-07-01",
+        detail: "An emerging observational association was detected. Time in range averages 90.7% against 85.3%. This may be worth discussing with their healthcare team.",
+      },
+      source_links: [],
+      evidence_strength: { status: "emerging" },
+    };
+    fetch.mockImplementation(async (url) => (String(url) === "/api/clinical-reviews"
+      ? { ok: true, json: async () => ({ reviews: [] }) }
+      : { ok: true, json: async () => ({ ...brief, sections: { ...brief.sections, objective_patterns: [pattern] } }) }));
+    render(<ClinicianBrief />);
+
+    expect(await screen.findByText("Time in range averages 90.7% against 85.3%.")).toBeTruthy();
+    expect(screen.getByText("emerging signal")).toBeTruthy();
+  });
+
   it("regenerates only when specialty or range meaningfully changes", async () => {
     const view = render(<ClinicianBrief />);
     await screen.findByText("Hematology brief");

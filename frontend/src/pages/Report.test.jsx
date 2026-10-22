@@ -183,7 +183,7 @@ describe("visit report contradictions", () => {
     expect(screen.queryByText("2026-05-01")).toBeNull();
     fireEvent.click(evidenceToggle);
     expect(screen.getByText("2026-05-01")).toBeTruthy();
-    expect(screen.getByText("Confirmed conditions & diagnoses")).toBeTruthy();
+    expect(screen.getByText("Confirmed diagnoses")).toBeTruthy();
     expect(screen.getByText(/Synthetic confirmed diagnosis/)).toBeTruthy();
     expect(screen.getByText("Questions under review")).toBeTruthy();
     expect(screen.getByText("Mixed evidence")).toBeTruthy();
@@ -418,6 +418,14 @@ describe("visit report clinical framing", () => {
     expect(screen.getByText(/Carbs were logged on 9 of 90 days/)).toBeTruthy();
   });
 
+  it("states insulin per kilogram from the latest weight", async () => {
+    render(<Report />);
+
+    const tdd = (await screen.findByText("Total daily insulin")).parentElement;
+    expect(tdd.textContent).toContain("37.9");
+    expect(tdd.textContent).toContain("0.62 U/kg");
+  });
+
   it("still shows bolus and carb tiles when those streams are complete", async () => {
     vi.mocked(fetch).mockResolvedValueOnce(/** @type {Response} */ ({
       ok: true,
@@ -440,4 +448,102 @@ describe("visit report clinical framing", () => {
     expect(screen.getByText("Carbs logged")).toBeTruthy();
     expect(screen.queryByText(/Bolus\/basal split not available/)).toBeNull();
   });
+});
+
+describe("visit report summary page", () => {
+  const summarized = {
+    ...report,
+    contradictions: { unresolved: [] },
+    glucose: {
+      ...report.glucose,
+      tbr70: 10.3,
+      tbr54: 1.6,
+      low_episodes: { episodes: 233, level2_episodes: 51, nocturnal_episodes: 7, per_week: 17.9 },
+    },
+    history: {
+      narrative: null,
+      events: [
+        { date: "2026-04-20", type: "note", title: "Reported symptoms: bedtime", details: "Synthetic bedtime text." },
+        { date: "2026-04-20", type: "note", title: "Reported symptoms: appetite", details: "Synthetic appetite text." },
+        { date: "2026-01-15", type: "prescription", title: "Synthetic single injection", details: "One dose." },
+      ],
+    },
+    labs: {
+      available: true,
+      flagged: [
+        { test_name: "Synthetic antibody", value: 212, unit: "IU/mL", reference_high: 9, flag: "high", date: "2026-04-24", verification: {} },
+        { test_name: "Synthetic peptide", value: 0.16, unit: "ng/mL", reference_low: 0.8, reference_high: 3.85, flag: "low", date: "2026-03-01", verification: {} },
+      ],
+      key_results: [],
+      categories: {
+        Thyroid: [{ test_name: "Synthetic antibody", value: 212, unit: "IU/mL", flag: "high", date: "2026-04-24", verification: {} }],
+        Chemistry: [
+          { test_name: "Synthetic peptide", value: 0.16, unit: "ng/mL", flag: "low", date: "2026-03-01", verification: {} },
+          { test_name: "Synthetic sodium", value: 140, unit: "mmol/L", flag: "normal", date: "2026-03-01", verification: {} },
+        ],
+      },
+      verification: { counts: { approved: 0, edited: 0, unverified: 3 } },
+    },
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => summarized }));
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("lists findings computed from the data on the first page", async () => {
+    render(<Report />);
+
+    const findings = (await screen.findByText("Findings to review")).closest("div").parentElement;
+    expect(findings.textContent).toContain("233 low episodes of 15+ minutes (17.9/week), 7 overnight (00:00–06:00), 51 reaching below 54 mg/dL");
+    expect(findings.textContent).toContain("2 results outside the reference range at the latest draw");
+    expect(findings.textContent).toContain("Synthetic antibody 212 IU/mL (high, 2026-04-24)");
+    expect(findings.textContent).toContain("Recorded 2026-04-20: bedtime; appetite.");
+  });
+
+  it("prints patient-reported symptoms by title without the record prefix", async () => {
+    render(<Report />);
+
+    expect(await screen.findByText("Patient-reported symptoms")).toBeTruthy();
+    expect(screen.getByText("Bedtime")).toBeTruthy();
+    expect(screen.getByText("Synthetic bedtime text.")).toBeTruthy();
+    expect(screen.getByText("Synthetic single injection")).toBeTruthy();
+  });
+
+  it("states lab verification once instead of on every row", async () => {
+    render(<Report />);
+
+    expect(await screen.findByText(/All lab values on file are machine-extracted/)).toBeTruthy();
+    expect(screen.queryByText("unverified")).toBeNull();
+  });
+
+  it("prints out-of-range labs and leaves the full list off paper until included", async () => {
+    render(<Report />);
+
+    const table = (await screen.findByText(/Outside the reference range at the latest draw/)).closest(".report-table");
+    const rows = Array.from(table.querySelectorAll("tbody tr")).map((row) => row.textContent);
+    expect(rows[0]).toContain("Synthetic antibody");
+    expect(rows[1]).toContain("Synthetic peptide");
+    expect(table.textContent).not.toContain("Synthetic sodium");
+
+    const allLabs = screen.getByRole("button", { name: /All lab results \(3 tests\)/ }).closest("section");
+    expect(allLabs.className).toContain("print:hidden");
+    expect(allLabs.textContent).toContain("Synthetic sodium");
+    fireEvent.click(screen.getByLabelText("Print all lab results"));
+    expect(allLabs.className).not.toContain("print:hidden");
+
+    const analyses = screen.getByRole("button", { name: /Additional analyses/ }).closest("section");
+    expect(analyses.className).toContain("print:hidden");
+  });
+
 });

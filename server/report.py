@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from .analytics_confidence import phase_provenance
 from .auth import require_login
 from .canonical_time import temporal_metadata
+from .clinician_briefs import low_episodes
 from .clinical_evidence import build_context as build_clinical_evidence
 from .clinical_evidence import link_generated_narrative, resolve_prompt_aliases
 from .clinical_evidence import prompt_view as prompt_evidence_view
@@ -31,7 +32,7 @@ from .db import config_value, get_setting
 from .data_quality import assess_cgm, assess_daily, assess_nutrition, assess_pump_tdd, cgm_points
 from .glucose_reconciliation import summarize as summarize_fingersticks
 from .insulin_reconciliation import reconcile_treatments
-from .lab_audit import effective_flag
+from .lab_audit import ABNORMAL_FLAGS, effective_flag
 from .lab_names import canonical_lab_name
 from .lab_audit import qualification as lab_qualification
 from .lab_audit import summary_eligible as lab_summary_eligible
@@ -242,6 +243,7 @@ def _glucose(tz: ZoneInfo, since_iso: str) -> dict[str, Any]:
                 "avg": round(sum(dv) / len(dv)),
             }
         )
+    lows = low_episodes(points, tz)
     return {
         "available": True,
         "readings": n,
@@ -255,6 +257,7 @@ def _glucose(tz: ZoneInfo, since_iso: str) -> dict[str, Any]:
         "tbr54": round(sum(1 for v in values if v < 54) / n * 100, 1),
         "tar180": round(sum(1 for v in values if v > 180) / n * 100, 1),
         "tar250": round(sum(1 for v in values if v > 250) / n * 100, 1),
+        "low_episodes": {**lows, "per_week": round(lows["episodes"] / max(1, len(by_day)) * 7, 1)},
         "agp": agp,
         "daily": daily,
         "quality": quality,
@@ -673,9 +676,10 @@ def _labs() -> dict[str, Any]:
             qualification_counts["invalid"] += 1
         if not lab_summary_eligible(r):
             continue
-        canonical = canonical_lab_name(r["test_name"])
-        by_test.setdefault(canonical, []).append({**r, "_date": _lab_date(r.get("collected_date"))})
-        reported_names.setdefault(canonical, set()).add(" ".join(str(r["test_name"]).split()))
+        # "Anion Gap" and "Anion gap" are one test; the newest row names it.
+        key = canonical_lab_name(r["test_name"]).lower()
+        by_test.setdefault(key, []).append({**r, "_date": _lab_date(r.get("collected_date"))})
+        reported_names.setdefault(key, set()).add(" ".join(str(r["test_name"]).split()))
 
     timezone_name = config_value("app_timezone", APP_TIMEZONE)
 
@@ -691,7 +695,7 @@ def _labs() -> dict[str, Any]:
     key_results = []
     duplicates_removed = 0
     undated_results = 0
-    for test, raw_points in by_test.items():
+    for key, raw_points in by_test.items():
         points, removed = _dedupe_lab_points(raw_points)
         duplicates_removed += removed
         undated_results += sum(1 for p in points if p["_date"] is None)
@@ -700,6 +704,7 @@ def _labs() -> dict[str, Any]:
         # while a dated result exists.
         points.sort(key=lambda p: (p["_date"] is not None, p["_date"] or date.min, str(p.get("collected_date") or "")))
         latest = points[-1]
+        test = canonical_lab_name(latest["test_name"])
         prev = points[-2] if len(points) >= 2 else None
         trend = None
         if (
@@ -711,7 +716,7 @@ def _labs() -> dict[str, Any]:
         flag = _lab_flag(latest)
         entry = {
             "test_name": test,
-            "reported_names": sorted(reported_names.get(test, set()) - {test}),
+            "reported_names": sorted(reported_names.get(key, set()) - {test}),
             "value": latest["value"],
             "unit": latest.get("unit", ""),
             "reference_low": latest.get("reference_low"),
@@ -741,13 +746,16 @@ def _labs() -> dict[str, Any]:
             ],
         }
         categories.setdefault(latest.get("category") or "Other", []).append(entry)
-        if flag and flag not in ("normal", ""):
+        if flag in ABNORMAL_FLAGS:
             flagged.append(entry)
         if test in KEY_LABS:
             key_results.append(entry)
     for tests in categories.values():
         tests.sort(key=lambda entry: entry["test_name"].lower())
     key_results.sort(key=lambda entry: KEY_LABS.index(entry["test_name"]))
+    # Newest draw first; undated results last.
+    flagged.sort(key=lambda entry: (entry["date"] or "", entry["test_name"].lower()), reverse=True)
+    flagged.sort(key=lambda entry: entry["date"] is None)
     return {
         "available": bool(by_test),
         "categories": categories,
@@ -888,7 +896,7 @@ def _narrative_metrics(payload: dict) -> dict[str, Any]:
         }
         if weight.get("available") else None,
         "glucose": {
-            **{k: g.get(k) for k in ("avg", "gmi", "cv", "tir", "tbr70", "tbr54", "tar180", "tar250", "days")},
+            **{k: g.get(k) for k in ("avg", "gmi", "cv", "tir", "tbr70", "tbr54", "tar180", "tar250", "days", "low_episodes")},
             "consensus_targets_pct": {"tbr70_below": TBR70_TARGET_PCT, "tbr54_below": TBR54_TARGET_PCT, "tir_above": 70},
             "fingerstick_reconciliation": {
                 key: fingersticks.get(key)
@@ -1038,7 +1046,7 @@ def _narrative_prompt(days: int, metrics: dict[str, Any], evidence: dict[str, An
 Data for the last {days} days (JSON):
 {data}
 
-Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. Judge hypoglycemia against the consensus targets supplied (time below 70 mg/dL under 4%, below 54 mg/dL under 1%); when either is exceeded, say so plainly in the headline or glucose summary — a high time in range does not offset excess time below range. Weight change is given from the 12-month high (peak_change) and over the report window (window_change); when either shows a loss, state the amount, percentage, and period. When contradictions_truncated is present, say how many unresolved contradictions exist in total. Insulin figures marked bolus_stream_incomplete have no reliable bolus/basal split; never describe that as missed or skipped doses. Explicitly call machine-extracted labs "unverified" unless their verification status is approved or edited; never imply that parser confidence is clinical verification. For every unresolved contradiction, present both sides and say it remains unresolved; never silently choose one value, especially for a blocking contradiction. If health-history or symptom evidence is present, use it as context without treating it as a clinician-confirmed fact. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Distinguish explicitly recorded/imported cycle phase days from algorithm-inferred days. Scale every analytics claim to its supplied discovery status and numerical confidence metadata; exploratory, emerging, or not-reproduced results cannot be presented as definitive. Copy the IDs of every Evidence Bundle item used into evidence_item_ids; never invent an ID. Keep it factual and readable."""
+Write a concise, professional "quarter in review" for the care team. Reference the actual numbers. Judge hypoglycemia against the consensus targets supplied (time below 70 mg/dL under 4%, below 54 mg/dL under 1%); when either is exceeded, say so plainly in the headline or glucose summary — a high time in range does not offset excess time below range. Weight change is given from the 12-month high (peak_change) and over the report window (window_change); when either shows a loss, state the amount, percentage, and period. When contradictions_truncated is present, say how many unresolved contradictions exist in total. Insulin figures marked bolus_stream_incomplete have no reliable bolus/basal split; never describe that as missed or skipped doses. Explicitly call machine-extracted labs "unverified" unless their verification status is approved or edited; never imply that parser confidence is clinical verification. For every unresolved contradiction, present both sides and say it remains unresolved; never silently choose one value, especially for a blocking contradiction. If health-history or symptom evidence is present, use it as context without treating it as a clinician-confirmed fact. Note relationships worth discussing (e.g. cycle-phase patterns, glucose vs. sleep/activity, symptoms vs. labs), always as observations to explore with the clinician — never as instructions to change therapy. Distinguish explicitly recorded/imported cycle phase days from algorithm-inferred days. Scale every analytics claim to its supplied discovery status and numerical confidence metadata; exploratory, emerging, or not-reproduced results cannot be presented as definitive. Write discussion_points as short, direct items the patient can raise and the clinician can act on, most clinically important first (hypoglycemia, weight change measured from the 12-month high, out-of-range labs, reported symptoms); keep statistics vocabulary (correlation coefficients, replication, discovery status, algorithm names) out of the text. Copy the IDs of every Evidence Bundle item used into evidence_item_ids; never invent an ID. Keep it factual and readable."""
 
 
 async def _fitted_narrative_prompt(days: int, metrics: dict[str, Any], evidence: dict[str, Any]) -> str:

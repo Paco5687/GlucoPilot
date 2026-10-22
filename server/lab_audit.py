@@ -948,6 +948,10 @@ _RANGE_BOUND = re.compile(r"^\s*(<=|>=|=<|=>|≤|≥|<|>)\s*(-?\d+(?:\.\d+)?)")
 _HIGH_FLAGS = {"high", "h", "hh", "critical_high"}
 _LOW_FLAGS = {"low", "l", "ll", "critical_low"}
 _DIRECTIONLESS_ABNORMAL = {"abnormal", "a", "critical", "out_of_range"}
+# Flags that put a result outside its reference range, for every reader of
+# LabResult. Functional-medicine grades ("within_range", "optimal",
+# "high_end_of_range", "needs_improvement") are not abnormal flags.
+ABNORMAL_FLAGS = frozenset(_HIGH_FLAGS | _LOW_FLAGS | _DIRECTIONLESS_ABNORMAL | {"positive"})
 
 
 def _reference_bounds(lab: dict[str, Any]) -> tuple[float | None, float | None, bool, bool] | None:

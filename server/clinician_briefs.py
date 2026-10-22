@@ -36,7 +36,7 @@ from .evidence_bundle import (
 from .hypotheses import report_block as hypothesis_report
 from .insulin_reconciliation import reconcile_treatments
 from .insulin_response import build_response_events
-from .lab_audit import effective_flag
+from .lab_audit import ABNORMAL_FLAGS, effective_flag
 from .lab_audit import summary_eligible as lab_summary_eligible
 from .repositories import get_repositories
 from .lab_names import canonical_lab_name
@@ -184,15 +184,12 @@ _TENTATIVE_DIAGNOSIS = re.compile(
     re.IGNORECASE,
 )
 _REPORTED_SYMPTOMS = re.compile(r"^\s*reported symptoms?\b", re.IGNORECASE)
-_ABNORMAL_FLAGS = {
-    "high", "low", "abnormal", "critical", "critical_high", "critical_low",
-    "out_of_range", "h", "l", "hh", "ll", "a",
-}
+_ABNORMAL_FLAGS = ABNORMAL_FLAGS
 _FLAG_LABELS = {
     "high": "High", "h": "High", "hh": "Critical high", "critical_high": "Critical high",
     "low": "Low", "l": "Low", "ll": "Critical low", "critical_low": "Critical low",
     "abnormal": "Abnormal", "a": "Abnormal", "critical": "Critical",
-    "out_of_range": "Out of range", "normal": "Normal",
+    "out_of_range": "Out of range", "positive": "Positive", "normal": "Normal",
 }
 _SPO2_TEXT = re.compile(r"spo2|blood oxygen|oxygen saturation", re.IGNORECASE)
 SPO2_PLAUSIBLE = (70.0, 100.0)
@@ -635,7 +632,7 @@ def _summary_item(entity_type: str, domain: str, data: dict[str, Any], display: 
     }
 
 
-def _low_episodes(points: list[tuple[datetime, float]], tz: ZoneInfo) -> dict[str, int]:
+def low_episodes(points: list[tuple[datetime, float]], tz: ZoneInfo) -> dict[str, int]:
     """CGM hypoglycemia episodes: ≥15 minutes below 70 mg/dL (level 2: below 54)."""
     episodes = level2 = nocturnal = 0
     run: list[tuple[datetime, float]] = []
@@ -672,7 +669,7 @@ def _glucose_summary(rows: list[dict[str, Any]], tz: ZoneInfo, start: datetime, 
     def pct(predicate) -> float:
         return round(sum(1 for value in values if predicate(value)) / count * 100, 1)
 
-    lows = _low_episodes(points, tz)
+    lows = low_episodes(points, tz)
     days = max(1.0, (end - start).total_seconds() / 86400)
     data = {
         "window_start": _iso(start),

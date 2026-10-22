@@ -1,31 +1,54 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import DataQualityNote from "@/components/DataQualityNote";
 import EvidenceContextBlock from "@/components/evidence/EvidenceContextBlock";
-import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Stethoscope, ScrollText, Beaker, CalendarRange, ChevronDown, ChevronRight, ClipboardList } from "lucide-react";
+import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Beaker, ChevronDown, ChevronRight, ClipboardList } from "lucide-react";
 import {
   ResponsiveContainer, AreaChart, Area, Line, LineChart, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
 } from "recharts";
 
 // Clinical AGP color convention (not brand palette) — this is a medical report.
-const TIR_BANDS = [
-  { key: "tbr54", label: "Very low (<54)", color: "#b91c1c" },
-  { key: "tbr70", label: "Low (54–69)", color: "#ef4444" },
-  { key: "tir", label: "In range (70–180)", color: "#16a34a" },
-  { key: "tar180", label: "High (181–250)", color: "#f59e0b" },
-  { key: "tar250", label: "Very high (>250)", color: "#d97706" },
-];
+const TIR_COLORS = {
+  veryLow: "#b91c1c",
+  low: "#ef4444",
+  inRange: "#16a34a",
+  high: "#f59e0b",
+  veryHigh: "#d97706",
+};
 
+// The printout leads with a one-page summary; the clinical sections follow it
+// and flow across pages. Long tables break between rows, headings stay with
+// what follows them, and optional material stays off paper unless included.
 const PRINT_CSS = `
 @media print {
+  html { font-size: 12.5px; }
+  html, body, main { background: #fff !important; }
   header, .print\\:hidden { display: none !important; }
   main { padding: 0 !important; max-width: 100% !important; }
   .report-card { break-inside: avoid; box-shadow: none !important; border-color: #ddd !important; }
-  .report-section { break-inside: avoid; }
+  .report-table { box-shadow: none !important; border-color: #ddd !important; }
+  .report-table tr, .report-section { break-inside: avoid; }
+  .report-page-break { break-before: page; }
+  h2, h3 { break-after: avoid; }
   body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  @page { margin: 1.5cm; }
+  @page { margin: 1.2cm; }
 }
 `;
+
+// International consensus CGM targets (Battelino et al., Diabetes Care 2019).
+const TIR_TARGET = 70;
+const TBR70_TARGET = 4;
+const TBR54_TARGET = 1;
+const TAR180_TARGET = 25;
+const TAR250_TARGET = 5;
+const CV_TARGET = 36;
+const LB_PER_KG = 2.20462;
+const SIGNIFICANT_WEIGHT_LOSS_PCT = 5;
+const FINDING_LABS_LISTED = 5;
+const REPORTED_SYMPTOMS = /^\s*reported symptoms?:?\s*/i;
+
+function plural(count, word, suffix = "s") {
+  return `${count} ${word}${count === 1 ? "" : suffix}`;
+}
 
 function Metric({ label, value, sub = null, tone = "" }) {
   return (
@@ -37,18 +60,49 @@ function Metric({ label, value, sub = null, tone = "" }) {
   );
 }
 
+function SectionTitle({ children, sub = null }) {
+  return (
+    <div>
+      <h2 className="font-semibold text-base">{children}</h2>
+      {sub && <p className="text-[11px] text-muted-foreground">{sub}</p>}
+    </div>
+  );
+}
+
+// Optional material: collapsed on screen and left out of the printout unless
+// the print option for it is ticked. The content stays in the page so the
+// print option can include it without expanding it on screen.
+function OptionalSection({ title, summary = null, includeInPrint, children }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <section className={`report-section rounded-lg border border-dashed border-border bg-muted/20 ${includeInPrint ? "" : "print:hidden"}`}>
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        className="print:hidden w-full flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-left"
+      >
+        <span className="inline-flex items-center gap-2 text-sm font-medium">
+          {open ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          {title}
+        </span>
+        {summary && <span className="text-[11px] text-muted-foreground">{summary}</span>}
+      </button>
+      <h2 className="hidden print:block font-semibold text-base px-3 pt-2">{title}</h2>
+      <div className={`${open ? "" : "hidden"} print:block px-3 pb-3 space-y-4`}>{children}</div>
+    </section>
+  );
+}
+
 function settingValue(value) {
   return Number.isInteger(value) ? String(value) : String(Math.round(value * 100) / 100);
 }
 
 function SettingsTable({ title, unit, segments }) {
   return (
-    <div className="report-card bg-card rounded-lg border border-border p-3">
+    <div className="report-card bg-card rounded-lg border border-border p-2.5">
       <p className="text-xs font-medium mb-1">{title} <span className="font-normal text-muted-foreground">({unit})</span></p>
       <table className="w-full text-[11px] tabular-nums">
-        <thead>
-          <tr className="text-muted-foreground"><th className="text-left font-normal">Time</th><th className="text-right font-normal">Value</th></tr>
-        </thead>
         <tbody>
           {segments.map((s) => (
             <tr key={`${s.start}-${s.end}`} className="border-t border-border/50">
@@ -65,38 +119,30 @@ function SettingsTable({ title, unit, segments }) {
 function PumpSettingsSection({ ps }) {
   const programs = [...(ps.basal_programs || [])].sort((a, b) => Number(b.active) - Number(a.active));
   return (
-    <div className="report-section space-y-3">
-      <div>
-        <h2 className="font-semibold text-base">Programmed pump settings</h2>
-        <p className="text-[11px] text-muted-foreground">
-          As of {ps.as_of} ({ps.age_days} day{ps.age_days === 1 ? "" : "s"} before this report){ps.device_model ? ` · ${ps.device_model}` : ""}.
-          {" "}From the most recent settings snapshot Glooko recorded; Glooko records snapshots only occasionally, so later changes on the pump are not reflected.
-        </p>
-      </div>
+    <div className="space-y-2">
+      <SectionTitle
+        sub={`As of ${ps.as_of}${ps.device_model ? ` · ${ps.device_model}` : ""} · the most recent settings snapshot Glooko recorded, ${plural(ps.age_days, "day")} before this report. Changes made on the pump after that date are not reflected.`}
+      >
+        Programmed pump settings
+      </SectionTitle>
       {ps.scalars?.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {ps.scalars.map((s) => (
-            <Metric key={s.key} label={s.label} value={settingValue(s.value)} sub={s.unit} />
-          ))}
-        </div>
+        <p className="text-xs">
+          {ps.scalars.map((s) => `${s.label}: ${settingValue(s.value)} ${s.unit}`).join(" · ")}
+        </p>
       )}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 print:grid-cols-4 gap-2">
+        {programs.map((p) => (
+          <SettingsTable
+            key={p.name}
+            title={`Basal: ${p.name}${p.active ? " (active)" : ""}`}
+            unit={`U/h · ${settingValue(p.units_per_day)} U/day`}
+            segments={p.segments}
+          />
+        ))}
         {(ps.schedules || []).map((s) => (
           <SettingsTable key={s.key} title={s.label} unit={s.unit} segments={s.segments} />
         ))}
       </div>
-      {programs.length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          {programs.map((p) => (
-            <SettingsTable
-              key={p.name}
-              title={`Basal: ${p.name}${p.active ? " (active)" : ""}`}
-              unit={`U/h · ${settingValue(p.units_per_day)} U/day`}
-              segments={p.segments}
-            />
-          ))}
-        </div>
-      )}
       {ps.changes?.length > 0 && (
         <p className="text-[11px] text-muted-foreground">
           Recorded changes: {ps.changes.map((c) => `${c.snapshot_at.slice(0, 10)} (${c.changed.join(", ")})`).join("; ")}.
@@ -109,15 +155,15 @@ function PumpSettingsSection({ ps }) {
 function TIRBar({ g }) {
   // Non-overlapping band widths from cumulative thresholds.
   const segs = [
-    { label: "Very low (<54)", pct: g.tbr54, color: "#b91c1c" },
-    { label: "Low (54–69)", pct: Math.max(0, g.tbr70 - g.tbr54), color: "#ef4444" },
-    { label: "In range (70–180)", pct: g.tir, color: "#16a34a" },
-    { label: "High (181–250)", pct: Math.max(0, g.tar180 - g.tar250), color: "#f59e0b" },
-    { label: "Very high (>250)", pct: g.tar250, color: "#d97706" },
+    { label: "Very low (<54)", pct: g.tbr54, color: TIR_COLORS.veryLow },
+    { label: "Low (54–69)", pct: Math.max(0, g.tbr70 - g.tbr54), color: TIR_COLORS.low },
+    { label: "In range (70–180)", pct: g.tir, color: TIR_COLORS.inRange },
+    { label: "High (181–250)", pct: Math.max(0, g.tar180 - g.tar250), color: TIR_COLORS.high },
+    { label: "Very high (>250)", pct: g.tar250, color: TIR_COLORS.veryHigh },
   ];
   return (
     <div>
-      <div className="flex h-8 rounded-md overflow-hidden border border-border">
+      <div className="flex h-7 rounded-md overflow-hidden border border-border">
         {segs.map((s, i) => (
           s.pct > 0 ? (
             <div key={i} style={{ width: `${s.pct}%`, background: s.color }} title={`${s.label}: ${s.pct.toFixed(1)}%`} />
@@ -141,6 +187,16 @@ function FingerstickReconciliation({ g }) {
   if (!reconciliation?.paired) return null;
   const lows = reconciliation.low_reconciliation;
   const bias = reconciliation.persistent_bias;
+  const minimum = bias?.minimum_sample_count || 5;
+  // Below the sample needed to judge bias, one line says what was recorded.
+  if ((bias?.sample_count || reconciliation.paired) < minimum) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Meter checks: {plural(reconciliation.paired, "fingerstick")} paired with CGM in this period
+        (mean difference {reconciliation.mean_abs_delta} mg/dL); {minimum} are needed to assess CGM bias.
+      </p>
+    );
+  }
   const biasLabel = {
     cgm_high: "persistent CGM-high direction observed",
     cgm_low: "persistent CGM-low direction observed",
@@ -148,7 +204,7 @@ function FingerstickReconciliation({ g }) {
     insufficient_sample: "insufficient sample for persistent bias",
   }[bias?.classification] || "not assessed";
   return (
-    <div className="report-card bg-card rounded-lg border border-border p-4 space-y-2">
+    <div className="report-card bg-card rounded-lg border border-border p-3 space-y-2">
       <div>
         <p className="text-xs font-medium">CGM and meter reconciliation</p>
         <p className="text-[11px] text-muted-foreground">{reconciliation.semantics}</p>
@@ -160,13 +216,9 @@ function FingerstickReconciliation({ g }) {
         <div><span className="text-muted-foreground">CGM-only lows</span><br /><b>{lows?.cgm_only_low || 0}</b></div>
       </div>
       <p className="text-[11px]">
-        Directional bias: <b>{biasLabel}</b> ({bias?.sample_count || 0} paired checks;
-        minimum {bias?.minimum_sample_count || 5}).
+        Directional bias: <b>{biasLabel}</b> ({bias?.sample_count || 0} paired checks; minimum {minimum}).
       </p>
-      <p className="text-[11px] text-muted-foreground">
-        Raw CGM time below range remains {g.tbr70}% below 70 mg/dL and {g.tbr54}% below
-        54 mg/dL. {lows?.caveat}
-      </p>
+      <p className="text-[11px] text-muted-foreground">{lows?.caveat}</p>
     </div>
   );
 }
@@ -181,16 +233,10 @@ function AGPChart({ agp }) {
       p50: h.p50,
     }));
   return (
-    <div className="h-56">
+    <div className="h-52">
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={data} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
-          <defs>
-            <linearGradient id="agpOuter" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#2563eb" stopOpacity={0.12} />
-              <stop offset="100%" stopColor="#2563eb" stopOpacity={0.12} />
-            </linearGradient>
-          </defs>
           <XAxis dataKey="hour" tickFormatter={(h) => `${h}:00`} tick={{ fontSize: 10 }} interval={2} />
           <YAxis domain={[40, 300]} ticks={[54, 70, 180, 250]} tick={{ fontSize: 10 }} width={32} />
           <Tooltip
@@ -200,9 +246,9 @@ function AGPChart({ agp }) {
           />
           <ReferenceLine y={70} stroke="#16a34a" strokeDasharray="4 4" strokeOpacity={0.6} />
           <ReferenceLine y={180} stroke="#16a34a" strokeDasharray="4 4" strokeOpacity={0.6} />
-          <Area dataKey="band" stroke="none" fill="#2563eb" fillOpacity={0.1} />
-          <Area dataKey="iqr" stroke="none" fill="#2563eb" fillOpacity={0.22} />
-          <Line dataKey="p50" stroke="#1d4ed8" strokeWidth={2} dot={false} type="monotone" />
+          <Area dataKey="band" stroke="none" fill="#2563eb" fillOpacity={0.1} isAnimationActive={false} />
+          <Area dataKey="iqr" stroke="none" fill="#2563eb" fillOpacity={0.22} isAnimationActive={false} />
+          <Line dataKey="p50" stroke="#1d4ed8" strokeWidth={2} dot={false} type="monotone" isAnimationActive={false} />
         </AreaChart>
       </ResponsiveContainer>
     </div>
@@ -210,13 +256,6 @@ function AGPChart({ agp }) {
 }
 
 const TREND_ICON = { up: TrendingUp, down: TrendingDown, flat: Minus };
-
-function importDate(time) {
-  const value = time?.canonical_at;
-  if (!value) return "";
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? "" : parsed.toLocaleDateString();
-}
 
 function ContradictionSide({ side }) {
   const value = side?.value != null ? `${side.value}${side.unit ? ` ${side.unit}` : ""}` : null;
@@ -293,12 +332,6 @@ function EvidenceDetails({ hypothesis }) {
   );
 }
 
-// International consensus CGM targets (Battelino et al., Diabetes Care 2019).
-const TBR70_TARGET = 4;
-const TBR54_TARGET = 1;
-const LB_PER_KG = 2.20462;
-const SIGNIFICANT_WEIGHT_LOSS_PCT = 5;
-
 function PatientLine({ patient }) {
   if (!patient?.name && !patient?.date_of_birth) return null;
   const details = [
@@ -311,6 +344,29 @@ function PatientLine({ patient }) {
       {patient.name && <span className="font-semibold">{patient.name}</span>}
       {patient.name && details.length > 0 && " · "}
       {details.join(" · ")}
+    </p>
+  );
+}
+
+// Coverage of each data source in one line under the header, in place of a
+// data-quality box per section. Low-reliability sources are marked.
+function DataSourcesLine({ report }) {
+  const sources = [
+    ["CGM", report.glucose?.quality],
+    ["Pump daily totals", report.insulin?.available ? report.insulin.quality : null],
+    ["Oura", report.wellness?.oura ? report.wellness.quality?.oura : null],
+    ["Fitbit", report.wellness?.fitbit ? report.wellness.quality?.fitbit : null],
+  ].filter(([, quality]) => quality?.coverage_pct != null);
+  if (!sources.length) return null;
+  return (
+    <p className="text-[11px] text-muted-foreground mt-1">
+      Data coverage:{" "}
+      {sources.map(([label, quality], index) => (
+        <span key={label} className={quality.reliability === "low" ? "text-amber-700" : ""}>
+          {index > 0 && " · "}
+          {label} {quality.coverage_pct}%{quality.data_through ? ` through ${quality.data_through}` : ""}
+        </span>
+      ))}
     </p>
   );
 }
@@ -332,6 +388,12 @@ function weightTone(change) {
   return change && change.change_pct <= -SIGNIFICANT_WEIGHT_LOSS_PCT ? "text-red-600" : "";
 }
 
+function significantWeightLoss(weight) {
+  return [weight?.peak_change, weight?.window_change].some(
+    (change) => change && change.change_pct <= -SIGNIFICANT_WEIGHT_LOSS_PCT,
+  );
+}
+
 function WeightBlock({ weight }) {
   if (!weight?.available) return null;
   const units = weight.units;
@@ -341,13 +403,10 @@ function WeightBlock({ weight }) {
   }));
   // The 12-month high is the headline reference; the first entry can be a
   // years-old baseline and only appears as secondary context.
-  const significantLoss = [weight.peak_change, weight.window_change].some(
-    (change) => change && change.change_pct <= -SIGNIFICANT_WEIGHT_LOSS_PCT,
-  );
   return (
     <div className="report-section space-y-3">
-      <h2 className="font-semibold text-base">Weight</h2>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <SectionTitle>Weight</SectionTitle>
+      <div className="grid grid-cols-1 sm:grid-cols-3 print:grid-cols-3 gap-3">
         <Metric label="Latest weight" value={formatWeight(weight.latest?.weight_kg, units)} sub={weight.latest?.date} />
         <Metric
           label="Change from 12-month high"
@@ -372,17 +431,17 @@ function WeightBlock({ weight }) {
           ({formatWeightChange(weight.since_first_change, units)} to latest).
         </p>
       )}
-      {significantLoss && (
+      {significantWeightLoss(weight) && (
         <p className="text-xs font-medium text-red-700">
           Weight loss of {SIGNIFICANT_WEIGHT_LOSS_PCT}% or more of body weight is recorded.
         </p>
       )}
       {series.length > 1 && (
-        <div className="report-card bg-card rounded-lg border border-border p-4">
+        <div className="report-card bg-card rounded-lg border border-border p-3">
           <p className="text-xs font-medium mb-2">
             Logged weight · {weight.entries} entr{weight.entries === 1 ? "y" : "ies"} ({units === "metric" ? "kg" : "lb"})
           </p>
-          <div className="h-40">
+          <div className="h-32">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={series} margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
@@ -399,36 +458,58 @@ function WeightBlock({ weight }) {
   );
 }
 
+function labResult(entry) {
+  return `${entry.value}${entry.unit ? ` ${entry.unit}` : ""}`;
+}
+
+function labReference(entry) {
+  if (entry.reference_low != null && entry.reference_high != null) return `${entry.reference_low}–${entry.reference_high}`;
+  if (entry.reference_high != null) return `≤ ${entry.reference_high}`;
+  if (entry.reference_low != null) return `≥ ${entry.reference_low}`;
+  return "—";
+}
+
+function labDate(entry) {
+  return entry.date || entry.event_time?.source_text || entry.collected_date || "date unknown";
+}
+
 function labFlagTone(flag) {
   if (!flag || flag === "normal") return "text-green-700";
   return "text-red-600";
 }
 
-function KeyLabResults({ results }) {
+// Only when verified and unverified results are mixed does a per-row status
+// add anything; otherwise the section note covers every row.
+function VerificationBadge({ entry, perRow }) {
+  if (!perRow || !entry.verification?.qualified) return null;
+  return <span className="ml-1.5 text-[9px] uppercase text-amber-700">{entry.verification.verification_status}</span>;
+}
+
+function KeyLabResults({ results, perRow }) {
   if (!results?.length) return null;
   return (
     <div className="report-card bg-card rounded-lg border border-border overflow-hidden">
       <div className="bg-muted/50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
         Key results · most recent value
       </div>
-      <table className="w-full text-sm">
+      <table className="w-full text-xs">
         <tbody>
           {results.map((t) => (
             <tr key={t.test_name} className="border-t border-border">
-              <td className="px-3 py-1.5 font-medium">
+              <td className="px-3 py-1 font-medium">
                 {t.test_name}
-                {t.verification?.qualified && <span className="ml-1.5 text-[9px] uppercase text-amber-700">{t.verification.verification_status}</span>}
+                <VerificationBadge entry={t} perRow={perRow} />
               </td>
-              <td className="px-3 py-1.5 text-right tabular-nums">
+              <td className="px-3 py-1 text-right tabular-nums">
                 {t.value} <span className="text-muted-foreground">{t.unit}</span>
               </td>
-              <td className="px-3 py-1.5 text-right text-xs text-muted-foreground tabular-nums">
-                {t.reference_low != null || t.reference_high != null ? `ref ${t.reference_low ?? ""}–${t.reference_high ?? ""}` : "no reference range"}
+              <td className="px-3 py-1 text-right text-muted-foreground tabular-nums">
+                {t.reference_low != null || t.reference_high != null ? `ref ${labReference(t)}` : "no reference range"}
               </td>
-              <td className={`px-3 py-1.5 text-center text-[10px] uppercase font-semibold ${labFlagTone(t.flag)}`}>
+              <td className={`px-3 py-1 text-center text-[10px] uppercase font-semibold ${labFlagTone(t.flag)}`}>
                 {t.flag || "—"}
               </td>
-              <td className="px-3 py-1.5 text-right text-[11px] text-muted-foreground tabular-nums">
+              <td className="px-3 py-1 text-right text-muted-foreground tabular-nums">
                 {t.date || t.collected_date || "date unknown"}
               </td>
             </tr>
@@ -439,12 +520,506 @@ function KeyLabResults({ results }) {
   );
 }
 
+function OutOfRangeLabs({ results, panels, perRow }) {
+  if (!results?.length) return null;
+  return (
+    <div className="report-table bg-card rounded-lg border border-red-200 overflow-hidden">
+      <div className="bg-red-50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-red-700 flex items-center gap-1">
+        <AlertTriangle className="w-3.5 h-3.5" /> Outside the reference range at the latest draw · newest first
+      </div>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            <th className="px-3 py-0.5 text-left font-medium">Test</th>
+            <th className="px-3 py-0.5 text-right font-medium">Result</th>
+            <th className="px-3 py-0.5 text-right font-medium">Reference</th>
+            <th className="px-2 py-0.5 text-center font-medium">Flag</th>
+            <th className="px-3 py-0.5 text-right font-medium">Collected</th>
+            <th className="px-3 py-0.5 text-left font-medium">Panel</th>
+          </tr>
+        </thead>
+        <tbody>
+          {results.map((t) => (
+            <tr key={t.test_name} className="border-t border-border">
+              <td className="px-3 py-0.5 font-medium">
+                {t.test_name}
+                <VerificationBadge entry={t} perRow={perRow} />
+              </td>
+              <td className="px-3 py-0.5 text-right tabular-nums font-semibold text-red-700 whitespace-nowrap">{labResult(t)}</td>
+              <td className="px-3 py-0.5 text-right tabular-nums text-muted-foreground whitespace-nowrap">{labReference(t)}</td>
+              <td className="px-2 py-0.5 text-center text-[10px] uppercase font-semibold text-red-600">{t.flag}</td>
+              <td className="px-3 py-0.5 text-right tabular-nums text-muted-foreground whitespace-nowrap">{labDate(t)}</td>
+              <td className="px-3 py-0.5 text-[10px] text-muted-foreground max-w-[11rem] truncate" title={panels[t.test_name]}>{panels[t.test_name] || ""}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function AllLabResults({ categories, perRow }) {
+  return Object.entries(categories).map(([cat, tests]) => (
+    <div key={cat} className="report-table bg-card rounded-lg border border-border overflow-hidden">
+      <div className="bg-muted/50 px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{cat}</div>
+      <table className="w-full text-xs">
+        <tbody>
+          {tests.map((t) => {
+            const TrendIcon = TREND_ICON[t.trend];
+            const outOfRange = t.flag && t.flag !== "normal";
+            return (
+              <tr key={t.test_name} className="border-t border-border align-top">
+                <td className="px-3 py-1 font-medium">
+                  {t.test_name}
+                  <VerificationBadge entry={t} perRow={perRow} />
+                  {t.reported_names?.length > 0 && (
+                    <div className="text-[10px] font-normal text-muted-foreground">also reported as {t.reported_names.join(", ")}</div>
+                  )}
+                </td>
+                <td className={`px-3 py-1 text-right tabular-nums ${outOfRange ? "text-red-600 font-semibold" : ""}`}>
+                  {t.value} <span className="text-muted-foreground font-normal">{t.unit}</span>
+                </td>
+                <td className="px-3 py-1 text-right text-muted-foreground tabular-nums">
+                  {t.reference_low != null && t.reference_high != null ? `${t.reference_low}–${t.reference_high}` : ""}
+                </td>
+                <td className="px-2 py-1 text-center w-6">
+                  {TrendIcon && <TrendIcon className={`w-3.5 h-3.5 inline ${t.trend === "up" ? "text-amber-500" : t.trend === "down" ? "text-sky-500" : "text-muted-foreground"}`} />}
+                </td>
+                <td className="px-3 py-1 text-right text-muted-foreground tabular-nums whitespace-nowrap">{labDate(t)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  ));
+}
+
+// Facts that need the clinician's attention, computed from the report data.
+function summaryFindings(report) {
+  const findings = [];
+  const g = report.glucose;
+  const unresolved = report.contradictions?.unresolved || [];
+  if (unresolved.length) {
+    const blocking = unresolved.filter((item) => item.severity === "blocking").length;
+    findings.push({
+      tone: "red",
+      label: "Data conflicts",
+      text: `${plural(unresolved.length, "unresolved contradiction")} between data sources${blocking ? ` (${blocking} blocking)` : ""}; both values are listed under Unresolved data contradictions.`,
+    });
+  }
+  if (g.tbr70 > TBR70_TARGET || g.tbr54 > TBR54_TARGET) {
+    const lows = g.low_episodes;
+    findings.push({
+      tone: "red",
+      label: "Hypoglycemia",
+      text: `Time below range exceeds the consensus target: ${g.tbr70}% of readings below 70 mg/dL (target <${TBR70_TARGET}%), ${g.tbr54}% below 54 mg/dL (target <${TBR54_TARGET}%).`
+        + (lows?.episodes ? ` ${plural(lows.episodes, "low episode")} of 15+ minutes (${lows.per_week}/week), ${lows.nocturnal_episodes} overnight (00:00–06:00), ${lows.level2_episodes} reaching below 54 mg/dL.` : ""),
+    });
+  }
+  if (g.tar180 > TAR180_TARGET || g.tar250 > TAR250_TARGET) {
+    findings.push({
+      tone: "amber",
+      label: "Hyperglycemia",
+      text: `${g.tar180}% of readings above 180 mg/dL (target <${TAR180_TARGET}%), ${g.tar250}% above 250 mg/dL (target <${TAR250_TARGET}%).`,
+    });
+  } else if (g.tir < TIR_TARGET) {
+    findings.push({ tone: "amber", label: "Time in range", text: `${g.tir}% (target >${TIR_TARGET}%).` });
+  }
+  if (g.cv > CV_TARGET) {
+    findings.push({ tone: "amber", label: "Variability", text: `Coefficient of variation ${g.cv}% (target ≤${CV_TARGET}%).` });
+  }
+  const weight = report.weight;
+  if (weight?.available && significantWeightLoss(weight)) {
+    const change = weightTone(weight.peak_change) ? weight.peak_change : weight.window_change;
+    findings.push({
+      tone: "red",
+      label: "Weight loss",
+      text: `${formatWeight(weight.latest?.weight_kg, weight.units)} on ${weight.latest?.date}: ${formatWeightChange(change, weight.units)} from ${formatWeight(change.from_kg, weight.units)} on ${change.from_date}${change === weight.peak_change ? " (12-month high)" : ""}.`,
+    });
+  }
+  const abnormal = report.labs?.flagged || [];
+  if (abnormal.length) {
+    const recent = abnormal.filter((entry) => entry.date).slice(0, FINDING_LABS_LISTED);
+    findings.push({
+      tone: "red",
+      label: "Labs",
+      text: `${plural(abnormal.length, "result")} outside the reference range at the latest draw.`
+        + (recent.length ? ` Most recent: ${recent.map((entry) => `${entry.test_name} ${labResult(entry)} (${entry.flag}, ${entry.date})`).join("; ")}.` : ""),
+    });
+  }
+  const symptoms = (report.history?.events || []).filter((event) => REPORTED_SYMPTOMS.test(event.title || ""));
+  if (symptoms.length) {
+    const dates = [...new Set(symptoms.map((event) => event.date).filter(Boolean))];
+    findings.push({
+      tone: "amber",
+      label: "Reported symptoms",
+      text: `${dates.length ? `Recorded ${dates.join(", ")}: ` : ""}${symptoms.map((event) => event.title.replace(REPORTED_SYMPTOMS, "")).join("; ")}.`,
+    });
+  }
+  const effort = report.management_burden;
+  if (effort?.outcome_vs_effort?.sustainability_review_flag && effort.summary) {
+    findings.push({
+      tone: "amber",
+      label: "Management effort",
+      text: `${effort.summary.average_active_management_minutes_per_day} min/day of recorded diabetes management`
+        + `${effort.summary.measured_interactions_per_day != null ? ` and ${effort.summary.measured_interactions_per_day} interactions/day` : ""}`
+        + `${effort.summary.days_with_measured_effort ? ` over ${effort.summary.days_with_measured_effort} days` : ""}.`,
+    });
+  }
+  return findings;
+}
+
+function Findings({ findings }) {
+  if (!findings.length) {
+    return <p className="text-sm text-muted-foreground">No glucose, weight or lab result in this report crossed a consensus target or reference range.</p>;
+  }
+  return (
+    <ul className="space-y-1.5 text-sm">
+      {findings.map((finding) => (
+        <li key={finding.label} className="flex gap-2">
+          <span className={`mt-1.5 inline-block w-2 h-2 shrink-0 rounded-full ${finding.tone === "red" ? "bg-red-600" : "bg-amber-500"}`} />
+          <span><b>{finding.label}.</b> {finding.text}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function RecordColumn({ title, children, empty }) {
+  return (
+    <div className="report-card rounded-lg border border-border p-3">
+      <h3 className="font-semibold text-sm mb-1">{title}</h3>
+      {children || <p className="text-xs text-muted-foreground">{empty}</p>}
+    </div>
+  );
+}
+
+function ClinicalRecord({ report }) {
+  const conditions = report.conditions || [];
+  const medications = report.medications || [];
+  const allergies = report.allergies || [];
+  return (
+    <div className="report-section grid grid-cols-1 sm:grid-cols-3 print:grid-cols-3 gap-3">
+      <RecordColumn title="Confirmed diagnoses" empty="None recorded.">
+        {conditions.length > 0 && (
+          <ul className="text-xs space-y-0.5">
+            {conditions.map((c, i) => (
+              <li key={i}>
+                <span className="font-medium">{c.name}</span>
+                {c.status && c.status !== "active" ? ` (${c.status})` : ""}
+                {c.diagnosed ? <span className="text-muted-foreground"> · dx {c.diagnosed}</span> : ""}
+              </li>
+            ))}
+          </ul>
+        )}
+      </RecordColumn>
+      <RecordColumn title="Medications & supplements" empty="None recorded.">
+        {medications.length > 0 && (
+          <ul className="text-xs space-y-0.5">
+            {medications.map((m, i) => (
+              <li key={i}>
+                <span className="font-medium">{m.name}</span>{m.dose ? ` ${m.dose}` : ""}{m.frequency ? ` · ${m.frequency}` : ""}
+                {m.kind === "supplement" ? <span className="text-muted-foreground"> (supplement)</span> : ""}{m.status === "stopped" ? " — stopped" : ""}
+              </li>
+            ))}
+          </ul>
+        )}
+      </RecordColumn>
+      <RecordColumn title="Allergies & intolerances" empty="None recorded.">
+        {allergies.length > 0 && (
+          <ul className="text-xs space-y-0.5">
+            {allergies.map((a, i) => (
+              <li key={i}>
+                <span className="font-medium">{a.allergen}</span>{a.severity ? ` (${a.severity})` : ""}{a.reaction ? ` — ${a.reaction}` : ""}
+              </li>
+            ))}
+          </ul>
+        )}
+      </RecordColumn>
+    </div>
+  );
+}
+
+function symptomTitle(title) {
+  const text = title.replace(REPORTED_SYMPTOMS, "");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function HistorySection({ history }) {
+  const events = history?.events || [];
+  const reported = events.filter((event) => REPORTED_SYMPTOMS.test(event.title || ""));
+  const other = events.filter((event) => !REPORTED_SYMPTOMS.test(event.title || ""));
+  if (!reported.length && !other.length && !history?.narrative) return null;
+  const dates = [...new Set(reported.map((event) => event.date).filter(Boolean))];
+  return (
+    <div className="space-y-3">
+      {reported.length > 0 && (
+        <div className="space-y-2">
+          <SectionTitle sub={dates.length ? `Recorded ${dates.join(", ")}.` : null}>Patient-reported symptoms</SectionTitle>
+          <dl className="columns-1 md:columns-2 print:columns-2 gap-6 text-xs leading-relaxed">
+            {reported.map((event, i) => (
+              <div key={i} className="break-inside-avoid mb-2">
+                <dt className="font-semibold">{symptomTitle(event.title)}</dt>
+                <dd>{event.details}</dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
+      {(history?.narrative || other.length > 0) && (
+        <div className="space-y-1">
+          <h3 className="font-semibold text-sm">Health history</h3>
+          {history?.narrative && <p className="text-xs leading-relaxed whitespace-pre-wrap">{history.narrative}</p>}
+          {other.length > 0 && (
+            <ul className="text-xs space-y-1">
+              {other.map((e, i) => (
+                <li key={i}>
+                  <span className="text-muted-foreground tabular-nums">{e.date || "—"} · <span className="capitalize">{e.type}</span></span>{" "}
+                  <span className="font-medium">{e.title}</span>
+                  {e.details && <span className="text-muted-foreground"> — {e.details}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HealthEpisodes({ block }) {
+  if (!block?.episodes?.length && !block?.medication_exposures?.length) return null;
+  return (
+    <div className="space-y-2">
+      <SectionTitle sub={block.semantics}>Health episodes &amp; medication exposures</SectionTitle>
+      {block.episodes?.length > 0 && (
+        <ul className="space-y-1 text-xs">
+          {block.episodes.map((episode) => (
+            <li key={episode.id}>
+              <span className="font-semibold">{episode.title}</span>
+              {" · "}{episode.start_time} → {episode.end_time}
+              {" · "}{episode.status} · {episode.origin_kind}
+              <span className="text-muted-foreground">
+                {" · "}{episode.members?.length || 0} temporal members · confidence{" "}
+                {episode.confidence?.confidence_label?.replace("_", " ") || "not assessed"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {block.medication_exposures?.length > 0 && (
+        <ul className="space-y-1 text-xs">
+          {block.medication_exposures.map((exposure) => (
+            <li key={exposure.id}>
+              <span className="font-semibold">{exposure.medication_name}</span>
+              {exposure.dose ? ` · ${exposure.dose}` : ""}
+              {exposure.formulation ? ` · ${exposure.formulation}` : ""}
+              {" · "}{exposure.start_time} → {exposure.end_time || "ongoing"}
+              {" · "}{exposure.status}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+const EFFORT_LABELS = {
+  temp_basal: "Temp basal changes (all)",
+  awakening: "Overnight awakenings",
+  device_change: "Device changes",
+};
+
+function ManagementEffort({ mb }) {
+  if (!mb?.summary) return null;
+  return (
+    <div className="space-y-2">
+      <SectionTitle sub="Control and recorded effort are separate dimensions. Missing event sources reduce confidence and are not counted as zero effort. These calculations are descriptive and do not establish causation or recommend treatment.">
+        Outcomes &amp; management effort
+      </SectionTitle>
+      <p className="text-xs">
+        Time in range {mb.outcomes?.time_in_range_pct != null ? `${mb.outcomes.time_in_range_pct}%` : "—"} ·
+        {" "}{mb.summary.average_active_management_minutes_per_day} recorded min/day of active management ·
+        {" "}effort index {mb.summary.measured_effort_index} · effort confidence {Math.round(mb.analytics_confidence.confidence_score * 100)}% ({mb.analytics_confidence.confidence_label})
+      </p>
+      {mb.outcome_vs_effort?.sustainability_review_flag && (
+        <p className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-950">{mb.outcome_vs_effort.language}</p>
+      )}
+      <table className="w-full text-xs">
+        <tbody>
+          {mb.components.map((item) => (
+            <tr key={item.category} className="border-t border-border">
+              <td className="py-0.5 pr-2 capitalize">{EFFORT_LABELS[item.category] || item.category.replaceAll("_", " ")}</td>
+              <td className="py-0.5 pr-2 text-right tabular-nums">{plural(item.events, "event")}</td>
+              <td className="py-0.5 pr-2 text-right tabular-nums">{item.minutes} min</td>
+              <td className="py-0.5 text-right tabular-nums text-muted-foreground">weight {item.weight} · {item.weighted_points} points</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {mb.source_coverage?.missing?.length > 0 && (
+        <p className="text-[11px] text-amber-700">
+          Unavailable event sources: {mb.source_coverage.missing.join(", ").replaceAll("_", " ")}.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function InsulinResponse({ ir }) {
+  if (!(ir?.counts?.total > 0)) return null;
+  return (
+    <div className="space-y-2">
+      <SectionTitle>Observed insulin response events</SectionTitle>
+      <p className="text-xs">
+        {ir.counts.total} response windows over {ir.window_days} days: {ir.counts.clean} clean (used in summaries),
+        {" "}{ir.counts.confounded} confounded, {ir.counts.excluded} excluded for insufficient or invalid input.
+      </p>
+      {ir.available ? (
+        <p className="text-xs">
+          Observed drop per unit: median <b>{ir.median_drop_per_unit} mg/dL/U</b>, mean {ir.mean_drop_per_unit} mg/dL/U,
+          {" "}variability {ir.cv_pct}% · {ir.n} clean events · {ir.confidence?.confidence_label || "low"} confidence
+          {ir.confidence?.discovery_status ? ` (${ir.confidence.discovery_status})` : ""}.
+        </p>
+      ) : (
+        <p className="text-xs text-muted-foreground">{ir.reason}</p>
+      )}
+      {Object.keys(ir.reason_counts || {}).length > 0 && (
+        <p className="text-[11px] text-muted-foreground">
+          Exclusion/confounder reasons: {Object.entries(ir.reason_counts).map(([reason, count]) => `${reason.replaceAll("_", " ")} (${count})`).join(" · ")}
+        </p>
+      )}
+      <p className="text-[11px] text-muted-foreground">
+        Confounded events are excluded from summaries. The observed glucose change does not establish insulin causation, resistance, or absorption; estimated IOB is a comparison assumption, not pump-reported IOB.
+      </p>
+    </div>
+  );
+}
+
+function ActivityAssociations({ ap }) {
+  if (!ap?.effects?.length) return null;
+  return (
+    <div className="space-y-2">
+      <SectionTitle sub="Timestamped interval comparisons only. They do not establish that activity or position caused a glucose, bolus-response, or meter/CGM difference.">
+        Activity &amp; position associations
+      </SectionTitle>
+      <ul className="text-xs space-y-1">
+        {ap.effects.map((effect) => (
+          <li key={effect.id}>
+            <span className="font-semibold capitalize">{effect.dimension}: {effect.state}</span>
+            {" — "}{effect.metric.replaceAll("_", " ")}: <b>{Math.round(effect.observed_mean * 10) / 10} {effect.unit}</b>
+            <span className="text-muted-foreground">
+              {" "}(n={effect.sample_count}; {effect.measured_interval_count}/{effect.interval_count} intervals measured · {effect.analytics_confidence.discovery_status.replaceAll("_", " ")})
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function CycleTable({ c }) {
+  return (
+    <div className="report-card bg-card rounded-lg border border-border p-3 space-y-2">
+      <h3 className="font-semibold text-sm">Menstrual cycle &amp; glucose</h3>
+      <p className="text-[11px] text-muted-foreground">
+        {plural(c.cycles_detected, "cycle")}{c.avg_cycle_length ? `, average ${c.avg_cycle_length} days` : ""} · phases {c.source}.
+      </p>
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            <th className="text-left font-medium py-0.5">Phase</th>
+            <th className="text-right font-medium py-0.5">Days</th>
+            <th className="text-right font-medium py-0.5">In range</th>
+            <th className="text-right font-medium py-0.5">Avg glucose</th>
+          </tr>
+        </thead>
+        <tbody>
+          {["menstrual", "follicular", "ovulation", "luteal"].filter((p) => c.per_phase[p]).map((p) => {
+            const s = c.per_phase[p];
+            return (
+              <tr key={p} className="border-t border-border">
+                <td className="py-0.5 capitalize">{p}</td>
+                <td className="py-0.5 text-right tabular-nums">{s.days}</td>
+                <td className="py-0.5 text-right tabular-nums">{s.tir != null ? `${s.tir}%` : "—"}</td>
+                <td className="py-0.5 text-right tabular-nums">{s.avg_glucose != null ? `${s.avg_glucose} mg/dL` : "—"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function WellnessTable({ w }) {
+  const rows = [
+    ["Sleep score (Oura)", w.oura?.avg_sleep_score],
+    ["Readiness (Oura)", w.oura?.avg_readiness_score],
+    ["Resting heart rate (Oura)", w.oura?.avg_resting_hr != null ? `${w.oura.avg_resting_hr} bpm` : null],
+    ["SpO₂ (Oura)", w.oura?.avg_spo2 != null ? `${w.oura.avg_spo2}%` : null],
+    ["Steps per day (Fitbit)", w.fitbit?.avg_steps?.toLocaleString()],
+    ["Sleep per night (Fitbit)", w.fitbit?.avg_sleep_hours != null ? `${w.fitbit.avg_sleep_hours} h` : null],
+    ["Resting heart rate (Fitbit)", w.fitbit?.avg_resting_hr != null ? `${w.fitbit.avg_resting_hr} bpm` : null],
+  ].filter(([, value]) => value != null);
+  return (
+    <div className="report-card bg-card rounded-lg border border-border p-3 space-y-2">
+      <h3 className="font-semibold text-sm">Sleep, recovery &amp; activity <span className="font-normal text-[11px] text-muted-foreground">(averages)</span></h3>
+      <table className="w-full text-xs">
+        <tbody>
+          {rows.map(([label, value]) => (
+            <tr key={label} className="border-t border-border">
+              <td className="py-0.5">{label}</td>
+              <td className="py-0.5 text-right tabular-nums font-medium">{value}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function InsuranceBlock({ insurance }) {
+  return (
+    <div className="report-section report-card rounded-lg border border-border p-3">
+      <h2 className="font-semibold text-sm mb-2 flex items-center gap-2">
+        <ShieldCheck className="w-4 h-4 text-primary" /> Health insurance
+      </h2>
+      <div className="grid grid-cols-2 sm:grid-cols-5 print:grid-cols-5 gap-x-4 gap-y-1 text-xs">
+        {[
+          ["Carrier", insurance.carrier],
+          ["Plan", [insurance.plan_name, insurance.plan_type].filter(Boolean).join(" · ")],
+          ["Member", insurance.member_name],
+          ["Member ID", insurance.member_id],
+          ["Group", insurance.group_number],
+          ["Member services", insurance.customer_service_phone],
+          ["RxBIN", insurance.rx_bin],
+          ["RxPCN", insurance.rx_pcn],
+          ["RxGroup", insurance.rx_group],
+          ["Effective", insurance.effective_date],
+        ]
+          .filter(([, v]) => v)
+          .map(([label, v]) => (
+            <div key={label}>
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+              <div className="font-medium tabular-nums">{v}</div>
+            </div>
+          ))}
+      </div>
+      {insurance.notes && <p className="text-[11px] text-muted-foreground mt-2">{insurance.notes}</p>}
+    </div>
+  );
+}
+
 export default function Report() {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
   const [days, setDays] = useState(90);
   const [showUnevaluated, setShowUnevaluated] = useState(false);
   const [includeUnevaluatedInPrint, setIncludeUnevaluatedInPrint] = useState(false);
+  const [printAllLabs, setPrintAllLabs] = useState(false);
+  const [printAnalyses, setPrintAnalyses] = useState(false);
 
   const generate = useCallback(async (d) => {
     setLoading(true);
@@ -490,6 +1065,18 @@ export default function Report() {
   const reviewedHypotheses = hypotheses.filter((item) => (
     !item.legacy && hypothesisState(item) !== "not_evaluated"
   ));
+  const findings = summaryFindings(report);
+  const latestKg = report.weight?.available ? report.weight.latest?.weight_kg : null;
+  const tdd = i.pump_reported_avg_tdd ?? i.calculated_avg_tdd;
+  const labCounts = labs.verification?.counts || {};
+  const verifiedLabs = (labCounts.approved || 0) + (labCounts.edited || 0);
+  const perRowVerification = verifiedLabs > 0 && (labCounts.unverified || 0) > 0;
+  const labTests = Object.values(labs.categories || {}).reduce((sum, tests) => sum + tests.length, 0);
+  const labPanels = Object.fromEntries(
+    Object.entries(labs.categories || {}).flatMap(([cat, tests]) => tests.map((t) => [t.test_name, cat])),
+  );
+  const hasAnalyses = (report.health_episodes?.episodes?.length || report.health_episodes?.medication_exposures?.length)
+    || mb?.summary || ir?.counts?.total > 0 || ap?.effects?.length > 0;
 
   return (
     <div className="space-y-5 max-w-4xl mx-auto">
@@ -513,13 +1100,23 @@ export default function Report() {
             <RefreshCw className="w-3.5 h-3.5" /> Regenerate
           </Button>
         </div>
-        <Button onClick={() => window.print()} className="gap-2">
-          <Printer className="w-4 h-4" /> Print / Save PDF
-        </Button>
+        <div className="flex items-center gap-3 flex-wrap">
+          <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <input type="checkbox" checked={printAllLabs} onChange={(event) => setPrintAllLabs(event.target.checked)} />
+            Print all lab results
+          </label>
+          <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <input type="checkbox" checked={printAnalyses} onChange={(event) => setPrintAnalyses(event.target.checked)} />
+            Print additional analyses
+          </label>
+          <Button onClick={() => window.print()} className="gap-2">
+            <Printer className="w-4 h-4" /> Print / Save PDF
+          </Button>
+        </div>
       </div>
 
       {/* Report header */}
-      <div className="report-section flex items-center justify-between border-b border-border pb-4">
+      <div className="report-section flex items-start justify-between border-b border-border pb-3">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <FileText className="w-6 h-6 text-primary" /> Health Summary
@@ -528,6 +1125,7 @@ export default function Report() {
           <p className="text-sm text-muted-foreground mt-1">
             {report.days}-day review · {report.start_date} to {report.end_date}
           </p>
+          <DataSourcesLine report={report} />
         </div>
         <div className="text-right text-xs text-muted-foreground">
           <div className="w-9 h-9 rounded-lg bg-primary flex items-center justify-center ml-auto mb-1">
@@ -537,7 +1135,53 @@ export default function Report() {
         </div>
       </div>
 
-      <WeightBlock weight={report.weight} />
+      {/* Page 1: the numbers, what needs attention, and the clinical record */}
+      <div className="report-section grid grid-cols-2 md:grid-cols-6 print:grid-cols-6 gap-2">
+        <Metric label="Time in range" value={`${g.tir}%`} sub={`70–180 · target >${TIR_TARGET}%`} tone={g.tir >= TIR_TARGET ? "text-green-600" : "text-amber-600"} />
+        <Metric
+          label="Time below 70 mg/dL"
+          value={`${g.tbr70}%`}
+          sub={`target <${TBR70_TARGET}% · ${g.tbr70 > TBR70_TARGET ? "above target" : "within target"}`}
+          tone={g.tbr70 > TBR70_TARGET ? "text-red-600" : "text-green-600"}
+        />
+        <Metric
+          label="Time below 54 mg/dL"
+          value={`${g.tbr54}%`}
+          sub={`target <${TBR54_TARGET}% · ${g.tbr54 > TBR54_TARGET ? "above target" : "within target"}`}
+          tone={g.tbr54 > TBR54_TARGET ? "text-red-600" : "text-green-600"}
+        />
+        <Metric label="Average glucose" value={`${g.avg}`} sub={`mg/dL · GMI ${g.gmi}% (est. A1c)`} />
+        <Metric label="Variability (CV)" value={`${g.cv}%`} sub={g.cv <= CV_TARGET ? `target ≤${CV_TARGET}%` : `above ${CV_TARGET}% target`} tone={g.cv <= CV_TARGET ? "" : "text-amber-600"} />
+        <Metric
+          label="Total daily insulin"
+          value={tdd != null ? `${tdd}` : "—"}
+          sub={tdd != null ? `U/day${latestKg ? ` · ${(tdd / latestKg).toFixed(2)} U/kg` : ""}` : "no complete days"}
+        />
+      </div>
+
+      <div className="report-section space-y-2">
+        <SectionTitle>Findings to review</SectionTitle>
+        <Findings findings={findings} />
+      </div>
+
+      {n?.discussion_points?.length > 0 && (
+        <div className="report-section report-card bg-primary/5 rounded-lg border border-primary/20 p-3">
+          <h2 className="font-semibold text-sm text-primary mb-1">Points to discuss</h2>
+          <ol className="text-sm space-y-1 list-decimal list-inside marker:text-primary">
+            {n.discussion_points.map((p, idx) => <li key={idx}>{p}</li>)}
+          </ol>
+        </div>
+      )}
+
+      {!n && report.narrative_status?.available === false && (
+        <div className="report-section print:hidden rounded-lg border border-dashed border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+          <p className="font-semibold">Narrative unavailable</p>
+          <p>{report.narrative_status.reason}</p>
+          {report.narrative_status.note && <p className="text-amber-800">{report.narrative_status.note}</p>}
+        </div>
+      )}
+
+      <ClinicalRecord report={report} />
 
       {report.contradictions?.unresolved?.length > 0 && (
         <div className="report-section space-y-2">
@@ -563,352 +1207,50 @@ export default function Report() {
         </div>
       )}
 
-      {/* Diagnosed conditions */}
-      {report.conditions?.length > 0 && (
-        <div className="report-section report-card rounded-xl border border-border p-4">
-          <h2 className="font-semibold text-sm mb-2 flex items-center gap-2">
-            <Stethoscope className="w-4 h-4 text-primary" /> Confirmed conditions &amp; diagnoses
-          </h2>
-          <div className="flex flex-wrap gap-2">
-            {report.conditions.map((c, i) => (
-              <span key={i} className="text-xs px-2 py-1 rounded-full bg-muted">
-                {c.name}
-                {c.status && c.status !== "active" ? ` (${c.status})` : ""}
-                {c.diagnosed ? ` · dx ${c.diagnosed}` : ""}
-              </span>
+      {/* Glucose: the AGP page */}
+      <div className="report-page-break space-y-3">
+        <SectionTitle sub={`${g.readings.toLocaleString()} CGM readings over ${g.days} days.`}>Glucose</SectionTitle>
+        {n && (
+          <div className="report-card rounded-lg border border-border p-3 space-y-1.5">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Written summary</p>
+            <p className="text-sm font-medium">{n.headline}</p>
+            {[n.glucose_summary, n.cycle_summary, n.lifestyle_summary].filter(Boolean).map((text) => (
+              <p key={text} className="text-xs text-muted-foreground">{text}</p>
             ))}
           </div>
-        </div>
-      )}
-
-      {/* Evidence-bearing hypotheses remain separate from diagnoses. */}
-      {reviewedHypotheses.length > 0 && (
-        <div className="report-section space-y-2">
-          <h2 className="font-semibold text-sm flex items-center gap-2">
-            <Beaker className="w-4 h-4 text-primary" /> Questions under review
-          </h2>
-          <p className="text-[11px] text-muted-foreground">
-            Tentative interpretations with recorded evidence. They remain separate from confirmed diagnoses.
-          </p>
-          {reviewedHypotheses.map((hypothesis) => {
-            const state = HYPOTHESIS_STATE[hypothesisState(hypothesis)];
-            const supporting = hypothesis.evidence_by_role?.supporting?.length || 0;
-            const opposing = hypothesis.evidence_by_role?.opposing?.length || 0;
-            const missing = hypothesis.evidence_by_role?.missing?.length || 0;
-            return (
-              <div key={hypothesis.id} className="report-card rounded-lg border border-border bg-card p-3 space-y-2">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div>
-                    <p className="font-medium text-sm">{hypothesis.title}</p>
-                    {hypothesis.description && <p className="text-xs text-muted-foreground">{hypothesis.description}</p>}
-                  </div>
-                  <span className={`text-[10px] rounded-full border px-2 py-1 font-medium ${state.tone}`}>
-                    {state.label}
-                  </span>
-                </div>
-                <p className="text-[11px] text-muted-foreground">
-                  Recorded evidence: {supporting} supporting · {opposing} opposing · {missing} missing/needed
-                </p>
-                <EvidenceDetails hypothesis={hypothesis} />
-                {hypothesis.suggested_verification && (
-                  <p className="text-xs">
-                    <span className="font-semibold">Suggested verification:</span>{" "}
-                    {hypothesis.suggested_verification}
-                  </p>
-                )}
-                {hypothesis.decided_by && (
-                  <p className="text-xs font-semibold">
-                    Decision recorded by {hypothesis.decided_by} at {hypothesis.decided_at}
-                  </p>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Unsupported legacy suspicions are optional discussion reminders, not findings. */}
-      {unevaluatedHypotheses.length > 0 && (
-        <div className={`report-section rounded-lg border border-dashed border-border bg-muted/20 p-3 ${includeUnevaluatedInPrint ? "" : "print:hidden"}`}>
-          <div className="print:hidden flex flex-wrap items-center justify-between gap-3">
-            <button
-              type="button"
-              onClick={() => setShowUnevaluated((value) => !value)}
-              className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
-            >
-              {showUnevaluated ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-              Questions previously recorded ({unevaluatedHypotheses.length})
-            </button>
-            <label className="inline-flex items-center gap-2 text-[11px] text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={includeUnevaluatedInPrint}
-                onChange={(event) => setIncludeUnevaluatedInPrint(event.target.checked)}
-              />
-              Include in print
-            </label>
-          </div>
-          <h2 className="hidden print:block text-sm font-medium">Questions previously recorded</h2>
-          {(showUnevaluated || includeUnevaluatedInPrint) && (
-            <div className="mt-3 print:mt-2 space-y-2">
-              <p className="text-[11px] text-muted-foreground">
-                These entries have no recorded supporting or opposing evidence. They are reminders for discussion, not findings.
-              </p>
-              {unevaluatedHypotheses.map((hypothesis) => (
-                <div key={hypothesis.id} className="rounded border border-border bg-background/70 px-3 py-2">
-                  <p className="text-sm text-foreground">{hypothesis.title}</p>
-                  <p className="text-[11px] text-muted-foreground">
-                    Not evaluated · no supporting or opposing evidence recorded.
-                  </p>
-                  {hypothesis.suggested_verification && (
-                    <p className="text-[11px] text-muted-foreground mt-1">
-                      Possible next step: {hypothesis.suggested_verification}
-                    </p>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {(report.health_episodes?.episodes?.length > 0
-        || report.health_episodes?.medication_exposures?.length > 0) && (
-        <div className="report-section report-card rounded-xl border border-border p-4 space-y-3">
-          <div>
-            <h2 className="font-semibold text-sm flex items-center gap-2">
-              <CalendarRange className="w-4 h-4 text-primary" /> Health episodes &amp; medication exposures
-            </h2>
-            <p className="text-[11px] text-muted-foreground">
-              {report.health_episodes.semantics}
-            </p>
-          </div>
-          {report.health_episodes.episodes?.length > 0 && (
-            <div>
-              <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Episodes</p>
-              <ul className="space-y-1.5 text-xs">
-                {report.health_episodes.episodes.map((episode) => (
-                  <li key={episode.id} className="rounded border border-border p-2">
-                    <span className="font-semibold">{episode.title}</span>
-                    {" · "}{episode.start_time} → {episode.end_time}
-                    {" · "}{episode.status} · {episode.origin_kind}
-                    <span className="block text-muted-foreground">
-                      {episode.members?.length || 0} temporal members · confidence{" "}
-                      {episode.confidence?.confidence_label?.replace("_", " ") || "not assessed"}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {report.health_episodes.medication_exposures?.length > 0 && (
-            <div>
-              <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Medication exposures</p>
-              <ul className="space-y-1.5 text-xs">
-                {report.health_episodes.medication_exposures.map((exposure) => (
-                  <li key={exposure.id} className="rounded border border-border p-2">
-                    <span className="font-semibold">{exposure.medication_name}</span>
-                    {exposure.dose ? ` · ${exposure.dose}` : ""}
-                    {exposure.formulation ? ` · ${exposure.formulation}` : ""}
-                    {" · "}{exposure.start_time} → {exposure.end_time || "ongoing"}
-                    {" · "}{exposure.status}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Health history */}
-      {(report.history?.narrative || report.history?.events?.length > 0) && (
-        <div className="report-section report-card rounded-xl border border-border p-4">
-          <h2 className="font-semibold text-sm mb-2 flex items-center gap-2">
-            <ScrollText className="w-4 h-4 text-primary" /> Health history
-          </h2>
-          {report.history.narrative && (
-            <p className="text-sm leading-relaxed whitespace-pre-wrap mb-3">{report.history.narrative}</p>
-          )}
-          {report.history.events?.length > 0 && (
-            <ul className="text-sm space-y-1">
-              {report.history.events.map((e, i) => (
-                <li key={i} className="flex flex-wrap gap-x-2">
-                  <span className="text-muted-foreground tabular-nums whitespace-nowrap">{e.date || "—"}</span>
-                  <span className="text-muted-foreground capitalize">· {e.type}</span>
-                  <span className="font-medium">{e.title}</span>
-                  {e.details && <span className="text-muted-foreground">— {e.details}</span>}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-
-      {/* Standing care-team notes: protocols and instructions signed by their authors */}
-      {report.care_notes?.length > 0 && (
-        <div className="report-section report-card rounded-xl border border-border p-4">
-          <h2 className="font-semibold text-sm mb-2 flex items-center gap-2">
-            <ClipboardList className="w-4 h-4 text-primary" /> Care team notes
-          </h2>
-          <div className="space-y-3">
-            {report.care_notes.map((note, i) => (
-              <div key={i}>
-                <p className="text-sm font-medium">
-                  <span className="uppercase text-[10px] tracking-wide text-muted-foreground mr-2">{note.kind}</span>
-                  {note.title}
-                </p>
-                {note.body && <p className="text-sm whitespace-pre-wrap">{note.body}</p>}
-                <p className="text-[11px] text-muted-foreground">{note.author}{note.updated ? ` · ${note.updated}` : ""}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Medications & allergies */}
-      {(report.medications?.length > 0 || report.allergies?.length > 0) && (
-        <div className="report-section grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {report.medications?.length > 0 && (
-            <div className="report-card rounded-xl border border-border p-4">
-              <h2 className="font-semibold text-sm mb-2">Medications &amp; supplements</h2>
-              <ul className="text-sm space-y-1">
-                {report.medications.map((m, i) => (
-                  <li key={i}>
-                    {m.name}{m.dose ? ` ${m.dose}` : ""}{m.frequency ? ` · ${m.frequency}` : ""}
-                    {m.kind === "supplement" ? " (supplement)" : ""}{m.status === "stopped" ? " — stopped" : ""}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {report.allergies?.length > 0 && (
-            <div className="report-card rounded-xl border border-border p-4">
-              <h2 className="font-semibold text-sm mb-2">Allergies</h2>
-              <ul className="text-sm space-y-1">
-                {report.allergies.map((a, i) => (
-                  <li key={i}>{a.allergen}{a.severity ? ` (${a.severity})` : ""}{a.reaction ? ` — ${a.reaction}` : ""}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Insurance (prints at the top for the front desk) */}
-      {report.insurance?.available && (
-        <div className="report-section report-card rounded-xl border border-border p-4">
-          <h2 className="font-semibold text-sm mb-2 flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-primary" /> Health Insurance
-          </h2>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-1.5 text-sm">
-            {[
-              ["Carrier", report.insurance.carrier],
-              ["Plan", [report.insurance.plan_name, report.insurance.plan_type].filter(Boolean).join(" · ")],
-              ["Member", report.insurance.member_name],
-              ["Member ID", report.insurance.member_id],
-              ["Group", report.insurance.group_number],
-              ["Member services", report.insurance.customer_service_phone],
-              ["RxBIN", report.insurance.rx_bin],
-              ["RxPCN", report.insurance.rx_pcn],
-              ["RxGroup", report.insurance.rx_group],
-              ["Effective", report.insurance.effective_date],
-            ]
-              .filter(([, v]) => v)
-              .map(([label, v]) => (
-                <div key={label}>
-                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
-                  <div className="font-medium tabular-nums">{v}</div>
-                </div>
-              ))}
-          </div>
-          {report.insurance.notes && <p className="text-xs text-muted-foreground mt-2">{report.insurance.notes}</p>}
-        </div>
-      )}
-
-      {/* Narrative */}
-      {n && (
-        <div className="report-section report-card bg-primary/5 rounded-xl border border-primary/20 p-5 space-y-2">
-          <h2 className="font-semibold text-sm text-primary">Quarter in review</h2>
-          <p className="text-sm font-medium">{n.headline}</p>
-          {n.glucose_summary && <p className="text-sm text-muted-foreground">{n.glucose_summary}</p>}
-          {n.cycle_summary && <p className="text-sm text-muted-foreground">{n.cycle_summary}</p>}
-          {n.lifestyle_summary && <p className="text-sm text-muted-foreground">{n.lifestyle_summary}</p>}
-          {n.discussion_points?.length > 0 && (
-            <div className="pt-1">
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-1">Points to discuss</p>
-              <ul className="text-sm space-y-1 list-disc list-inside marker:text-primary">
-                {n.discussion_points.map((p, idx) => <li key={idx}>{p}</li>)}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
-
-      {!n && report.narrative_status?.available === false && (
-        <div className="report-section print:hidden rounded-lg border border-dashed border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900">
-          <p className="font-semibold">Narrative unavailable</p>
-          <p>{report.narrative_status.reason}</p>
-          {report.narrative_status.note && <p className="text-amber-800">{report.narrative_status.note}</p>}
-        </div>
-      )}
-
-      <EvidenceContextBlock
-        context={report.evidence_context}
-        narrativeEvidenceIds={n?.evidence_item_ids}
-        collapsible
-      />
-
-      {/* Glucose */}
-      <div className="report-section space-y-3">
-        <h2 className="font-semibold text-base">Glucose</h2>
-        <DataQualityNote label="CGM" quality={g.quality} />
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          <Metric label="Time in range" value={`${g.tir}%`} sub="70–180 mg/dL · target >70%" tone={g.tir >= 70 ? "text-green-600" : "text-amber-600"} />
-          <Metric
-            label="Time below 70 mg/dL"
-            value={`${g.tbr70}%`}
-            sub={`target <${TBR70_TARGET}% · ${g.tbr70 > TBR70_TARGET ? "above target" : "within target"}`}
-            tone={g.tbr70 > TBR70_TARGET ? "text-red-600" : "text-green-600"}
-          />
-          <Metric
-            label="Time below 54 mg/dL"
-            value={`${g.tbr54}%`}
-            sub={`target <${TBR54_TARGET}% · ${g.tbr54 > TBR54_TARGET ? "above target" : "within target"}`}
-            tone={g.tbr54 > TBR54_TARGET ? "text-red-600" : "text-green-600"}
-          />
-          <Metric label="Average glucose" value={`${g.avg}`} sub="mg/dL" />
-          <Metric label="GMI (est. A1c)" value={`${g.gmi}%`} tone={g.gmi >= 7 ? "text-amber-600" : ""} />
-          <Metric label="Variability (CV)" value={`${g.cv}%`} sub={g.cv <= 36 ? "target ≤36%" : "above 36% target"} tone={g.cv <= 36 ? "" : "text-amber-600"} />
-        </div>
-        {(g.tbr70 > TBR70_TARGET || g.tbr54 > TBR54_TARGET) && (
-          <p className="text-xs font-medium text-red-700">
-            Time below range exceeds the consensus target
-            {g.tbr70 > TBR70_TARGET ? ` (below 70 mg/dL: ${g.tbr70}% vs <${TBR70_TARGET}%)` : ""}
-            {g.tbr54 > TBR54_TARGET ? ` (below 54 mg/dL: ${g.tbr54}% vs <${TBR54_TARGET}%)` : ""}.
-          </p>
         )}
-        <div className="report-card bg-card rounded-lg border border-border p-4">
-          <p className="text-xs font-medium mb-2">Time in ranges · {g.readings.toLocaleString()} readings over {g.days} days</p>
+        <div className="report-card bg-card rounded-lg border border-border p-3">
+          <p className="text-xs font-medium mb-2">Time in ranges</p>
           <TIRBar g={g} />
         </div>
-        <FingerstickReconciliation g={g} />
-        <div className="report-card bg-card rounded-lg border border-border p-4">
-          <p className="text-xs font-medium mb-1">Ambulatory Glucose Profile (typical day)</p>
+        {g.low_episodes && (
+          <div className="grid grid-cols-2 md:grid-cols-4 print:grid-cols-4 gap-2">
+            <Metric label="Low episodes (15+ min <70)" value={g.low_episodes.episodes} sub={`${g.low_episodes.per_week} per week`} tone={g.low_episodes.episodes ? "text-red-600" : ""} />
+            <Metric label="Overnight (00:00–06:00)" value={g.low_episodes.nocturnal_episodes} sub="episodes" />
+            <Metric label="Reaching below 54" value={g.low_episodes.level2_episodes} sub="episodes" tone={g.low_episodes.level2_episodes ? "text-red-600" : ""} />
+            <Metric label="Above 180 / above 250" value={`${g.tar180}% / ${g.tar250}%`} sub={`targets <${TAR180_TARGET}% / <${TAR250_TARGET}%`} />
+          </div>
+        )}
+        <div className="report-card bg-card rounded-lg border border-border p-3">
+          <p className="text-xs font-medium">Ambulatory Glucose Profile (typical day)</p>
           <p className="text-[11px] text-muted-foreground mb-2">Median (line) with 25–75% and 5–95% bands by time of day. Green dashes mark the 70–180 target.</p>
           <AGPChart agp={g.agp} />
         </div>
+        <FingerstickReconciliation g={g} />
       </div>
+
+      <WeightBlock weight={report.weight} />
 
       {/* Insulin */}
       {i.available && (
-        <div className="report-section space-y-3">
-          <h2 className="font-semibold text-base">Insulin & carbs</h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="space-y-3">
+          <SectionTitle>Insulin & carbs</SectionTitle>
+          <div className="grid grid-cols-2 md:grid-cols-4 print:grid-cols-4 gap-2">
             {i.pump_reported_avg_tdd != null && (
-              <Metric label="Pump-reported TDD" value={`${i.pump_reported_avg_tdd}`} sub={`${i.pump_reported_days} complete day${i.pump_reported_days === 1 ? "" : "s"} · ${Object.keys(i.pump_reported_sources || {}).join(", ")}`} />
+              <Metric label="Pump-reported TDD" value={`${i.pump_reported_avg_tdd}`} sub={`U/day · ${i.pump_reported_days} complete day${i.pump_reported_days === 1 ? "" : "s"} · ${Object.keys(i.pump_reported_sources || {}).join(", ")}`} />
             )}
             {i.calculated_avg_tdd != null && (
-              <Metric label="Calculated TDD" value={`${i.calculated_avg_tdd}`} sub={`${i.calculated_days} full-coverage day${i.calculated_days === 1 ? "" : "s"}`} />
+              <Metric label="Calculated TDD" value={`${i.calculated_avg_tdd}`} sub={`U/day · ${i.calculated_days} full-coverage day${i.calculated_days === 1 ? "" : "s"}`} />
             )}
             {!i.bolus_stream_incomplete && (
               <Metric label="Bolus insulin" value={`${i.avg_daily_bolus}`} sub={`units/day · ${i.boluses_per_day}/day · ${i.bolus_source || "bolus events"}`} />
@@ -921,277 +1263,219 @@ export default function Report() {
               />
             )}
             {i.calculated_avg_daily_basal != null && <Metric label="Delivered basal (calc.)" value={`${i.calculated_avg_daily_basal}`} sub="units/day · full coverage only" />}
-            {i.scheduled_avg_daily_basal != null && <Metric label="Programmed basal schedule" value={`${i.scheduled_avg_daily_basal}`} sub="units/day · Glooko pump settings, not delivered amount" />}
+            {i.scheduled_avg_daily_basal != null && <Metric label="Programmed basal schedule" value={`${i.scheduled_avg_daily_basal}`} sub="units/day · pump settings, not delivered amount" />}
             {i.carbs_representative !== false && <Metric label="Carbs logged" value={`${i.avg_daily_carbs}`} sub="g/day · logged entries only" />}
           </div>
-          {i.bolus_stream_incomplete && (
-            <p className="text-[11px] text-amber-800">
-              Bolus/basal split not available: bolus events in the {i.bolus_source || "bolus event stream"} total {i.avg_daily_bolus} units/day
-              against a total daily dose of {i.avg_tdd_est} units/day. Automated-mode delivery is not itemized in Glooko&apos;s event
-              streams and its daily totals record bolus as 0, so the bolus figure is a data gap, not a record of missed doses.
-              Temp-basal corrections are counted separately{i.temp_basal_corrections?.count > 0 ? "" : " (none recorded)"}.
-            </p>
-          )}
-          {i.carbs_representative === false && (
-            <p className="text-[11px] text-amber-800">
-              Carbs were logged on {i.carb_logged_days ?? 0} of {i.carb_expected_days ?? "the"} days; a daily carb average is not shown
-              because it would understate intake.
-            </p>
-          )}
-          <p className="text-[11px] text-muted-foreground">
-            Pump-reported and calculated totals are kept separate. A calculated TDD is shown only for days with complete delivered-basal coverage; the Glooko programmed basal schedule is not treated as delivered insulin.
-          </p>
-          <DataQualityNote label="Pump TDD" quality={i.quality} />
-          <DataQualityNote label="Nutrition" quality={i.nutrition_quality} />
-          {i.latest_activity_date && (
-            <p className="text-[11px] text-muted-foreground">
-              {i.latest_complete_date ? `Complete TDD data through ${i.latest_complete_date}. ` : "No complete TDD in this report period. "}
-              Latest insulin activity: {i.latest_activity_date}.
-            </p>
-          )}
-          {i.limitations?.map((limitation) => (
-            <p key={limitation} className="text-[11px] text-muted-foreground">{limitation}</p>
-          ))}
-          {i.incomplete_days > 0 && (
-            <p className="text-[11px] text-amber-700">{i.incomplete_days} day{i.incomplete_days === 1 ? "" : "s"} with insulin activity lacked a complete TDD and were excluded.</p>
-          )}
-          {i.discrepancy_days > 0 && (
-            <p className="text-[11px] text-amber-700">{i.discrepancy_days} day{i.discrepancy_days === 1 ? "" : "s"} had a difference greater than rounding between pump-reported and calculated TDD; both values remain separate.</p>
-          )}
+          <div className="space-y-1 text-[11px] text-muted-foreground">
+            {i.bolus_stream_incomplete && (
+              <p className="text-amber-800">
+                Bolus/basal split not available: Glooko&apos;s event streams do not itemize automated-mode delivery and its daily
+                totals record bolus as 0, so the {i.avg_daily_bolus} units/day of recorded boluses (against a total daily dose of
+                {" "}{i.avg_tdd_est} units/day) is a data gap, not a record of missed doses.
+              </p>
+            )}
+            {i.carbs_representative === false && (
+              <p className="text-amber-800">
+                Carbs were logged on {i.carb_logged_days ?? 0} of {i.carb_expected_days ?? "the"} days; a daily carb average is not shown
+                because it would understate intake.
+              </p>
+            )}
+            {(i.latest_complete_date || i.limitations?.length > 0) && (
+              <p>
+                {i.latest_complete_date ? `Complete daily totals through ${i.latest_complete_date}. ` : ""}
+                {(i.limitations || []).join(" ")}
+              </p>
+            )}
+            {i.incomplete_days > 0 && (
+              <p className="text-amber-700">{i.incomplete_days} day{i.incomplete_days === 1 ? "" : "s"} with insulin activity lacked a complete TDD and were excluded.</p>
+            )}
+            {i.discrepancy_days > 0 && (
+              <p className="text-amber-700">{i.discrepancy_days} day{i.discrepancy_days === 1 ? "" : "s"} had a difference greater than rounding between pump-reported and calculated TDD; both values remain separate.</p>
+            )}
+          </div>
         </div>
       )}
 
       {report.pump_settings && <PumpSettingsSection ps={report.pump_settings} />}
 
-      {mb?.summary && (
-        <div className="report-section report-card rounded-xl border border-border p-4 space-y-3">
-          <div>
-            <h2 className="font-semibold text-base">Outcomes &amp; management effort</h2>
-            <p className="text-[11px] text-muted-foreground">
-              Control and recorded effort are separate dimensions. Missing event sources reduce
-              confidence and are not counted as zero effort. These calculations are descriptive
-              and do not establish causation or recommend treatment.
-            </p>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Metric label="Time in range" value={mb.outcomes.time_in_range_pct != null ? `${mb.outcomes.time_in_range_pct}%` : "—"} sub="glucose outcome" />
-            <Metric label="Measured effort index" value={`${mb.summary.measured_effort_index}`} sub="visible weighted components" />
-            <Metric label="Active management" value={`${mb.summary.average_active_management_minutes_per_day}`} sub="recorded min/day" />
-            <Metric label="Effort confidence" value={`${Math.round(mb.analytics_confidence.confidence_score * 100)}%`} sub={mb.analytics_confidence.confidence_label} />
-          </div>
-          {mb.outcome_vs_effort.sustainability_review_flag && (
-            <p className="rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-950">
-              {mb.outcome_vs_effort.language}
-            </p>
-          )}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
-            {mb.components.map((item) => (
-              <div key={item.category} className="rounded border border-border p-2">
-                <b className="capitalize">{item.category.replaceAll("_", " ")}</b>
-                <p>{item.events} events · {item.minutes} min</p>
-                <p className="text-muted-foreground">weight {item.weight} · {item.weighted_points} points</p>
-              </div>
-            ))}
-          </div>
-          {mb.source_coverage.missing.length > 0 && (
-            <p className="text-[11px] text-amber-700">
-              Unavailable event sources: {mb.source_coverage.missing.join(", ").replaceAll("_", " ")}.
-            </p>
-          )}
-        </div>
-      )}
+      {/* What the patient reports, and open questions */}
+      <div className="space-y-5">
+        <HistorySection history={report.history} />
 
-      {ir?.counts?.total > 0 && (
-        <div className="report-section space-y-3">
-          <h2 className="font-semibold text-base">Observed insulin response events</h2>
-          <DataQualityNote label="Insulin response" quality={ir.quality} />
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Metric label="Response windows" value={`${ir.counts.total}`} sub={`${ir.window_days}-day source window`} />
-            <Metric label="Clean by default" value={`${ir.counts.clean}`} sub="used in summaries" />
-            <Metric label="Confounded" value={`${ir.counts.confounded}`} sub="retained, not summarized" />
-            <Metric label="Excluded" value={`${ir.counts.excluded}`} sub="insufficient or invalid input" />
-          </div>
-          {ir.available && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              <Metric label="Median observed drop" value={`${ir.median_drop_per_unit}`} sub="mg/dL/U" />
-              <Metric label="Mean observed drop" value={`${ir.mean_drop_per_unit}`} sub="mg/dL/U" />
-              <Metric label="Variability" value={`${ir.cv_pct}%`} sub={`${ir.confidence?.confidence_label || "low"} confidence`} />
-              <Metric label="Clean sample" value={`${ir.n}`} sub={ir.confidence?.discovery_status || "not assessed"} />
+        {report.care_notes?.length > 0 && (
+          <div className="report-section report-card rounded-lg border border-border p-3">
+            <h2 className="font-semibold text-sm mb-2 flex items-center gap-2">
+              <ClipboardList className="w-4 h-4 text-primary" /> Care team notes
+            </h2>
+            <div className="space-y-3">
+              {report.care_notes.map((note, idx) => (
+                <div key={idx}>
+                  <p className="text-sm font-medium">
+                    <span className="uppercase text-[10px] tracking-wide text-muted-foreground mr-2">{note.kind}</span>
+                    {note.title}
+                  </p>
+                  {note.body && <p className="text-sm whitespace-pre-wrap">{note.body}</p>}
+                  <p className="text-[11px] text-muted-foreground">{note.author}{note.updated ? ` · ${note.updated}` : ""}</p>
+                </div>
+              ))}
             </div>
-          )}
-          {!ir.available && <p className="text-xs text-muted-foreground">{ir.reason}</p>}
-          {Object.keys(ir.reason_counts || {}).length > 0 && (
+          </div>
+        )}
+
+        {/* Evidence-bearing hypotheses remain separate from diagnoses. */}
+        {reviewedHypotheses.length > 0 && (
+          <div className="report-section space-y-2">
+            <h2 className="font-semibold text-base flex items-center gap-2">
+              <Beaker className="w-4 h-4 text-primary" /> Questions under review
+            </h2>
             <p className="text-[11px] text-muted-foreground">
-              Exclusion/confounder reasons: {Object.entries(ir.reason_counts).map(([reason, count]) => `${reason.replaceAll("_", " ")} (${count})`).join(" · ")}
+              Tentative interpretations with recorded evidence. They remain separate from confirmed diagnoses.
             </p>
-          )}
-          <p className="text-[11px] text-muted-foreground">
-            These are time-bounded observations under algorithm {ir.algorithm_version}. Confounded events are excluded from summaries by default. The observed glucose change does not establish insulin causation, resistance, or absorption; estimated IOB is a declared comparison assumption, not pump-reported IOB.
-          </p>
-        </div>
-      )}
-
-      {/* Cycle */}
-      {c.available && (
-        <div className="report-section space-y-3">
-          <h2 className="font-semibold text-base">Menstrual cycle &amp; glucose</h2>
-          <p className="text-xs text-muted-foreground">
-            {c.cycles_detected} cycles{c.avg_cycle_length ? `, average ${c.avg_cycle_length} days` : ""} · phases {c.source}.
-          </p>
-          <DataQualityNote label="Cycle" quality={c.quality} />
-          <div className="report-card bg-card rounded-lg border border-border overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-muted/50 text-xs text-muted-foreground">
-                  <th className="text-left font-medium px-3 py-2">Phase</th>
-                  <th className="text-right font-medium px-3 py-2">Days</th>
-                  <th className="text-right font-medium px-3 py-2">Time in range</th>
-                  <th className="text-right font-medium px-3 py-2">Avg glucose</th>
-                </tr>
-              </thead>
-              <tbody>
-                {["menstrual", "follicular", "ovulation", "luteal"].filter((p) => c.per_phase[p]).map((p) => {
-                  const s = c.per_phase[p];
-                  return (
-                    <tr key={p} className="border-t border-border">
-                      <td className="px-3 py-2 capitalize font-medium">{p}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{s.days}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{s.tir != null ? `${s.tir}%` : "—"}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">{s.avg_glucose != null ? `${s.avg_glucose} mg/dL` : "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            {reviewedHypotheses.map((hypothesis) => {
+              const state = HYPOTHESIS_STATE[hypothesisState(hypothesis)];
+              const supporting = hypothesis.evidence_by_role?.supporting?.length || 0;
+              const opposing = hypothesis.evidence_by_role?.opposing?.length || 0;
+              const missing = hypothesis.evidence_by_role?.missing?.length || 0;
+              return (
+                <div key={hypothesis.id} className="report-card rounded-lg border border-border bg-card p-3 space-y-2">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p className="font-medium text-sm">{hypothesis.title}</p>
+                      {hypothesis.description && <p className="text-xs text-muted-foreground">{hypothesis.description}</p>}
+                    </div>
+                    <span className={`text-[10px] rounded-full border px-2 py-1 font-medium ${state.tone}`}>
+                      {state.label}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    Recorded evidence: {supporting} supporting · {opposing} opposing · {missing} missing/needed
+                  </p>
+                  <EvidenceDetails hypothesis={hypothesis} />
+                  {hypothesis.suggested_verification && (
+                    <p className="text-xs">
+                      <span className="font-semibold">Suggested verification:</span>{" "}
+                      {hypothesis.suggested_verification}
+                    </p>
+                  )}
+                  {hypothesis.decided_by && (
+                    <p className="text-xs font-semibold">
+                      Decision recorded by {hypothesis.decided_by} at {hypothesis.decided_at}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Wellness */}
-      {(w.oura || w.fitbit) && (
-        <div className="report-section space-y-3">
-          <h2 className="font-semibold text-base">Sleep, recovery &amp; activity</h2>
-          {w.oura && <DataQualityNote label="Oura" quality={w.quality?.oura} />}
-          {w.fitbit && <DataQualityNote label="Fitbit" quality={w.quality?.fitbit} />}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {w.oura?.avg_sleep_score != null && <Metric label="Sleep score (Oura)" value={w.oura.avg_sleep_score} sub="avg" />}
-            {w.oura?.avg_readiness_score != null && <Metric label="Readiness (Oura)" value={w.oura.avg_readiness_score} sub="avg" />}
-            {w.oura?.avg_resting_hr != null && <Metric label="Resting HR (Oura)" value={w.oura.avg_resting_hr} sub="bpm" />}
-            {w.oura?.avg_spo2 != null && <Metric label="SpO₂ (Oura)" value={`${w.oura.avg_spo2}%`} />}
-            {w.fitbit?.avg_steps != null && <Metric label="Steps (Fitbit)" value={w.fitbit.avg_steps.toLocaleString()} sub="avg/day" />}
-            {w.fitbit?.avg_sleep_hours != null && <Metric label="Sleep (Fitbit)" value={`${w.fitbit.avg_sleep_hours}h`} sub="avg/night" />}
-          </div>
-        </div>
-      )}
-
-      {ap?.effects?.length > 0 && (
-        <div className="report-section report-card rounded-xl border border-border p-4 space-y-3">
-          <div>
-            <h2 className="font-semibold text-base">Activity &amp; position associations</h2>
-            <p className="text-[11px] text-muted-foreground">
-              Timestamped interval comparisons only. They do not establish that activity or
-              position caused a glucose, bolus-response, or meter/CGM difference.
-            </p>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
-            {ap.effects.map((effect) => (
-              <div key={effect.id} className="rounded border border-border p-2">
-                <p className="font-semibold capitalize">
-                  {effect.dimension}: {effect.state}
+        {/* Unsupported legacy suspicions are optional discussion reminders, not findings. */}
+        {unevaluatedHypotheses.length > 0 && (
+          <div className={`report-section rounded-lg border border-dashed border-border bg-muted/20 p-3 ${includeUnevaluatedInPrint ? "" : "print:hidden"}`}>
+            <div className="print:hidden flex flex-wrap items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setShowUnevaluated((value) => !value)}
+                className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+              >
+                {showUnevaluated ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                Questions previously recorded ({unevaluatedHypotheses.length})
+              </button>
+              <label className="inline-flex items-center gap-2 text-[11px] text-muted-foreground">
+                <input
+                  type="checkbox"
+                  checked={includeUnevaluatedInPrint}
+                  onChange={(event) => setIncludeUnevaluatedInPrint(event.target.checked)}
+                />
+                Include in print
+              </label>
+            </div>
+            <h2 className="hidden print:block text-sm font-medium">Questions previously recorded</h2>
+            {(showUnevaluated || includeUnevaluatedInPrint) && (
+              <div className="mt-3 print:mt-2 space-y-2">
+                <p className="text-[11px] text-muted-foreground">
+                  These entries have no recorded supporting or opposing evidence. They are reminders for discussion, not findings.
                 </p>
-                <p>
-                  {effect.metric.replaceAll("_", " ")}:{" "}
-                  <b>{effect.observed_mean} {effect.unit}</b>
-                </p>
-                <p className="text-muted-foreground">
-                  n={effect.sample_count}; {effect.measured_interval_count}/{effect.interval_count} intervals
-                  measured · {effect.analytics_confidence.discovery_status.replaceAll("_", " ")}
-                  {" · "}replication {effect.replication_status.replaceAll("_", " ")}
-                </p>
+                {unevaluatedHypotheses.map((hypothesis) => (
+                  <div key={hypothesis.id} className="rounded border border-border bg-background/70 px-3 py-2">
+                    <p className="text-sm text-foreground">{hypothesis.title}</p>
+                    <p className="text-[11px] text-muted-foreground">
+                      Not evaluated · no supporting or opposing evidence recorded.
+                    </p>
+                    {hypothesis.suggested_verification && (
+                      <p className="text-[11px] text-muted-foreground mt-1">
+                        Possible next step: {hypothesis.suggested_verification}
+                      </p>
+                    )}
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
-        </div>
-      )}
+        )}
+
+        {(c.available || w.oura || w.fitbit) && (
+          <div className="report-section grid grid-cols-1 md:grid-cols-2 print:grid-cols-2 gap-3">
+            {c.available && <CycleTable c={c} />}
+            {(w.oura || w.fitbit) && <WellnessTable w={w} />}
+          </div>
+        )}
+      </div>
 
       {/* Labs */}
       {labs.available && (
-        <div className="report-section space-y-3">
-          <h2 className="font-semibold text-base">Labs</h2>
-          <div className="report-card rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-            {labs.verification?.note}
-            {labs.verification?.counts && (
-              <span className="ml-1">
-                Approved/edited: {(labs.verification.counts.approved || 0) + (labs.verification.counts.edited || 0)} · Unverified: {labs.verification.counts.unverified || 0}
-                {(labs.verification.counts.invalid || 0) > 0 ? ` · Excluded invalid: ${labs.verification.counts.invalid}` : ""}
-              </span>
-            )}
-          </div>
-          <KeyLabResults results={labs.key_results} />
-          {(labs.duplicates_removed > 0 || labs.undated_results > 0) && (
-            <p className="text-[11px] text-muted-foreground">
-              {labs.duplicates_removed > 0 ? `${labs.duplicates_removed} duplicate result${labs.duplicates_removed === 1 ? "" : "s"} (same test, date, and value) merged. ` : ""}
-              {labs.undated_results > 0 ? `${labs.undated_results} result${labs.undated_results === 1 ? " has" : "s have"} no readable collection date and ${labs.undated_results === 1 ? "sorts" : "sort"} before dated results. ` : ""}
-              Common test-name variants are combined under one name.
-            </p>
-          )}
-          {labs.flagged.length > 0 && (
-            <div className="report-card bg-red-50 border border-red-200 rounded-lg p-3">
-              <p className="text-xs font-semibold text-red-700 flex items-center gap-1 mb-1">
-                <AlertTriangle className="w-3.5 h-3.5" /> Out of range at latest draw
+        <div className="space-y-3">
+          <SectionTitle
+            sub={(labCounts.unverified || 0) > 0
+              ? `${verifiedLabs ? `${labCounts.unverified} of ${labCounts.unverified + verifiedLabs}` : "All"} lab values on file are machine-extracted from uploaded documents and not yet verified against the source.${(labCounts.invalid || 0) > 0 ? ` ${labCounts.invalid} invalid results excluded.` : ""}`
+              : null}
+          >
+            Labs
+          </SectionTitle>
+          <KeyLabResults results={labs.key_results} perRow={perRowVerification} />
+          <OutOfRangeLabs results={labs.flagged} panels={labPanels} perRow={perRowVerification} />
+          <OptionalSection
+            title={`All lab results (${plural(labTests, "test")})`}
+            summary={printAllLabs ? "included in print" : "not printed"}
+            includeInPrint={printAllLabs}
+          >
+            {(labs.duplicates_removed > 0 || labs.undated_results > 0) && (
+              <p className="text-[11px] text-muted-foreground">
+                {labs.duplicates_removed > 0 ? `${labs.duplicates_removed} duplicate result${labs.duplicates_removed === 1 ? "" : "s"} (same test, date, and value) merged. ` : ""}
+                {labs.undated_results > 0 ? `${labs.undated_results} result${labs.undated_results === 1 ? " has" : "s have"} no readable collection date. ` : ""}
+                Common test-name variants are combined under one name.
               </p>
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
-                {labs.flagged.map((f) => (
-                  <span key={f.test_name}>{f.test_name}: <b>{f.value} {f.unit}</b> <span className="text-red-600 uppercase text-[10px]">{f.flag}</span>{f.verification?.qualified && <span className="ml-1 text-amber-700 text-[10px]">({f.verification.verification_status})</span>}</span>
-                ))}
-              </div>
-            </div>
-          )}
-          {Object.entries(labs.categories).map(([cat, tests]) => (
-            <div key={cat} className="report-card bg-card rounded-lg border border-border overflow-hidden">
-              <div className="bg-muted/50 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{cat}</div>
-              <table className="w-full text-sm">
-                <tbody>
-                  {tests.map((t) => {
-                    const TrendIcon = TREND_ICON[t.trend];
-                    const outOfRange = t.flag && t.flag !== "normal" && t.flag !== "";
-                    return (
-                      <tr key={t.test_name} className="border-t border-border">
-                        <td className="px-3 py-2 font-medium">
-                          {t.test_name}
-                          {t.verification?.qualified && <span className="ml-1.5 text-[9px] uppercase text-amber-700">{t.verification.verification_status}</span>}
-                          {t.reported_names?.length > 0 && (
-                            <div className="text-[10px] font-normal text-muted-foreground">also reported as {t.reported_names.join(", ")}</div>
-                          )}
-                        </td>
-                        <td className={`px-3 py-2 text-right tabular-nums ${outOfRange ? "text-red-600 font-semibold" : ""}`}>
-                          {t.value} <span className="text-muted-foreground font-normal">{t.unit}</span>
-                        </td>
-                        <td className="px-3 py-2 text-right text-xs text-muted-foreground tabular-nums">
-                          {t.reference_low != null && t.reference_high != null ? `${t.reference_low}–${t.reference_high}` : ""}
-                        </td>
-                        <td className="px-3 py-2 text-center w-8">
-                          {TrendIcon && <TrendIcon className={`w-3.5 h-3.5 inline ${t.trend === "up" ? "text-amber-500" : t.trend === "down" ? "text-sky-500" : "text-muted-foreground"}`} />}
-                        </td>
-                        <td className="px-3 py-2 text-right text-[11px] text-muted-foreground">
-                          <div>Collected {t.date || t.event_time?.source_text || t.collected_date || "unknown"}</div>
-                          {importDate(t.ingestion_time) && <div>Imported {importDate(t.ingestion_time)}</div>}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          ))}
+            )}
+            <AllLabResults categories={labs.categories} perRow={perRowVerification} />
+          </OptionalSection>
         </div>
       )}
 
-      {/* Footer disclaimer */}
-      <div className="report-section text-[11px] text-muted-foreground border-t border-border pt-4 leading-relaxed">
-        This is an observational summary of self-tracked data generated for discussion with the care team. It is not a
-        diagnosis, treatment recommendation, or medical advice. Glucose figures derive from CGM data; GMI is an estimate,
-        not a laboratory A1c. Generated by GlucoPilot.
+      {hasAnalyses && (
+        <OptionalSection
+          title="Additional analyses"
+          summary={printAnalyses ? "included in print" : "management effort, insulin response, activity · not printed"}
+          includeInPrint={printAnalyses}
+        >
+          <ManagementEffort mb={mb} />
+          <InsulinResponse ir={ir} />
+          <ActivityAssociations ap={ap} />
+          <HealthEpisodes block={report.health_episodes} />
+        </OptionalSection>
+      )}
+
+      <EvidenceContextBlock
+        context={report.evidence_context}
+        narrativeEvidenceIds={n?.evidence_item_ids}
+        collapsible
+      />
+
+      {report.insurance?.available && <InsuranceBlock insurance={report.insurance} />}
+
+      {/* Footer */}
+      <div className="report-section text-[11px] text-muted-foreground border-t border-border pt-3 leading-relaxed">
+        Generated by GlucoPilot on {new Date(report.generated_at).toLocaleDateString()} from CGM, pump, wearable and
+        uploaded-record data. Glucose figures are calculated from CGM readings; GMI is an estimate, not a laboratory A1c.
+        This summary supports the clinical conversation and is not a diagnosis or treatment recommendation.
       </div>
     </div>
   );
