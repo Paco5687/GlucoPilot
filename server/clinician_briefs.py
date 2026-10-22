@@ -39,7 +39,7 @@ from .insulin_response import build_response_events
 from .lab_audit import effective_flag
 from .lab_audit import summary_eligible as lab_summary_eligible
 from .repositories import get_repositories
-from .report import canonical_lab_name
+from .lab_names import canonical_lab_name
 
 
 router = APIRouter(dependencies=[Depends(require_login)])

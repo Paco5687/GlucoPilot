@@ -20,46 +20,16 @@ import re
 from collections import defaultdict
 from typing import Any
 
-ALGORITHM_VERSION = "lab-same-draw/1.0.0"
+from .lab_audit import effective_flag
+from .lab_names import analyte_key
+
+ALGORITHM_VERSION = "lab-same-draw/1.1.0"
 MIN_RANGE_COMPARISONS = 5
 MIN_NARROWER_SHARE = 0.8
 STANDARD = "standard"
 NONSTANDARD = "nonstandard"
 
-# Names the same analyte under the spellings two labs actually used.
-_PHRASES = (
-    (re.compile(r"hemoglobin\s*a1c|hba1c|glycated\s+hemoglobin|glycohemoglobin"), " a1c "),
-    # "T4,Free(Direct)" names the free T4 method, not direct bilirubin.
-    (re.compile(r"free\s*\(\s*direct\s*\)"), " free "),
-    (re.compile(r"triiodothyronine"), " t3 "),
-    (re.compile(r"thyroxine"), " t4 "),
-    (re.compile(r"alk(?:aline)?\.?\s*phos(?:phatase)?"), " alp "),
-    (re.compile(r"c[-\s]?reactive\s+protein"), " crp "),
-    (re.compile(r"25[-\s]?(?:oh|hydroxy)(?:vitamin)?"), " 25oh "),
-    (re.compile(r"\beos(?:inophils)?\b"), " eosinophils "),
-    (re.compile(r"\bbasos?\b|\bbasophils\b"), " basophils "),
-    (re.compile(r"\blymphs?\b|\blymphocytes\b"), " lymphocytes "),
-    (re.compile(r"\bt\.?\s*chol\b"), " cholesterol "),
-    (re.compile(r"\bchol\b"), " cholesterol "),
-    (re.compile(r"\bantibod(?:y|ies)\b|\babs?\b"), " ab "),
-    (re.compile(r"%"), " percent "),
-)
-_QUALIFIERS = frozenset({
-    "serum", "plasma", "total", "female", "male", "calc", "nih", "lc", "ms",
-    "level", "levels", "test", "result", "the", "of",
-})
 _VERIFIED = {"approved", "edited"}
-_FLAG_HIGH = {"high", "h", "critical", "abnormal"}
-_FLAG_LOW = {"low", "l"}
-_FLAG_NORMAL = {"", "n", "normal", "none"}
-
-
-def canonical_analyte(name: Any) -> str:
-    text = str(name or "").lower()
-    for pattern, replacement in _PHRASES:
-        text = pattern.sub(replacement, text)
-    tokens = {token for token in re.findall(r"[a-z0-9]+", text) if token not in _QUALIFIERS}
-    return " ".join(sorted(tokens))
 
 
 def _number(value: Any) -> float | None:
@@ -80,7 +50,7 @@ def same_draw_key(row: dict[str, Any]) -> tuple[str, str, float] | None:
     """(collection date, analyte, value), or None when the row cannot be
     matched safely: no date, no analyte, or a non-numeric value."""
     collected = str(row.get("collected_date") or "")[:10]
-    analyte = canonical_analyte(row.get("test_name"))
+    analyte = analyte_key(row.get("test_name"))
     value = _number(row.get("value"))
     if not collected or not analyte or value is None:
         return None
@@ -148,21 +118,11 @@ def nonstandard_range_records(rows: list[dict[str, Any]]) -> set[str]:
 
 
 def _flag_consistent(row: dict[str, Any]) -> bool:
-    """Whether the row's flag agrees with its own value and range. A row that
-    calls 28 low against 16-154 was mis-extracted."""
-    bounds = _range(row)
-    value = _number(row.get("value"))
-    flag = str(row.get("flag") or "").strip().lower()
-    if bounds is None or value is None:
-        return True
-    low, high = bounds
-    if flag in _FLAG_LOW:
-        return value < low
-    if flag in _FLAG_HIGH:
-        return value > high
-    if flag in _FLAG_NORMAL:
-        return low <= value <= high
-    return True
+    """Whether the row's stored flag survives its own value and reference
+    range (see ``lab_audit.effective_flag``, which the Visit Report and
+    Clinician Brief use too). A row that calls 28 low against 16-154 was
+    mis-extracted."""
+    return effective_flag(row)[1] is None
 
 
 def _preference(row: dict[str, Any], nonstandard: set[str]) -> tuple[Any, ...]:
