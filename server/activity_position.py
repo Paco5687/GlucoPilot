@@ -233,6 +233,21 @@ def resolve_intervals(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return output
 
 
+def effective_intervals(resolved: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The time each resolved interval still covers. Corrected rows are retained
+    in `intervals`. Wearable rows are split around manual overlap so their
+    non-overlapping source time can still contribute."""
+    return [
+        {
+            **row,
+            "start_time": segment["start_time"],
+            "end_time": segment["end_time"],
+        }
+        for row in resolved
+        for segment in row["effective_segments"]
+    ]
+
+
 def _interval_for(
     timestamp: datetime,
     intervals: list[dict[str, Any]],
@@ -397,17 +412,7 @@ def build_analysis(
     timezone_name: str = "UTC",
 ) -> dict[str, Any]:
     resolved = resolve_intervals(interval_rows)
-    # Corrected rows are retained in `intervals`. Wearable rows are split around
-    # manual overlap so their non-overlapping source time can still contribute.
-    active = [
-        {
-            **row,
-            "start_time": segment["start_time"],
-            "end_time": segment["end_time"],
-        }
-        for row in resolved
-        for segment in row["effective_segments"]
-    ]
+    active = effective_intervals(resolved)
     measurements = [
         *_glucose_slopes(active, glucose, timezone_name=timezone_name),
         *_event_measurements(

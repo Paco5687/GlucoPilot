@@ -14,12 +14,18 @@ from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any, Literal
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from . import db
-from .activity_position import analysis_for_range as activity_position_analysis
+from . import analysis_evidence, bedtime_sleep, correction_response, db, lab_dedupe, walking_response
+from .activity_position import (
+    SqliteActivityPositionRepository,
+    analysis_for_range as activity_position_analysis,
+    effective_intervals,
+    resolve_intervals,
+)
 from .auth import require_login
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .contradictions import SqliteContradictionRepository
@@ -40,7 +46,7 @@ from .repositories import LegacyRepositoryCatalog
 log = logging.getLogger("glucopilot.evidence_bundle")
 
 BUNDLE_GENERATOR = "evidence-bundle"
-BUNDLE_VERSION = "2.5.0"
+BUNDLE_VERSION = "2.6.0"
 MAX_ITEM_BUDGET = 250
 MAX_SOURCE_ROWS = 100_000
 MAX_CONTRADICTIONS = 1_000
@@ -152,6 +158,11 @@ _ENTITY_DOMAIN: dict[str, EvidenceDomain] = {
     "HealthSummary": EvidenceDomain.ANALYTICS,
     "ActivityPositionEffect": EvidenceDomain.ANALYTICS,
     "ManagementBurdenSummary": EvidenceDomain.ANALYTICS,
+    # Glucose-response analyses over months of data: computed only when a
+    # query names them in normalized_entity_types (see _requested_analyses).
+    analysis_evidence.BEDTIME: EvidenceDomain.GLUCOSE,
+    analysis_evidence.CORRECTION: EvidenceDomain.GLUCOSE,
+    analysis_evidence.WALKING: EvidenceDomain.GLUCOSE,
 }
 
 _DOMAIN_TYPES: dict[EvidenceDomain, tuple[str, ...]] = {
@@ -349,6 +360,9 @@ def _confidence(
 
 
 def _explicit_stance(data: dict[str, Any]) -> tuple[str | None, str | None]:
+    if data.get("reference_basis") == lab_dedupe.NONSTANDARD:
+        # An "optimal range" flag is not the performing lab's judgement.
+        return None, None
     flag = str(data.get("normalized_flag", data.get("flag", ""))).strip().lower().replace(" ", "_")
     if flag in {"normal", "within_range", "in_range"}:
         return "reassuring", f"Source explicitly labels this result {flag.replace('_', ' ')}."
@@ -432,6 +446,8 @@ def _relevance(intent_tokens: set[str], entity_type: str, data: dict[str, Any]) 
 def _candidate_key(candidate: dict[str, Any]) -> tuple[Any, ...]:
     return (
         -int(candidate["_relevance"]),
+        # A same-draw duplicate never outranks the row it duplicates.
+        bool(candidate.get("_duplicate")),
         -_CATEGORY_PRIORITY[candidate["category"]],
         candidate.get("observed_at") is None,
         _reverse_text(candidate.get("observed_at") or ""),
@@ -496,7 +512,56 @@ def _load_entity_candidates(
                 "source_links": source_links,
                 "_relevance": _relevance(intent_tokens, entity_type, data),
             })
+    _annotate_lab_draws(candidates)
     return candidates, counts
+
+
+_NORMAL_FLAGS = {"", "n", "normal", "none"}
+
+
+def _annotate_lab_draws(candidates: list[dict[str, Any]]) -> None:
+    """Mark same-draw duplicates and non-standard ("optimal range") reports on
+    LabResult candidates. Rows stay in the bundle; the kept row of each draw
+    links every report of it and carries any non-standard flag as attribution."""
+    labs = [candidate for candidate in candidates if candidate["entity_type"] == "LabResult"]
+    if not labs:
+        return
+    rows = [{**candidate["data"], "id": candidate["entity_id"]} for candidate in labs]
+    annotations = lab_dedupe.resolve(
+        rows, nonstandard_records=lab_dedupe.nonstandard_range_records(rows)
+    )
+    by_id = {candidate["entity_id"]: candidate for candidate in labs}
+    for candidate in labs:
+        annotation = annotations.get(candidate["entity_id"], {})
+        data = candidate["data"]
+        data["reference_basis"] = annotation.get("reference_basis", lab_dedupe.STANDARD)
+        if annotation.get("same_draw_count"):
+            data["same_draw_count"] = annotation["same_draw_count"]
+        if data["reference_basis"] == lab_dedupe.NONSTANDARD:
+            candidate["confidence"].setdefault("limitations", []).append(
+                "This report judges results against narrower 'optimal' ranges, not the performing "
+                "lab's reference range, so its flags are not lab high/low flags."
+            )
+    for candidate in labs:
+        kept_id = annotations.get(candidate["entity_id"], {}).get("duplicate_of")
+        kept = by_id.get(kept_id) if kept_id else None
+        if kept is None:
+            continue
+        candidate["data"]["duplicate_of"] = kept_id
+        candidate["_duplicate"] = True
+        kept["_relevance"] = max(kept["_relevance"], candidate["_relevance"])
+        for link in candidate["source_links"]:
+            if link["kind"] == "source_document" and link not in kept["source_links"]:
+                kept["source_links"].append(link)
+        data = candidate["data"]
+        flag = str(data.get("flag") or "").strip().lower()
+        if data["reference_basis"] == lab_dedupe.NONSTANDARD and flag not in _NORMAL_FLAGS:
+            kept["data"].setdefault("nonstandard_flags", []).append({
+                "flag": flag,
+                "reference_low": data.get("reference_low"),
+                "reference_high": data.get("reference_high"),
+                "record_id": data.get("record_id"),
+            })
 
 
 def _response_source_rows(
@@ -858,6 +923,111 @@ def _load_management_burden_candidates(
         "ManagementBurdenEvent": analysis["event_count"],
         "ManagementBurdenSummary": 1,
     }
+
+
+def _requested_analyses(query: EvidenceBundleQuery) -> set[str]:
+    """Analyses are opt-in by name. Each reads months of CGM rows, so a broad
+    domain query must not pay for them, and a request names the window it wants."""
+    if query.normalized_entity_types is None or EvidenceDomain.GLUCOSE not in query.domains:
+        return set()
+    return set(query.normalized_entity_types) & set(analysis_evidence.ENTITY_TYPES)
+
+
+def _analysis_source_links(refs: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    links = []
+    for entity_type, entity_id in refs:
+        if entity_type == "ActivityPositionInterval":
+            kind = "canonical_interval"
+            href = f"/api/activity-position/intervals/{quote(entity_id, safe='')}"
+        else:
+            kind = "normalized_entity"
+            href = _source_href(entity_type, entity_id)
+        links.append({"kind": kind, "entity_type": entity_type, "entity_id": entity_id, "href": href})
+    return links
+
+
+def _load_glucose_analysis_candidates(
+    connection: sqlite3.Connection,
+    query: EvidenceBundleQuery,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    requested = _requested_analyses(query)
+    if not requested:
+        return [], {}
+    timezone_name = db.config_value("app_timezone", APP_TIMEZONE)
+    tz = ZoneInfo(timezone_name)
+    first_day = query.start.astimezone(tz).date()
+    last_day = query.end.astimezone(tz).date()
+    # Follow-up windows reach past the range end: 3 h after a correction, and
+    # the morning after the last night.
+    glucose = _response_source_rows(
+        connection, "GlucoseReading", "timestamp",
+        _instant(query.start), _instant(query.end + timedelta(days=1)),
+    )
+    built: dict[str, dict[str, Any]] = {}
+    if analysis_evidence.WALKING in requested and connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='activity_position_intervals'"
+    ).fetchone():
+        intervals = effective_intervals(resolve_intervals(
+            SqliteActivityPositionRepository(connection).list(query.start, query.end)
+        ))
+        built[analysis_evidence.WALKING] = analysis_evidence.walking_item(
+            walking_response.measure(
+                intervals, glucose, start=query.start, end=query.end, timezone_name=timezone_name
+            ),
+            start=first_day,
+            end=last_day,
+            timezone_name=timezone_name,
+        )
+    if requested & {analysis_evidence.CORRECTION, analysis_evidence.BEDTIME}:
+        treatments = _response_source_rows(
+            connection, "Treatment", "timestamp",
+            _instant(query.start - timedelta(hours=4)), _instant(query.end + timedelta(hours=4)),
+        )
+        if analysis_evidence.CORRECTION in requested:
+            episodes = [
+                episode
+                for episode in correction_response.build_correction_episodes(treatments, glucose)
+                if query.start <= datetime.fromisoformat(episode["start"].replace("Z", "+00:00")) <= query.end
+            ]
+            built[analysis_evidence.CORRECTION] = analysis_evidence.correction_item(
+                episodes, glucose, start=first_day, end=last_day
+            )
+        if analysis_evidence.BEDTIME in requested:
+            sleep_days = _response_source_rows(
+                connection, "OuraDaily", "date",
+                first_day.isoformat(), (last_day + timedelta(days=1)).isoformat(),
+            )
+            built[analysis_evidence.BEDTIME] = analysis_evidence.bedtime_item(
+                bedtime_sleep.analyze(
+                    glucose, sleep_days, treatments,
+                    start=first_day, end=last_day, timezone_name=timezone_name,
+                ),
+                start=first_day,
+                end=last_day,
+            )
+    intent_tokens = set(_TOKEN.findall(query.question_intent.lower()))
+    candidates = []
+    for entity_type in sorted(built):
+        item = built[entity_type]
+        data = _sanitize(item["data"])
+        identity = _checksum({"entity_type": entity_type, "data": data}).removeprefix("sha256:")[:32]
+        candidates.append({
+            "id": f"derived:{entity_type}:{identity}",
+            "category": "derived_metric",
+            "domain": EvidenceDomain.GLUCOSE.value,
+            "entity_type": entity_type,
+            "entity_id": identity,
+            "observed_at": _instant(query.end),
+            "recorded_at": None,
+            "data": data,
+            "confidence": {
+                **item["confidence"],
+                "method": data.get("algorithm_version"),
+            },
+            "source_links": _analysis_source_links(item["source_refs"]),
+            "_relevance": _relevance(intent_tokens, entity_type, data),
+        })
+    return candidates, {entity_type: 1 for entity_type in built}
 
 
 def _interval_bounds(start: str, end: str | None) -> tuple[datetime, datetime | None]:
@@ -1302,6 +1472,11 @@ def build_bundle(query: EvidenceBundleQuery) -> dict[str, Any]:
         )
         entity_candidates.extend(burden_candidates)
         counts.update(burden_counts)
+        analysis_candidates, analysis_counts = _load_glucose_analysis_candidates(
+            connection, query
+        )
+        entity_candidates.extend(analysis_candidates)
+        counts.update(analysis_counts)
         episode_candidates, episode_counts = _load_episode_candidates(connection, query)
         counts.update(episode_counts)
         anchors = sorted(entity_candidates, key=_candidate_key)[:query.item_budget]

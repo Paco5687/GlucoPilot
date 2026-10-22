@@ -60,15 +60,17 @@ def _temp_basal_episodes(treatments: list[dict]) -> list[dict]:
         if start is None or rate is None or not minutes or multiplier <= 1.0:
             continue
         extra = float(rate) * (1 - 1 / multiplier) * float(minutes) / 60
-        rows.append((start, start + timedelta(minutes=float(minutes)), extra))
+        rows.append((start, start + timedelta(minutes=float(minutes)), extra, str(t.get("id") or "")))
     rows.sort()
     episodes: list[dict] = []
-    for start, end, extra in rows:
+    for start, end, extra, source_id in rows:
         if episodes and (start - episodes[-1]["end"]).total_seconds() < EPISODE_GAP_MINUTES * 60:
             episodes[-1]["end"] = max(episodes[-1]["end"], end)
             episodes[-1]["units"] += extra
+            episodes[-1]["source_ids"].append(source_id)
         else:
-            episodes.append({"method": "temp_basal", "start": start, "end": end, "units": extra})
+            episodes.append({"method": "temp_basal", "start": start, "end": end, "units": extra,
+                             "source_ids": [source_id]})
     return episodes
 
 
@@ -79,19 +81,20 @@ def _bolus_episodes(treatments: list[dict]) -> list[dict]:
         if start is None:
             continue
         if t.get("event_type") == "Bolus" and t.get("amount"):
-            boluses.append((start, float(t["amount"])))
+            boluses.append((start, float(t["amount"]), str(t.get("id") or "")))
         elif t.get("type") == "carb" and t.get("amount"):
             carbs.append(start)
     boluses.sort()
     carbs.sort()
     episodes = []
-    for i, (start, amount) in enumerate(boluses):
+    for i, (start, amount, source_id) in enumerate(boluses):
         j = bisect.bisect_left(carbs, start - timedelta(minutes=CARB_EXCLUSION_MINUTES))
         if j < len(carbs) and carbs[j] <= start + timedelta(minutes=CARB_EXCLUSION_MINUTES):
             continue  # a meal bolus, not a correction
         if i > 0 and (start - boluses[i - 1][0]).total_seconds() < PRIOR_BOLUS_MINUTES * 60:
             continue  # stacked on an earlier bolus; its response is not separable
-        episodes.append({"method": "bolus", "start": start, "end": start, "units": amount})
+        episodes.append({"method": "bolus", "start": start, "end": start, "units": amount,
+                         "source_ids": [source_id]})
     return episodes
 
 
@@ -122,11 +125,13 @@ def build_correction_episodes(treatments: list[dict], readings: list[dict]) -> l
         output.append({
             "method": e["method"],
             "start": _iso(e["start"]),
+            "minutes": round((e["end"] - e["start"]).total_seconds() / 60),
             "units": round(e["units"], 2),
             "start_glucose": start_bg,
             "nadir_glucose": nadir,
             "drop_per_unit": round((start_bg - nadir) / e["units"], 1),
             "confounded": confounded,
+            "source_ids": [source_id for source_id in e["source_ids"] if source_id],
         })
     return output
 
@@ -157,6 +162,131 @@ def weekly_correction_series(episodes: list[dict], end: date, weeks: int) -> lis
         entry["confident"] = len(rows) >= CONFIDENT_WEEK_EPISODES
         series.append(entry)
     return series
+
+
+TIMECOURSE_OFFSETS_MINUTES = (30, 60, 90, 120, 180)
+TIMECOURSE_TOLERANCE_MINUTES = 10
+FALL_MG_DL = 10
+RISE_MG_DL = 10
+RISING_LOOKBACK_MINUTES = 15
+RISING_MG_DL = 5
+PEAK_SEARCH_MINUTES = 120
+MIN_TIMECOURSE_EPISODES = 5
+
+
+def _pct(part: int, whole: int) -> int | None:
+    return round(100 * part / whole) if whole else None
+
+
+def timecourse(
+    episodes: list[dict],
+    readings: list[dict],
+    *,
+    method: str = "temp_basal",
+    min_start_glucose: float = HIGH_START_MG_DL,
+) -> dict[str, Any]:
+    """How glucose moved, minute by minute, after a correction started.
+
+    For clean episodes of one method that started at or above
+    ``min_start_glucose``: the median change at fixed offsets, how long until
+    glucose first sat FALL_MG_DL below where it started, and how often it rose
+    further first. The fall time answers "how long before it starts working"
+    from her own corrections rather than from a rule of thumb."""
+    points = sorted(
+        (ts, float(r["value"]))
+        for r in readings
+        if r.get("value") is not None and (ts := _ts(r.get("timestamp"))) is not None
+    )
+    times = [p[0] for p in points]
+    values = [p[1] for p in points]
+    tolerance = TIMECOURSE_TOLERANCE_MINUTES * 60
+
+    def near(when: datetime) -> float | None:
+        k = bisect.bisect_left(times, when)
+        best = None
+        for j in (k - 1, k):
+            if 0 <= j < len(times):
+                gap = abs((times[j] - when).total_seconds())
+                if gap <= tolerance and (best is None or gap < best[0]):
+                    best = (gap, values[j])
+        return best[1] if best else None
+
+    rows = []
+    for e in episodes:
+        if e["method"] != method or e["confounded"] or e["start_glucose"] < min_start_glucose:
+            continue
+        start = _ts(e["start"])
+        if start is None:
+            continue
+        i0 = bisect.bisect_left(times, start)
+        i1 = bisect.bisect_left(times, start + timedelta(minutes=RESPONSE_WINDOW_MINUTES))
+        window = list(zip(times[i0:i1], values[i0:i1]))
+        if len(window) < MIN_CGM_POINTS:
+            continue
+        start_bg = e["start_glucose"]
+        before = near(start - timedelta(minutes=RISING_LOOKBACK_MINUTES))
+        deltas = {}
+        for minutes in TIMECOURSE_OFFSETS_MINUTES:
+            value = near(start + timedelta(minutes=minutes))
+            deltas[f"delta_{minutes}"] = round(value - start_bg) if value is not None else None
+        fall = next(
+            (round((t - start).total_seconds() / 60) for t, v in window if v <= start_bg - FALL_MG_DL),
+            None,
+        )
+        early = [(t, v) for t, v in window if t < start + timedelta(minutes=PEAK_SEARCH_MINUTES)] or window[:1]
+        peak_time, peak = max(early, key=lambda point: (point[1], -point[0].timestamp()))
+        nadir_time, _nadir = min(window, key=lambda point: (point[1], point[0].timestamp()))
+        rows.append({
+            **deltas,
+            "minutes_to_fall": fall,
+            "rising_at_start": before is not None and start_bg - before >= RISING_MG_DL,
+            "rose_first": peak >= start_bg + RISE_MG_DL,
+            "peak_rise": round(peak - start_bg),
+            "minutes_to_peak": round((peak_time - start).total_seconds() / 60),
+            "minutes_to_nadir": round((nadir_time - start).total_seconds() / 60),
+            "minutes": e.get("minutes"),
+            "start_glucose": start_bg,
+        })
+
+    def med(values: list[float]) -> float | None:
+        return round(median(values)) if values else None
+
+    fell = [r["minutes_to_fall"] for r in rows if r["minutes_to_fall"] is not None]
+    rose = [r for r in rows if r["rose_first"]]
+    rising = [r for r in rows if r["rising_at_start"]]
+    rising_fell = [r["minutes_to_fall"] for r in rising if r["minutes_to_fall"] is not None]
+    out: dict[str, Any] = {
+        "algorithm_version": ALGORITHM_VERSION,
+        "method": method,
+        "min_start_glucose": min_start_glucose,
+        "n": len(rows),
+        "enough": len(rows) >= MIN_TIMECOURSE_EPISODES,
+        "median_start_glucose": med([r["start_glucose"] for r in rows]),
+        "median_minutes": med([r["minutes"] for r in rows if r.get("minutes") is not None]),
+    }
+    for minutes in TIMECOURSE_OFFSETS_MINUTES:
+        out[f"delta_{minutes}"] = med([r[f"delta_{minutes}"] for r in rows if r[f"delta_{minutes}"] is not None])
+    out.update({
+        "median_minutes_to_fall": med(fell),
+        "fell_within_60_pct": _pct(sum(1 for m in fell if m <= 60), len(rows)),
+        "fell_within_120_pct": _pct(sum(1 for m in fell if m <= 120), len(rows)),
+        "did_not_fall_pct": _pct(len(rows) - len(fell), len(rows)),
+        "rose_first_pct": _pct(len(rose), len(rows)),
+        "median_peak_rise": med([r["peak_rise"] for r in rose]),
+        "median_minutes_to_peak": med([r["minutes_to_peak"] for r in rose]),
+        "median_minutes_to_nadir": med([r["minutes_to_nadir"] for r in rows]),
+        # Started while glucose was still climbing: how much further, and how
+        # long until it came back down below the starting value.
+        "rising_at_start": {
+            "n": len(rising),
+            "enough": len(rising) >= MIN_TIMECOURSE_EPISODES,
+            "median_further_rise": med([max(0, r["peak_rise"]) for r in rising]),
+            "median_minutes_to_peak": med([r["minutes_to_peak"] for r in rising]),
+            "median_minutes_to_fall": med(rising_fell),
+            "fell_within_120_pct": _pct(sum(1 for m in rising_fell if m <= 120), len(rising)),
+        },
+    })
+    return out
 
 
 def summarize(episodes: list[dict]) -> dict[str, Any]:

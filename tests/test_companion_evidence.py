@@ -1063,3 +1063,38 @@ def test_glucose_stats_label_cv_stability():
     stats = companion._tir([100, 110, 120, 130, 90, 140])
     assert stats["cv"] <= 36
     assert stats["cv_stable"] is True
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "Your free T4 was 1.0 ng/dL in August, below the lab's reference range [{alias}].",
+        "Your free T4 of 1.0 is considered low by some standards [{alias}].",
+    ],
+)
+def test_lab_judgements_with_a_value_and_unit_in_between_are_checked(companion_database, sentence):
+    db.create_entity(
+        "LabResult",
+        {
+            "owner_email": OWNER,
+            "record_id": companion_database["lab"]["record_id"],
+            "collected_date": "2026-07-10",
+            "test_name": "Synthetic Free T4",
+            "value": 1.0,
+            "unit": "ng/dL",
+            "reference_low": 0.8,
+            "reference_high": 1.8,
+            "flag": "",
+            "parser_confidence": 0.99,
+            "verification_status": "unverified",
+            "validation_status": "valid",
+        },
+    )
+    clear_bundle_cache()
+    public, _reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?", as_of=date(2026, 7, 20), refresh=False
+    )
+    free_t4 = next(i["alias"] for i in public["evidence_items"] if i["title"] == "Synthetic Free T4")
+    reply, evidence = companion_evidence.finalize_reply(sentence.format(alias=free_t4), public, [], [])
+    assert "free T4" not in reply
+    assert evidence["omissions"]["count"] == 1

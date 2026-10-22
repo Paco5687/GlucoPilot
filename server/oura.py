@@ -193,6 +193,10 @@ def _process_daily(sleep, sleep_periods, readiness, activity, hr, spo2) -> dict[
             sleep_latency_seconds=period.get("latency"),
             time_in_bed_seconds=period.get("time_in_bed"),
             sleep_efficiency=period.get("efficiency"),
+            # ISO timestamps with Oura's offset; the bedtime-glucose analysis
+            # anchors on bedtime_start instead of a fixed evening window.
+            bedtime_start=period.get("bedtime_start"),
+            bedtime_end=period.get("bedtime_end"),
         )
     for r in readiness:
         d = day(r["day"])

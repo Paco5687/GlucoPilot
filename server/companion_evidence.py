@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
-from . import companion_safety
+from . import analysis_evidence, companion_safety, correction_response
 from .contradictions import refresh_current as refresh_contradictions
 from .diagnostics import reasoning_context as diagnostic_context
 from .evidence_bundle import EvidenceBundleQuery, EvidenceDomain, build_bundle
@@ -35,6 +35,7 @@ _ALIAS_LOOKALIKE_RE = re.compile(
     r"\b(?:estradiol|estrone|estriol|estetrol|complement)\s*$", re.IGNORECASE
 )
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+_NORMAL_FLAGS = {"", "n", "normal", "none"}
 _EXCLUDED_TYPES = {"DailySummary", "HealthSummary", "InsuranceInfo", "WeeklySummary"}
 _REASONING_FIELDS = {
     "allergen",
@@ -49,7 +50,9 @@ _REASONING_FIELDS = {
     "dose",
     "entry_date",
     "explanation",
+    "findings",
     "flag",
+    "flag_note",
     "frequency",
     "kind",
     "language",
@@ -76,6 +79,7 @@ _REASONING_FIELDS = {
     "validation_status",
     "value",
     "verification_status",
+    "window",
 }
 
 
@@ -192,7 +196,9 @@ _KEY_LAB_TESTS = (
     ("ferritin", re.compile(r"ferritin", re.IGNORECASE)),
     ("vitamin_d", re.compile(r"vitamin\s*d\b(?!.*,\s*d[23]\b)|25-?hydroxyvitamin", re.IGNORECASE)),
 )
-_KEY_LAB_ROWS_PER_TEST = 2  # same-draw duplicates can disagree on flag; show both
+# Same-draw duplicates are already collapsed (lab_dedupe); two rows of one test
+# on one day are two different results, so both are shown.
+_KEY_LAB_ROWS_PER_TEST = 2
 
 
 def _key_lab_items(bundle: dict[str, Any]) -> list[dict[str, Any]]:
@@ -213,6 +219,46 @@ def _key_lab_items(bundle: dict[str, Any]) -> list[dict[str, Any]]:
                 rows.append(item)
             break
     return [item for key, _pattern in _KEY_LAB_TESTS for item in latest.get(key, [])]
+
+
+# Precomputed analyses of the questions she asks most: does glucose climb while
+# she sits, does a temp basal really need two hours, does a late or high
+# bedtime cost her sleep. A matching question gets the analysis itself, over
+# months of data, instead of the ~16 raw readings the model would otherwise
+# improvise from. They lead the evidence list so they take the first aliases.
+ANALYSES = Scope("analyses", (EvidenceDomain.GLUCOSE,), 120, 3, 3, frozenset())
+_ANALYSIS_TRIGGERS = (
+    (
+        analysis_evidence.WALKING,
+        re.compile(
+            r"\b(sit|sits|sitting|sat|seated|desk|couch|sofa|walk\w*|stroll\w*|steps?|"
+            r"standing|movement|exercis\w*)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        analysis_evidence.CORRECTION,
+        re.compile(
+            r"\b(temp(?:orary)?\s*basals?|temps|corrections?|correcting|delay\w*|kicks?\s+in|"
+            r"start(?:s|ed)?\s+working|takes?\s+(?:so\s+)?long|(?:2|two)[-\s]?(?:hours?|hrs?))\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        analysis_evidence.BEDTIME,
+        re.compile(
+            r"\b(bed|bedtime|sleep\w*|slept|asleep|insomnia|nights?|overnight|tonight|dinner|"
+            r"supper|evening)\b",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def _selected_analyses(question: str) -> tuple[str, ...]:
+    return tuple(
+        sorted(entity_type for entity_type, pattern in _ANALYSIS_TRIGGERS if pattern.search(question))
+    )
 
 
 def _selected_scopes(question: str) -> tuple[Scope, ...]:
@@ -262,12 +308,18 @@ def _scope_intent(scope: Scope, question: str) -> str:
 
 
 def _bundle_items(bundle: dict[str, Any]) -> list[dict[str, Any]]:
+    """Ranked items, with each blood draw once: a second report of the same
+    draw is represented by the kept row, which links both documents."""
     evidence = bundle["evidence"]
     return [
-        *evidence["derived_metrics"],
-        *evidence["documents"],
-        *evidence["direct_observations"],
-        *evidence["relationships"],
+        item
+        for item in (
+            *evidence["derived_metrics"],
+            *evidence["documents"],
+            *evidence["direct_observations"],
+            *evidence["relationships"],
+        )
+        if not (item.get("entity_type") == "LabResult" and (item.get("data") or {}).get("duplicate_of"))
     ]
 
 
@@ -330,13 +382,73 @@ def _bounded(value: Any, *, depth: int = 0) -> Any:
     return value
 
 
+def _range_text(low: Any, high: Any) -> str:
+    if low not in (None, "") and high not in (None, ""):
+        return f"{low}-{high}"
+    if low not in (None, ""):
+        return f"above {low}"
+    if high not in (None, ""):
+        return f"below {high}"
+    return "not stated"
+
+
+def _nonstandard_flag(item: dict[str, Any]) -> str | None:
+    """The "optimal range" judgement attached to a lab row: its own, when the
+    row comes from such a report, or a same-draw twin's."""
+    if item.get("entity_type") != "LabResult":
+        return None
+    data = item.get("data") if isinstance(item.get("data"), dict) else {}
+    if data.get("reference_basis") == "nonstandard":
+        flag = str(data.get("flag") or "").strip().lower()
+        return None if flag in _NORMAL_FLAGS else flag
+    for twin in data.get("nonstandard_flags") or []:
+        flag = str(twin.get("flag") or "").strip().lower()
+        if flag not in _NORMAL_FLAGS:
+            return flag
+    return None
+
+
+def _flag_note(data: dict[str, Any]) -> str | None:
+    if data.get("reference_basis") == "nonstandard":
+        flag = str(data.get("flag") or "").strip().lower()
+        judged = f"rates this {flag}" if flag not in _NORMAL_FLAGS else "does not flag this"
+        return (
+            "From a functional-medicine report that uses narrower 'optimal' ranges, not a lab reference "
+            f"range: it {judged} against its optimal range "
+            f"({_range_text(data.get('reference_low'), data.get('reference_high'))}). "
+            "This is not a lab high/low flag."
+        )
+    twins = [
+        twin for twin in data.get("nonstandard_flags") or []
+        if str(twin.get("flag") or "").strip().lower() not in _NORMAL_FLAGS
+    ]
+    if twins and str(data.get("flag") or "").strip().lower() in _NORMAL_FLAGS:
+        twin = twins[0]
+        return (
+            "A functional-medicine report of this same draw rates it "
+            f"{str(twin.get('flag')).lower()} against its narrower 'optimal' range "
+            f"({_range_text(twin.get('reference_low'), twin.get('reference_high'))}); "
+            "the lab's own reference range did not flag it."
+        )
+    return None
+
+
 def _reasoning_data(item: dict[str, Any]) -> dict[str, Any]:
     data = item.get("data") if isinstance(item.get("data"), dict) else {}
-    return {
+    output = {
         key: _bounded(data[key])
         for key in sorted(_REASONING_FIELDS)
         if key in data
     }
+    if item.get("entity_type") == "LabResult":
+        if data.get("reference_basis") == "nonstandard":
+            # The optimal range and its flag move into the note, so the model
+            # cannot read them as the lab's reference range or flag.
+            for key in ("flag", "reference_low", "reference_high"):
+                output.pop(key, None)
+        if note := _flag_note(data):
+            output["flag_note"] = note
+    return output
 
 
 def _source_ids(item: dict[str, Any]) -> list[str]:
@@ -351,7 +463,7 @@ def _source_ids(item: dict[str, Any]) -> list[str]:
 
 def _public_item(alias: str, item: dict[str, Any]) -> dict[str, Any]:
     data = item.get("data") if isinstance(item.get("data"), dict) else {}
-    return {
+    public = {
         "alias": alias,
         "id": item["id"],
         "domain": item.get("domain"),
@@ -371,13 +483,25 @@ def _public_item(alias: str, item: dict[str, Any]) -> dict[str, Any]:
         "flag": (
             str(data.get("flag") or "").strip().lower() or None
             if item.get("entity_type") == "LabResult"
+            and data.get("reference_basis") != "nonstandard"
             else None
         ),
+        "nonstandard_flag": _nonstandard_flag(item),
     }
+    if item.get("entity_type") in analysis_evidence.ENTITY_TYPES:
+        # What the model was shown, so a reply that restates an analysis can be
+        # held to its numbers.
+        public["analysis"] = {
+            key: _bounded(data[key])
+            for key in ("summary", "findings", "supporting_data")
+            if key in data
+        }
+    return public
 
 
 def _reasoning_item(alias: str, item: dict[str, Any]) -> dict[str, Any]:
     public = _public_item(alias, item)
+    public.pop("analysis", None)  # the same values travel in data
     return {
         **public,
         "data": _reasoning_data(item),
@@ -429,6 +553,27 @@ def build_context(
         for caveat in bundle["missing_data_caveats"]:
             caveats[(caveat["code"], caveat["domain"], caveat["message"])] = caveat
         opposing.extend(bundle["evidence"]["opposing_evidence"])
+    if analyses := _selected_analyses(intent):
+        start, end = _window(ANALYSES.days, as_of)
+        analysis_bundle = build_bundle(EvidenceBundleQuery(
+            start=start,
+            end=end,
+            domains=ANALYSES.domains,
+            question_intent=intent,
+            item_budget=ANALYSES.retrieval_budget,
+            normalized_entity_types=analyses,
+        ))
+        bundles.append((ANALYSES, analysis_bundle))
+        items_by_scope[ANALYSES.name] = [
+            item for item in _bundle_items(analysis_bundle)
+            if item.get("entity_type") in analysis_evidence.ENTITY_TYPES
+        ][:ANALYSES.budget]
+        for item in items_by_scope[ANALYSES.name]:
+            items_by_id.setdefault(item["id"], item)
+        # The analyses rest on glucose rows, so unresolved glucose contradictions
+        # travel with them even when no metabolic scope was selected.
+        for contradiction in analysis_bundle["contradictions"]:
+            contradictions_by_id[contradiction["id"]] = contradiction
     if any(scope.name == "labs_records" for scope, _bundle in bundles):
         start, end = _window(KEY_LABS.days, as_of)
         key_bundle = build_bundle(EvidenceBundleQuery(
@@ -443,8 +588,8 @@ def build_context(
         for item in items_by_scope[KEY_LABS.name]:
             items_by_id.setdefault(item["id"], item)
 
-    raw_items = []
-    retained_raw_ids: set[str] = set()
+    raw_items = list(items_by_scope.get(ANALYSES.name, []))
+    retained_raw_ids: set[str] = {item["id"] for item in raw_items}
     max_scope_items = max((len(items) for items in items_by_scope.values()), default=0)
     for index in range(max_scope_items):
         for scope, _bundle in bundles:
@@ -741,25 +886,34 @@ def _uncited_personal_claim(text: str, classification: str) -> bool:
     return bool(claim and (personal or definite or numeric_personal))
 
 
+# Up to six tokens may sit between the verb and the judgement, so a value and
+# its unit and date ("was 1.0 ng/dL in August, below the lab's reference range")
+# cannot slip a false judgement past the check. Sentences are judged one at a
+# time, so the gap never spans two of them.
 _LAB_JUDGEMENT = re.compile(
-    r"\b(is|are|was|were|both|came\s+back|looks?|reads?|remains?|remained|stays?|stayed|flagged)\s+"
-    r"(?:\w+\s+){0,2}?(low|high|elevated|deficient|abnormal|(?:above|below|outside)\s+(?:of\s+)?(?:the\s+|your\s+)?"
-    r"(?:normal|reference|optimal)(?:\s+range)?)\b",
+    r"\b(is|are|was|were|both|came\s+back|looks?|reads?|remains?|remained|stays?|stayed|flagged|"
+    r"considered|deemed|rated|rates|marked|marks|notes|calls|labels|(?:it|that|which)['’]s)\s+"
+    r"(?:\S+\s+){0,6}?(low|high|elevated|deficient|abnormal|(?:above|below|outside)\s+(?:of\s+)?"
+    r"(?:the\s+|your\s+|their\s+|its\s+)?(?:lab'?s?\s+)?(?:normal|reference|optimal)(?:\s+range)?)\b",
     re.IGNORECASE,
 )
 _NEGATION = re.compile(r"\b(not|never|no)\b|n't", re.IGNORECASE)
-_NORMAL_FLAGS = {"", "n", "normal", "none"}
+_ATTRIBUTED = re.compile(r"\b(functional|optimal)\b", re.IGNORECASE)
 
 
 def _unflagged_lab_judgement(line: str, evidence_items: list[dict[str, Any]]) -> bool:
     """A line that calls labs low or high while citing only labs the lab itself
-    did not flag. The small model reads low-normal values as "low"."""
+    did not flag. The small model reads low-normal values as "low". Saying what
+    a functional-medicine report's optimal range makes of a value is allowed
+    when the sentence names that report or range and a cited row carries it."""
     labs = [item for item in evidence_items if item.get("entity_type") == "LabResult"]
     if not labs or len(labs) != len(evidence_items):
         return False
     if not any(
         not _NEGATION.search(match.group(0)) for match in _LAB_JUDGEMENT.finditer(line)
     ):
+        return False
+    if _ATTRIBUTED.search(line) and any(item.get("nonstandard_flag") for item in labs):
         return False
     return all((item.get("flag") or "").strip().lower() in _NORMAL_FLAGS for item in labs)
 
@@ -831,6 +985,417 @@ def _unsupported_lab_absence(line: str, public_context: dict[str, Any]) -> bool:
     return any(pattern.search(title) for pattern in families for title in titles)
 
 
+# An analysis states its numbers in plain findings and the model restates them,
+# sometimes in the wrong role: "the median time to reach that drop was 75
+# minutes" when half got there by 25 minutes and 75 was how long the temp basal
+# ran. A sentence that cites only analyses is held to them: each number with a
+# unit is one they state, a change at a time point is their change at that
+# point, a time for glucose to fall, peak or bottom out is their time for that
+# event, and walking is not said to prevent lows when lows were more common
+# after walking.
+_NUMBER = r"\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve"
+_NUMBER_WORDS = {
+    word: value
+    for value, word in enumerate(
+        ("one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"), 1
+    )
+}
+_HOURS = r"h(?:ou)?rs?\b"
+_MINUTES = r"min(?:ute)?s?\b"
+_UNIT = rf"mg\s*/\s*dl\b|points?\b|{_MINUTES}|{_HOURS}|%|percent\b|per\s+cent\b"
+_QUANTITY = re.compile(
+    r"(?<![\w.:/-])[-+−]?(?:"
+    rf"(?P<hours>{_NUMBER})[\s-]*{_HOURS}\s*(?:and\s+)?(?P<minutes>{_NUMBER})[\s-]*{_MINUTES}"
+    rf"|(?P<and_half>{_NUMBER}|an?)\s+(?:and\s+a\s+half\s+{_HOURS}|{_HOURS}\s+and\s+a\s+half\b)"
+    r"|(?P<half_hour>half\s+an\s+hour\b|a\s+half[\s-]hour\b|half[\s-]hour\b)"
+    rf"|between\s+(?P<between_low>{_NUMBER})\s+and\s+(?P<between_high>{_NUMBER})[\s-]*(?P<between_unit>{_UNIT})"
+    rf"|(?P<low>{_NUMBER})\s*(?:-|–|—|to)\s*(?P<high>{_NUMBER})[\s-]*(?P<range_unit>{_UNIT})"
+    r"|(?P<one_hour>an?|one|the\s+first)\s+hour\b"
+    rf"|(?P<value>{_NUMBER})[\s-]*(?P<unit>{_UNIT})"
+    r")",
+    re.IGNORECASE,
+)
+_BARE_NUMBER = re.compile(r"(?<![\w.:/])[-+−]?(\d+(?:\.\d+)?)(?![\w:])")
+_HEDGE_BEFORE = re.compile(
+    r"(?:\babout|\baround|\broughly|\bapproximately|\bnearly|\balmost|\bclose\s+to|\bjust\s+(?:under|over)|~|"
+    r"\bsome|\bunder|\bover|\b(?:more|less|fewer)\s+than|\bat\s+(?:least|most)|\bup\s+to|"
+    r"\bas\s+(?:much|little|long|soon)\s+as)\s*$",
+    re.IGNORECASE,
+)
+_HEDGE_AFTER = re.compile(r"^\s*(?:or\s+(?:so|less|more|sooner|longer|fewer)\b|-?ish\b)", re.IGNORECASE)
+_UPPER_BOUND_BEFORE = re.compile(
+    r"\b(?:within|by|under|before|inside(?:\s+of)?|less\s+than)\s+(?:about\s+|around\s+|roughly\s+|just\s+|only\s+)?$",
+    re.IGNORECASE,
+)
+_UPPER_BOUND_AFTER = re.compile(r"^\s*or\s+(?:less|sooner|fewer)\b", re.IGNORECASE)
+_FREQUENCY_BEFORE = re.compile(r"\b(?:every|each)\s+$", re.IGNORECASE)  # "check every 15 minutes" is advice
+# "A difference of 0.6 hours", "a half-hour drop": the gap between two groups'
+# values of one measure (sleep after lower and higher bedtimes).
+_DIFFERENCE_BEFORE = re.compile(
+    r"\b(?:(?:difference|gap)\s+of|los[et]|losing|gain(?:ed)?)\s+(?:about\s+|around\s+|roughly\s+|only\s+|just\s+)?$",
+    re.IGNORECASE,
+)
+_DIFFERENCE_AFTER = re.compile(
+    r"^\s*(?:less|more|shorter|longer|lower|higher|fewer|drop|difference|gap|apart)\b", re.IGNORECASE
+)
+# Standard glucose thresholds a reply may name without the analysis stating them.
+_STANDARD_MG_DL = (54, 70, 180, 250)
+_ANALYSIS_EVENTS = {
+    "fall": re.compile(
+        r"\b(?:fall|falls|fell|falling|drop|drops|dropped|dropping|dip|dips|dipped|dipping|"
+        r"(?:come|comes|came|coming|go|goes|went|going)\s+down|bring\w*\s+(?:\S+\s+){0,2}?down|"
+        r"brought\s+(?:\S+\s+){0,2}?down|lower(?:s|ed|ing)?\s+(?:you|your|her|me|my|it|glucose|blood\s+sugar)|"
+        r"start(?:s|ed)?\s+(?:to\s+)?(?:work\w*|lower\w*|bring\w*|fall\w*|drop\w*|dip\w*)|kick(?:s|ed)?\s+in|"
+        r"take(?:s)?\s+effect|took\s+effect|g[eo]t(?:s)?\s+there|"
+        r"(?:reach|hit)\w*\s+(?:that|the|its|their|a)\s+(?:drop|target)|(?:mg\s*/\s*dl|points?)\s+(?:lower|down)\b|"
+        r"below\s+(?:where\s+it\s+started|(?:its|the|your|her|their)\s+start\w*|start\w*))",
+        re.IGNORECASE,
+    ),
+    "peak": re.compile(r"\b(?:peak\w*|top(?:s|ped)?\s+out|highest\s+point)\b", re.IGNORECASE),
+    "nadir": re.compile(r"\b(?:lowest|nadir|bottom\w*|low\s+point)\b", re.IGNORECASE),
+}
+# A change at a time point ("fell 16 mg/dL by 1 hour", "+21 mg/dL at 2 hours")
+# is read against the analysis's time course at that point.
+_TIME_POINT_BEFORE = re.compile(r"\b(?:at|by|after|in|within|over)\s+$", re.IGNORECASE)
+_THRESHOLD_BEFORE = re.compile(
+    r"\b(?:from|between|below|above|under|over|than|at|starting|started|start|near|like)\s+$", re.IGNORECASE
+)
+_THRESHOLD_AFTER = re.compile(r"^\s*(?:below|under|lower|above|over|higher)\b", re.IGNORECASE)
+_NOT_A_TIME_COURSE = re.compile(
+    r"\b(?:lowest|nadir|bottom\w*|low\s+point|peak\w*|highest|per\s+(?:extra\s+)?units?|"
+    r"as\s+much\s+as|up\s+to|at\s+most|max\w*)\b",
+    re.IGNORECASE,
+)
+_TIME_COURSE_KEY = re.compile(r"delta_(\d+)")
+_CLAUSE_BREAK = re.compile(r"[,;:()]|\s[-–—]\s|[–—]|\b(?:but|then|while|whereas)\b", re.IGNORECASE)
+_WALK = r"\b(?:walk(?:s|ed|ing)?|stroll\w*)\b"
+# "Lows", not "low": walking helping with low energy is not about glucose.
+_LOWS = (
+    r"(?:lows\b|hypos?\b|hypoglycemi\w*|going\s+low\b|go(?:ing)?\s+(?:under|below)\s+70\b|"
+    r"dropping\s+(?:too\s+)?low\b|low\s+(?:blood\s+sugars?|glucose)\b)"
+)
+_LOWS_OBJECT = (
+    r"(?:(?:the|your|her|my)\s+)?(?:(?:chances?|risk|odds|likelihood|number|frequency)\s+(?:of\s+)?)?"
+    rf"(?:(?:having|getting)\s+)?(?:a\s+low\b|{_LOWS})"
+)
+_WALKING_PREVENTS_LOWS = re.compile(
+    rf"{_WALK}[^.;,!?]{{0,40}}?\b(?:prevent\w*|reduc\w*|lower(?:s|ed|ing)?|decreas\w*|cut(?:s|ting)?|"
+    r"protect\w*\s+(?:\w+\s+)?(?:against|from)|guard\w*\s+against|"
+    r"help\w*\s+(?:to\s+)?(?:with|prevent|avoid|stop|reduce|lower|against)|"
+    rf"keep\w*\s+(?:you|me|her|it|glucose|blood\s+sugar)\s+from|avoid\w*|stop\w*|ward\w*\s+off)\s+{_LOWS_OBJECT}"
+    rf"|{_WALK}[^.;,!?]{{0,30}}?\bmake\w*\s+{_LOWS_OBJECT}\s+less\s+(?:likely|common|frequent)"
+    rf"|{_LOWS}[^.;,!?]{{0,25}}?\b(?:less|rarer|fewer)(?:\s+(?:common|likely|frequent|often))?\s+"
+    rf"(?:after|with|when|while|during|if)\s+(?:you\s+)?(?:go\s+for\s+a\s+)?{_WALK}"
+    rf"|\bfewer\s+{_LOWS}[^.;,!?]{{0,20}}?\b(?:after|with|when|while|during|if)\s+(?:you\s+)?{_WALK}",
+    re.IGNORECASE,
+)
+_QUESTION_END = re.compile(r"\?\s*(?:\[[EMGC]\d+\]\s*)*$", re.IGNORECASE)
+# "Whether walking prevents lows" asks; "stop walking to avoid lows" says the opposite.
+_NOT_WALKING_BEFORE = re.compile(
+    r"\b(?:whether|if|stop(?:ping)?|avoid(?:ing)?|skip(?:ping)?|instead\s+of|rather\s+than)\s*$",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class _Quantity:
+    dimension: str  # "mg" (mg/dL), "min" (durations, in minutes) or "%"
+    low: float
+    high: float
+    precision: float  # the rounding step it was stated at: 60 for "3 hours", 6 for "8.9 hours"
+    start: int
+    end: int
+
+
+def _number(text: str) -> tuple[float, int]:
+    word = text.lower()
+    if word in _NUMBER_WORDS:
+        return float(_NUMBER_WORDS[word]), 0
+    return float(word), len(word.partition(".")[2])
+
+
+def _unit(text: str) -> tuple[str, float]:
+    unit = text.lower()
+    if unit.startswith(("mg", "point")):
+        return "mg", 1
+    if unit.startswith("min"):
+        return "min", 1
+    if unit.startswith("h"):
+        return "min", 60
+    return "%", 1
+
+
+def _quantities(text: str) -> list[_Quantity]:
+    found = []
+    for match in _QUANTITY.finditer(text):
+        group = match.groupdict()
+        span = match.start(), match.end()
+        if group["hours"]:
+            hours, _ = _number(group["hours"])
+            minutes, _ = _number(group["minutes"])
+            found.append(_Quantity("min", hours * 60 + minutes, hours * 60 + minutes, 1, *span))
+        elif group["and_half"]:
+            whole = 1.0 if group["and_half"].lower() in {"a", "an"} else _number(group["and_half"])[0]
+            found.append(_Quantity("min", (whole + 0.5) * 60, (whole + 0.5) * 60, 30, *span))
+        elif group["half_hour"]:
+            found.append(_Quantity("min", 30, 30, 30, *span))
+        elif group["one_hour"]:
+            found.append(_Quantity("min", 60, 60, 60, *span))
+        else:
+            low, high, unit = (
+                (group["between_low"], group["between_high"], group["between_unit"])
+                if group["between_low"]
+                else (group["low"], group["high"], group["range_unit"])
+                if group["low"]
+                else (group["value"], group["value"], group["unit"])
+            )
+            dimension, scale = _unit(unit)
+            (low_value, low_decimals), (high_value, high_decimals) = _number(low), _number(high)
+            precision = 10 ** -max(low_decimals, high_decimals) * scale
+            found.append(_Quantity(dimension, low_value * scale, high_value * scale, precision, *span))
+    return found
+
+
+def _hedged(text: str, quantity: _Quantity) -> bool:
+    return bool(
+        _HEDGE_BEFORE.search(text[max(0, quantity.start - 30):quantity.start])
+        or _HEDGE_AFTER.search(text[quantity.end:])
+    )
+
+
+def _tolerance(quantity: _Quantity, hedged: bool) -> float:
+    """Rounding at the stated precision ("3 hours" for 170 minutes), a round
+    number of minutes or percent ("30 minutes" for 27, "20%" for 19), and more
+    for a hedge ("about"). mg/dL values are many and close together, so an
+    unhedged one must be exact."""
+    exact = quantity.precision / 2
+    if quantity.dimension in {"min", "%"} and quantity.precision == 1 and quantity.high % 5 == 0:
+        exact = max(exact, 0.1 * quantity.high)
+    if not hedged:
+        return exact
+    return max(exact, {"mg": 2, "%": 2, "min": 5}[quantity.dimension], 0.2 * quantity.high)
+
+
+def _stated(quantity: _Quantity, values: set[float], hedged: bool) -> bool:
+    tolerance = _tolerance(quantity, hedged)
+    if quantity.low == quantity.high:
+        return any(abs(value - quantity.low) <= tolerance for value in values)
+    return all(
+        any(abs(value - end) <= tolerance for value in values) for end in (quantity.low, quantity.high)
+    ) or any(quantity.low - tolerance <= value <= quantity.high + tolerance for value in values)
+
+
+def _key_dimension(key: str) -> tuple[str, float] | None:
+    """The unit of a supporting_data value, from its key."""
+    key = key.lower()
+    if "pct" in key or "efficiency" in key:
+        return "%", 1
+    if "minutes" in key:
+        return "min", 1
+    if "hours" in key:
+        return "min", 60
+    if any(word in key for word in ("glucose", "delta", "rise", "drop")):
+        return "mg", 1
+    return None
+
+
+@dataclass
+class _AnalysisSupport:
+    values: dict[str, set[float]]  # by dimension
+    differences: dict[str, set[float]]  # between groups' values of one measure
+    events: dict[str, set[float]]  # minutes to fall, peak and nadir
+    course: dict[int, set[float]]  # mg/dL change by minutes after the start, any group
+    lowest: set[float]  # mg/dL from the start to the lowest point in the follow window
+
+
+def _analysis_support(items: list[dict[str, Any]]) -> _AnalysisSupport:
+    values: dict[str, set[float]] = {"mg": set(map(float, _STANDARD_MG_DL)), "min": set(), "%": set()}
+    measures: dict[tuple[str, str], list[float]] = {}
+    events: dict[str, set[float]] = {event: set() for event in _ANALYSIS_EVENTS}
+    course: dict[int, set[float]] = {}
+    lowest: set[float] = set()
+
+    def visit(value: Any, key: str) -> None:
+        if isinstance(value, dict):
+            for child_key, child in value.items():
+                visit(child, str(child_key))
+        elif isinstance(value, list):
+            for child in value:
+                visit(child, key)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            if dimension := _key_dimension(key):
+                values[dimension[0]].add(abs(value) * dimension[1])
+                measures.setdefault((dimension[0], key), []).append(value * dimension[1])
+            for event in events:
+                if key.endswith(f"minutes_to_{event}"):
+                    events[event].add(float(value))
+            if offset := _TIME_COURSE_KEY.fullmatch(key):
+                course.setdefault(int(offset.group(1)), set()).add(abs(value))
+                values["min"].add(float(offset.group(1)))
+            if key == "nadir_delta":
+                lowest.add(abs(value))
+
+    for item in items:
+        analysis = item.get("analysis") or {}
+        text = " ".join(str(part) for part in [analysis.get("summary") or "", *(analysis.get("findings") or [])])
+        quantities = _quantities(text)
+        for quantity in quantities:
+            values[quantity.dimension].update({quantity.low, quantity.high})
+        for match in _BARE_NUMBER.finditer(text):
+            # Unitless numbers in findings are counts and mg/dL values ("30
+            # minutes -7", "below 70"); a reply may give them in mg/dL.
+            if not any(quantity.start <= match.start() < quantity.end for quantity in quantities):
+                values["mg"].add(float(match.group(1)))
+        visit(analysis.get("supporting_data"), "")
+    differences: dict[str, set[float]] = {dimension: set() for dimension in values}
+    for (dimension, _key), group in measures.items():
+        differences[dimension].update(
+            abs(first - second) for index, first in enumerate(group) for second in group[index + 1:]
+        )
+    return _AnalysisSupport(values, differences, events, course, lowest)
+
+
+def _event_of(clause: str, quantity: _Quantity) -> str | None:
+    """The event a stated time belongs to: the nearest event named before it in
+    its clause ("peaked about 17 minutes"), else the first one after ("takes 2
+    hours to start working")."""
+    before = [
+        (match.end(), event)
+        for event, pattern in _ANALYSIS_EVENTS.items()
+        for match in pattern.finditer(clause[:quantity.start])
+    ]
+    if before:
+        return max(before)[1]
+    after = [
+        (match.start(), event)
+        for event, pattern in _ANALYSIS_EVENTS.items()
+        for match in pattern.finditer(clause, quantity.end)
+    ]
+    return min(after)[1] if after else None
+
+
+def _misplaced_event_time(sentence: str, events: dict[str, set[float]]) -> bool:
+    """A time to fall, peak or bottom out that is not the analysis's time for
+    that event. A clause that pairs a time with a percentage or a change in
+    mg/dL ("88% within 2 hours", "16 mg/dL by 1 hour") reads the time course at
+    that point, not the time to an event, and is left to the value check."""
+    for clause in _CLAUSE_BREAK.split(sentence):
+        if not clause or _NEGATION.search(clause):
+            continue
+        quantities = _quantities(clause)
+        if any(
+            quantity.dimension == "%"
+            or (quantity.dimension == "mg" and quantity.low != correction_response.FALL_MG_DL)
+            for quantity in quantities
+        ):
+            continue
+        for quantity in quantities:
+            event = _event_of(clause, quantity) if quantity.dimension == "min" else None
+            if not event or not events[event]:
+                continue
+            hedged = _hedged(clause, quantity)
+            if _UPPER_BOUND_BEFORE.search(clause[:quantity.start]) or _UPPER_BOUND_AFTER.search(
+                clause[quantity.end:]
+            ):
+                # "within 30 minutes", "by 28 minutes": true when the event came sooner.
+                if not any(value <= quantity.high + _tolerance(quantity, hedged) for value in events[event]):
+                    return True
+            elif not _stated(quantity, events[event], hedged):
+                return True
+    return False
+
+
+def _misread_time_course(sentence: str, support: _AnalysisSupport) -> bool:
+    """A change in mg/dL given at a time point that is not the analysis's change
+    at that point for any group: "fell a median of 30 mg/dL in the first hour"
+    when the hour's change was 16 (30 was the label of the 30-minute point)."""
+    if not support.course:
+        return False
+    for clause in _CLAUSE_BREAK.split(sentence):
+        if not clause or _NOT_A_TIME_COURSE.search(clause):
+            continue
+        quantities = _quantities(clause)
+        if any(quantity.dimension == "%" for quantity in quantities):
+            continue
+        changes = [
+            quantity for quantity in quantities
+            if quantity.dimension == "mg" and quantity.low == quantity.high
+            and not _THRESHOLD_BEFORE.search(clause[:quantity.start])
+            and not _THRESHOLD_AFTER.search(clause[quantity.end:])
+        ]
+        points = [
+            quantity for quantity in quantities
+            if quantity.dimension == "min" and quantity.low == quantity.high
+            and _TIME_POINT_BEFORE.search(clause[:quantity.start])
+        ]
+        if not changes or len(changes) != len(points):
+            continue
+        for change, point in zip(changes, points):
+            stated = support.course.get(round(point.low))
+            if stated is None:
+                continue
+            if clause[:point.start].rstrip().lower().endswith("within"):
+                stated = stated | support.lowest  # "dropped 16 mg/dL within 2 hours"
+            if not _stated(change, stated, _hedged(clause, change)):
+                return True
+    return False
+
+
+def _walking_prevents_lows(sentence: str, items: list[dict[str, Any]]) -> bool:
+    """"Walking lowers the chance of going under 70" when no starting band had
+    lows less common after walking than after sitting."""
+    if _QUESTION_END.search(sentence):
+        return False
+    claims = [
+        match for match in _WALKING_PREVENTS_LOWS.finditer(sentence)
+        if not _NEGATION.search(match.group(0))
+        and not _NOT_WALKING_BEFORE.search(sentence[:match.start()])
+    ]
+    if not claims:
+        return False
+    rates = [
+        (band["walking"].get("went_low_pct"), band["sitting"].get("went_low_pct"))
+        for item in items
+        if item.get("entity_type") == analysis_evidence.WALKING
+        for band in ((item.get("analysis") or {}).get("supporting_data") or {}).get("bands", {}).values()
+        if isinstance(band, dict) and isinstance(band.get("walking"), dict) and isinstance(band.get("sitting"), dict)
+    ]
+    rates = [(walked, sat) for walked, sat in rates if walked is not None and sat is not None]
+    return bool(rates) and not any(walked < sat for walked, sat in rates)
+
+
+def _misstated_analysis(sentence: str, items: list[dict[str, Any]], kinds: set[str]) -> bool:
+    """A sentence citing only analyses that gives a number they do not state,
+    puts one of their times on the wrong event, or reverses walking and lows.
+    A memory, care note or other evidence cited alongside may be the source
+    of a number, so those sentences are left alone."""
+    if (
+        not items
+        or kinds - {"E"}
+        or any(item.get("entity_type") not in analysis_evidence.ENTITY_TYPES for item in items)
+    ):
+        return False
+    if _walking_prevents_lows(sentence, items):
+        return True
+    quantities = _quantities(sentence)
+    if not quantities:
+        return False
+    support = _analysis_support(items)
+    for quantity in quantities:
+        hedged = _hedged(sentence, quantity)
+        if _FREQUENCY_BEFORE.search(sentence[:quantity.start]) or _stated(
+            quantity, support.values[quantity.dimension], hedged
+        ):
+            continue
+        framed_as_difference = _DIFFERENCE_BEFORE.search(
+            sentence[max(0, quantity.start - 30):quantity.start]
+        ) or _DIFFERENCE_AFTER.search(sentence[quantity.end:])
+        if framed_as_difference and _stated(quantity, support.differences[quantity.dimension], hedged):
+            continue
+        return True
+    return _misplaced_event_time(sentence, support.events) or _misread_time_course(sentence, support)
+
+
 def _drop_unsupported_sentences(
     line: str,
     public_context: dict[str, Any],
@@ -844,10 +1409,12 @@ def _drop_unsupported_sentences(
     for sentence in companion_safety.split_sentences(line):
         aliases = {f"{kind.upper()}{int(number)}" for kind, number in _CITATION_RE.findall(sentence)}
         items = [evidence_by_alias[alias] for alias in aliases if alias in evidence_by_alias]
+        kinds = {alias[0] for alias in aliases}
         if (
             _unflagged_lab_judgement(sentence, items)
-            or _glucose_claim_without_glucose_evidence(sentence, items, {alias[0] for alias in aliases})
+            or _glucose_claim_without_glucose_evidence(sentence, items, kinds)
             or _unsupported_lab_absence(sentence, public_context)
+            or _misstated_analysis(sentence, items, kinds)
         ):
             dropped += 1
             continue

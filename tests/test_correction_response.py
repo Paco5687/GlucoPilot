@@ -40,6 +40,95 @@ def test_temp_basal_extra_units_and_response():
     assert e["confounded"] is False
 
 
+
+def _climb_then_fall(day):
+    """Rising 2 mg/dL per 5 min into the start (154 -> 160), on to a 168 peak
+    20 min in, then falling 2 per 5 min for the rest of the window."""
+    t0 = BASE + timedelta(days=day)
+    rows = []
+    for i in range(-6, 48):
+        value = 160 + 2 * i if i <= 4 else 168 - 2 * (i - 4)
+        rows.append({"timestamp": _iso(t0 + timedelta(minutes=5 * i)), "value": value})
+    return rows
+
+
+def _temp_on(day, **kwargs):
+    return {**_temp(**kwargs), "id": f"temp-{day}",
+            "timestamp": _iso(BASE + timedelta(days=day))}
+
+
+def test_episodes_carry_their_source_treatments_and_length():
+    e = cr.build_correction_episodes([{**_temp(), "id": "temp-1"}], _cgm())[0]
+    assert e["source_ids"] == ["temp-1"] and e["minutes"] == 90
+
+
+def test_timecourse_measures_how_soon_glucose_falls_after_a_temp_basal():
+    treatments = [_temp_on(day) for day in range(5)]
+    readings = [row for day in range(5) for row in _climb_then_fall(day)]
+    episodes = cr.build_correction_episodes(treatments, readings)
+    course = cr.timecourse(episodes, readings, method="temp_basal")
+    assert course["n"] == 5 and course["enough"] is True
+    assert course["median_start_glucose"] == 160
+    # 168 - 2*(i-4) <= 150 first at i=13: 65 minutes after the start.
+    assert course["median_minutes_to_fall"] == 65
+    assert course["fell_within_60_pct"] == 0 and course["fell_within_120_pct"] == 100
+    assert course["delta_30"] == 4 and course["delta_60"] == -8 and course["delta_120"] == -32
+    assert course["rose_first_pct"] == 0          # an 8 mg/dL climb is under the 10 mg/dL bar
+    rising = course["rising_at_start"]
+    assert rising["n"] == 5 and rising["enough"] is True
+    assert rising["median_further_rise"] == 8 and rising["median_minutes_to_peak"] == 20
+    assert rising["median_minutes_to_fall"] == 65
+
+
+def test_timecourse_leaves_out_low_starts_confounded_and_other_methods():
+    treatments = [_temp_on(0), _temp_on(1)]
+    treatments.append({"type": "carb", "event_type": "Carbs", "amount": 30,
+                       "timestamp": _iso(BASE + timedelta(days=1, minutes=60))})
+    readings = [*_climb_then_fall(0), *_climb_then_fall(1)]
+    episodes = cr.build_correction_episodes(treatments, readings)
+    assert cr.timecourse(episodes, readings)["n"] == 1
+    assert cr.timecourse(episodes, readings, min_start_glucose=170)["n"] == 0
+    assert cr.timecourse(episodes, readings, method="bolus")["n"] == 0
+    assert cr.timecourse(episodes, readings)["enough"] is False
+
+
+def test_correction_item_reports_the_time_course_in_plain_findings():
+    from datetime import date
+
+    from server import analysis_evidence
+
+    treatments = [_temp_on(day) for day in range(6)]
+    readings = [row for day in range(6) for row in _climb_then_fall(day)]
+    episodes = cr.build_correction_episodes(treatments, readings)
+    item = analysis_evidence.correction_item(
+        episodes, readings, start=date(2026, 9, 1), end=date(2026, 9, 6)
+    )
+    findings = item["data"]["findings"]
+    assert findings[0] == (
+        "After 6 temp basal corrections started at or above 150 mg/dL, glucose was 10 mg/dL below where it "
+        "started within 1 hour in 0% and within 2 hours in 100%; half got there by 65 minutes, and in 0% it had "
+        "not within 3 hours."
+    )
+    assert "1 hour -8, 90 minutes -20, 2 hours -32" in findings[1]
+    assert findings[2].startswith("These corrections started at a median of 160 mg/dL, ran a median of 90 minutes")
+    assert any(f.startswith("When glucose was still climbing as the temp basal started (6 of 6)") for f in findings)
+    assert item["data"]["sample_count"] == 6
+    assert item["confidence"]["limitations"]
+    assert item["source_refs"] == [("Treatment", f"temp-{day}") for day in range(6)]
+
+
+def test_correction_item_with_too_few_corrections_says_so():
+    from datetime import date
+
+    from server import analysis_evidence
+
+    item = analysis_evidence.correction_item([], [], start=date(2026, 9, 1), end=date(2026, 9, 6))
+    assert item["data"]["findings"] == [
+        "Only 0 clean temp basal corrections started at or above 150 mg/dL in this window, "
+        "too few to describe a typical time course."
+    ]
+    assert item["source_refs"] == []
+
 def test_contiguous_temp_segments_merge_into_one_episode():
     segs = [_temp(0, duration=30), _temp(35, duration=30), _temp(70, duration=30)]
     episodes = cr.build_correction_episodes(segs, _cgm())
