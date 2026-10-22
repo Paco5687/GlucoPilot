@@ -486,6 +486,77 @@ describe("visit report summary page", () => {
     },
   };
 
+  const month = (key, first, last, tbr70) => ({
+    month: key, first_day: first, last_day: last, days: 30, readings: 8000, coverage_pct: 99,
+    avg: 110, gmi: 6, cv: 26.4, tir: 90.2, tbr70, tbr54: 1, tar180: 1.9, tar250: 0, low_episodes: 70,
+  });
+  const historied = {
+    ...summarized,
+    insulin: { available: true, quality: {}, nutrition_quality: {}, boluses_per_day: 0.3, bolus_stream_incomplete: true },
+    trends: {
+      glucose_by_month: [
+        month("2026-02", "2026-02-26", "2026-02-28", 0),
+        month("2026-03", "2026-03-01", "2026-03-31", 18.3),
+        month("2026-04", "2026-04-01", "2026-04-22", 5),
+      ],
+      insulin_by_month: [
+        { month: "2026-03", days: 31, tdd: 37.2, basal: 21.6, bolus: 15.6, weight_kg: 92.1, weight_date: "2026-03-15", weight_carried: false, units_per_kg: 0.4 },
+        { month: "2026-04", days: 21, tdd: 38.7, basal: 38.6, bolus: 0.1, weight_kg: 78.9, weight_date: "2026-03-30", weight_carried: true, units_per_kg: 0.49 },
+      ],
+      a1c_vs_gmi: [
+        { date: "2026-02-11", a1c: 6.6, gmi: 7.3, difference: -0.7, cgm_days: 44 },
+        { date: "2026-04-01", a1c: 4.9, gmi: 5.9, difference: -1, cgm_days: 90 },
+      ],
+      lows_by_hour: {
+        pct_below_70_by_hour: Array.from({ length: 24 }, (_, hour) => (hour >= 11 && hour < 21 ? 20 : 1)),
+        low_readings: 2600,
+        span: { start_hour: 11, end_hour: 21, share_pct: 83 },
+        overnight: { nights: 90, nights_with_low: 10, hours: "00:00–06:00" },
+      },
+      pump_use: {
+        modes: {
+          days_with_mode_records: 91, automated_pct: 51, manual_pct: 49,
+          manual_share_by_hour: Array.from({ length: 24 }, (_, hour) => (hour >= 8 && hour < 19 ? 100 : 0)),
+          manual_span: { start_hour: 8, end_hour: 19, hours: 11 },
+        },
+        temp_basals: { count: 431, per_day: 4.7, median_increase_pct: 95, median_minutes: 38 },
+      },
+    },
+    activity_position: {
+      ...report.activity_position,
+      walking_response: {
+        walks_measured: 1071,
+        median_walk_minutes: 21,
+        bands: {
+          under_120: { walking: { n: 796, delta_120: 2, nadir_delta: -17, went_low_pct: 58 }, sitting: { n: 993, delta_120: 18, went_low_pct: 20 } },
+          "120_to_170": {
+            walking: { n: 257, delta_120: -43, nadir_delta: -55, went_low_pct: 29, at_stop_delta: -10, after_stop_delta: -45 },
+            sitting: { n: 787, delta_120: -10, went_low_pct: 2 },
+          },
+          over_170: { walking: null, sitting: null },
+        },
+      },
+    },
+    imaging: [{
+      id: "ct", title: "Synthetic CT abdomen", date: "2026-03-30", summary: "Synthetic finding text.",
+      measurements: [{ name: "Spleen length", value: 12.5, unit: "cm", flag: "high" }],
+    }],
+    labs: {
+      ...summarized.labs,
+      key_results: [{
+        test_name: "Ferritin", value: 16, unit: "ng/mL", reference_low: 16, reference_high: 154, flag: "normal", date: "2026-04-25",
+        verification: {},
+        history: [
+          { parsed_date: "2026-02-11", value: 28, unit: "ng/mL" },
+          { parsed_date: "2026-02-11", value: 28, unit: "ng/mL" },
+          { parsed_date: "2026-03-01", value: 44.4, unit: "ng/mg" },
+          { parsed_date: "2026-03-23", value: 37, unit: "NG/ML" },
+          { parsed_date: "2026-04-25", value: 16, unit: "ng/mL" },
+        ],
+      }],
+    },
+  };
+
   beforeEach(() => {
     vi.stubGlobal("ResizeObserver", class {
       observe() {}
@@ -549,4 +620,69 @@ describe("visit report summary page", () => {
     expect(analyses.className).toContain("print:hidden");
   });
 
+  it("adds the monthly low trend and the A1c–GMI gap to the findings", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(/** @type {Response} */ ({ ok: true, json: async () => historied }));
+    render(<Report />);
+
+    const findings = (await screen.findByText("Findings to review")).closest("div").parentElement;
+    expect(findings.textContent).toContain("Below 70 by month: Feb 0%, Mar 18.3%, Apr 5%.");
+    expect(findings.textContent).toContain(
+      "A1c is lower than the CGM-estimated GMI at every draw: 6.6% vs 7.3% (2026-02-11); 4.9% vs 5.9% (2026-04-01).",
+    );
+  });
+
+  it("tables glucose and insulin month by month", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(/** @type {Response} */ ({ ok: true, json: async () => historied }));
+    render(<Report />);
+
+    const glucose = (await screen.findByText("Glucose by month")).closest(".report-table");
+    const glucoseRows = Array.from(glucose.querySelectorAll("tbody tr")).map((row) => row.textContent);
+    expect(glucoseRows[0]).toContain("Feb 26–28, 2026");
+    expect(glucoseRows[1]).toContain("Mar 2026");
+    expect(glucoseRows[1]).toContain("18.3%");
+    expect(glucoseRows[2]).toContain("Apr 1–22, 2026");
+    expect(glucoseRows[2]).toContain("6.0%");
+
+    const insulin = screen.getByText("Insulin by month").closest(".report-table");
+    const insulinRows = Array.from(insulin.querySelectorAll("tbody tr")).map((row) => row.textContent);
+    expect(insulinRows[0]).toContain("37.2");
+    expect(insulinRows[0]).toContain("0.40");
+    expect(insulinRows[1]).toContain("173.9 lb†");
+    expect(insulin.textContent).toContain("No weight logged that month");
+  });
+
+  it("shows when lows happen, what walking does, and how the pump is run", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(/** @type {Response} */ ({ ok: true, json: async () => historied }));
+    render(<Report />);
+
+    const lows = (await screen.findByText("When lows happen")).closest(".report-card");
+    expect(lows.textContent).toContain("83% of readings below 70 fell between 11:00 and 21:00.");
+    expect(lows.textContent).toContain("Nights with any reading below 70 between 00:00 and 06:00: 10 of 90.");
+    const walking = Array.from(lows.querySelectorAll("tbody tr")).map((row) => row.textContent);
+    expect(walking).toHaveLength(2);
+    expect(walking[1]).toContain("121–170");
+    expect(walking[1]).toContain("−43");
+    expect(walking[1]).toContain("29%");
+    expect(lows.textContent).toContain("−10 mg/dL by the end of the walk, then a further −45 after it ended.");
+
+    const pump = screen.getByText("How the pump is used").closest(".report-card");
+    expect(pump.textContent).toContain("Manual mode in most of each hour from 08:00 to 19:00");
+    expect(pump.textContent).toContain("4.7 per day (431 in the window), median +95%");
+  });
+
+  it("lists A1c beside GMI, imaging, and earlier results of a key lab in its own unit", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(/** @type {Response} */ ({ ok: true, json: async () => historied }));
+    render(<Report />);
+
+    const a1c = (await screen.findByText("A1c and CGM-estimated GMI")).closest(".report-table");
+    expect(a1c.textContent).toContain("−1.0");
+
+    const imaging = screen.getByText("Synthetic CT abdomen").closest(".report-card");
+    expect(imaging.textContent).toContain("Synthetic finding text.");
+    expect(imaging.textContent).toContain("Spleen length: 12.5 cm");
+
+    const ferritin = screen.getByText("Ferritin").closest("tr");
+    expect(ferritin.textContent).toContain("28 (2026-02-11) · 37 (2026-03-23)");
+    expect(ferritin.textContent).not.toContain("44.4");
+  });
 });

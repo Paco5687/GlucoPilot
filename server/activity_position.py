@@ -1098,4 +1098,5 @@ def report_block(days: int = 90) -> dict[str, Any]:
         "counts": result["counts"],
         "effects": result["effects"],
         "qualifying_effects": result["qualifying_effects"],
+        "walking_response": result["walking_response"],
     }

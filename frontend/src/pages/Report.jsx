@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import EvidenceContextBlock from "@/components/evidence/EvidenceContextBlock";
 import { Loader2, Printer, FileText, RefreshCw, TrendingUp, TrendingDown, Minus, AlertTriangle, ShieldCheck, Beaker, ChevronDown, ChevronRight, ClipboardList } from "lucide-react";
 import {
-  ResponsiveContainer, AreaChart, Area, Line, LineChart, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
+  ResponsiveContainer, AreaChart, Area, Bar, BarChart, Line, LineChart, XAxis, YAxis, Tooltip, ReferenceLine, CartesianGrid,
 } from "recharts";
 
 // Clinical AGP color convention (not brand palette) — this is a medical report.
@@ -44,6 +44,9 @@ const CV_TARGET = 36;
 const LB_PER_KG = 2.20462;
 const SIGNIFICANT_WEIGHT_LOSS_PCT = 5;
 const FINDING_LABS_LISTED = 5;
+const FINDING_MONTHS_LISTED = 6;
+// A1c and GMI further apart than this, in one direction at every draw, is a finding.
+const A1C_GMI_GAP = 0.5;
 const REPORTED_SYMPTOMS = /^\s*reported symptoms?:?\s*/i;
 
 function plural(count, word, suffix = "s") {
@@ -485,6 +488,25 @@ function VerificationBadge({ entry, perRow }) {
   return <span className="ml-1.5 text-[9px] uppercase text-amber-700">{entry.verification.verification_status}</span>;
 }
 
+const EARLIER_RESULTS_SHOWN = 3;
+
+// Earlier dated results of the same test in the latest result's unit,
+// oldest first, without the latest and without repeats of one draw. A result
+// in another unit is usually another specimen (urine, saliva) under the same
+// name, so it stays out of the series.
+function earlierResults(entry) {
+  const unit = String(entry.unit || "").toLowerCase();
+  const seen = new Set([`${entry.date}|${entry.value}`]);
+  const earlier = [];
+  for (const point of entry.history || []) {
+    const key = `${point.parsed_date}|${point.value}`;
+    if (!point.parsed_date || seen.has(key) || String(point.unit || "").toLowerCase() !== unit) continue;
+    seen.add(key);
+    earlier.push(point);
+  }
+  return earlier.slice(-EARLIER_RESULTS_SHOWN).map((point) => `${point.value} (${point.parsed_date})`);
+}
+
 function KeyLabResults({ results, perRow }) {
   if (!results?.length) return null;
   return (
@@ -493,24 +515,37 @@ function KeyLabResults({ results, perRow }) {
         Key results · most recent value
       </div>
       <table className="w-full text-xs">
+        <thead>
+          <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            <th className="px-3 py-0.5 text-left font-medium">Test</th>
+            <th className="px-3 py-0.5 text-right font-medium">Latest</th>
+            <th className="px-3 py-0.5 text-right font-medium">Reference</th>
+            <th className="px-2 py-0.5 text-center font-medium">Flag</th>
+            <th className="px-3 py-0.5 text-right font-medium">Collected</th>
+            <th className="px-3 py-0.5 text-left font-medium">Earlier results</th>
+          </tr>
+        </thead>
         <tbody>
           {results.map((t) => (
-            <tr key={t.test_name} className="border-t border-border">
+            <tr key={t.test_name} className="border-t border-border align-top">
               <td className="px-3 py-1 font-medium">
                 {t.test_name}
                 <VerificationBadge entry={t} perRow={perRow} />
               </td>
-              <td className="px-3 py-1 text-right tabular-nums">
+              <td className="px-3 py-1 text-right tabular-nums whitespace-nowrap">
                 {t.value} <span className="text-muted-foreground">{t.unit}</span>
               </td>
-              <td className="px-3 py-1 text-right text-muted-foreground tabular-nums">
+              <td className="px-3 py-1 text-right text-muted-foreground tabular-nums whitespace-nowrap">
                 {t.reference_low != null || t.reference_high != null ? `ref ${labReference(t)}` : "no reference range"}
               </td>
-              <td className={`px-3 py-1 text-center text-[10px] uppercase font-semibold ${labFlagTone(t.flag)}`}>
+              <td className={`px-2 py-1 text-center text-[10px] uppercase font-semibold ${labFlagTone(t.flag)}`}>
                 {t.flag || "—"}
               </td>
-              <td className="px-3 py-1 text-right text-muted-foreground tabular-nums">
+              <td className="px-3 py-1 text-right text-muted-foreground tabular-nums whitespace-nowrap">
                 {t.date || t.collected_date || "date unknown"}
+              </td>
+              <td className="px-3 py-1 text-[11px] text-muted-foreground tabular-nums">
+                {earlierResults(t).join(" · ") || "—"}
               </td>
             </tr>
           ))}
@@ -595,6 +630,317 @@ function AllLabResults({ categories, perRow }) {
   ));
 }
 
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function monthName(month) {
+  const [year, number] = month.split("-").map(Number);
+  return `${MONTH_NAMES[number - 1]} ${year}`;
+}
+
+// "Mar 2026" for a whole month; "Feb 26–28" or "Oct 1–22" when the data
+// starts or stops partway through it.
+function monthLabel(row) {
+  const [year, number] = row.month.split("-").map(Number);
+  const lastOfMonth = new Date(year, number, 0).getDate();
+  const first = Number(row.first_day.slice(8));
+  const last = Number(row.last_day.slice(8));
+  if (first === 1 && last === lastOfMonth) return monthName(row.month);
+  return `${MONTH_NAMES[number - 1]} ${first}–${last}, ${year}`;
+}
+
+function hourLabel(hour) {
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+
+function TableCard({ title, sub = null, children }) {
+  return (
+    <div className="report-table bg-card rounded-lg border border-border overflow-hidden">
+      <div className="bg-muted/50 px-3 py-1.5">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</p>
+        {sub && <p className="text-[11px] text-muted-foreground">{sub}</p>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function GlucoseByMonth({ months }) {
+  if (!months?.length) return null;
+  const cell = "px-2 py-0.5 text-right tabular-nums";
+  return (
+    <TableCard title="Glucose by month" sub="Dexcom CGM, each calendar month with readings.">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            <th className="px-3 py-0.5 text-left font-medium">Month</th>
+            <th className={`${cell} font-medium`}>Avg</th>
+            <th className={`${cell} font-medium`}>GMI</th>
+            <th className={`${cell} font-medium`}>In range</th>
+            <th className={`${cell} font-medium`}>&lt;70</th>
+            <th className={`${cell} font-medium`}>&lt;54</th>
+            <th className={`${cell} font-medium`}>&gt;180</th>
+            <th className={`${cell} font-medium`}>CV</th>
+            <th className={`${cell} font-medium pr-3`}>Low episodes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {months.map((m) => (
+            <tr key={m.month} className="border-t border-border">
+              <td className="px-3 py-0.5 whitespace-nowrap">{monthLabel(m)}</td>
+              <td className={cell}>{m.avg}</td>
+              <td className={cell}>{fixed(m.gmi)}%</td>
+              <td className={`${cell} ${m.tir >= TIR_TARGET ? "text-green-700" : "text-amber-700"}`}>{fixed(m.tir)}%</td>
+              <td className={`${cell} ${m.tbr70 > TBR70_TARGET ? "text-red-600 font-semibold" : ""}`}>{fixed(m.tbr70)}%</td>
+              <td className={`${cell} ${m.tbr54 > TBR54_TARGET ? "text-red-600 font-semibold" : ""}`}>{fixed(m.tbr54)}%</td>
+              <td className={`${cell} ${m.tar180 > TAR180_TARGET ? "text-amber-700 font-semibold" : ""}`}>{fixed(m.tar180)}%</td>
+              <td className={`${cell} ${m.cv > CV_TARGET ? "text-amber-700" : ""}`}>{fixed(m.cv)}%</td>
+              <td className={`${cell} pr-3`}>{m.low_episodes}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </TableCard>
+  );
+}
+
+const WALK_BANDS = [
+  ["under_120", "120 or below"],
+  ["120_to_170", "121–170"],
+  ["over_170", "Above 170"],
+];
+
+function fixed(value, digits = 1) {
+  return value == null ? "—" : Number(value).toFixed(digits);
+}
+
+function signed(value, digits = 0) {
+  if (value == null) return "—";
+  const text = Math.abs(value).toFixed(digits);
+  return value > 0 ? `+${text}` : value < 0 ? `−${text}` : text;
+}
+
+function LowTiming({ lows, walking }) {
+  const hours = lows?.pct_below_70_by_hour;
+  const bands = WALK_BANDS.filter(([key]) => walking?.bands?.[key]?.walking);
+  if (!hours?.some((value) => value != null) && !bands.length) return null;
+  const data = (hours || []).map((pct, hour) => ({ hour, pct }));
+  const middle = walking?.bands?.["120_to_170"]?.walking;
+  return (
+    <div className="report-card bg-card rounded-lg border border-border p-3 space-y-2">
+      <p className="text-xs font-medium">When lows happen</p>
+      {hours && (
+        <>
+          <p className="text-[11px] text-muted-foreground">Share of readings below 70 mg/dL in each hour of the day.</p>
+          <div className="h-28">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
+                <XAxis dataKey="hour" tickFormatter={hourLabel} tick={{ fontSize: 10 }} interval={2} />
+                <YAxis tickFormatter={(v) => `${v}%`} tick={{ fontSize: 10 }} width={32} />
+                <Tooltip formatter={(v) => [`${v}%`, "below 70"]} labelFormatter={hourLabel} contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+                <Bar dataKey="pct" fill={TIR_COLORS.low} isAnimationActive={false} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+          <ul className="text-xs space-y-0.5">
+            {lows.span && (
+              <li>
+                {lows.span.share_pct}% of readings below 70 fell between {hourLabel(lows.span.start_hour)} and {hourLabel(lows.span.end_hour)}.
+              </li>
+            )}
+            {lows.overnight?.nights > 0 && (
+              <li>
+                Nights with any reading below 70 between {lows.overnight.hours.replace("–", " and ")}: {lows.overnight.nights_with_low} of {lows.overnight.nights}.
+              </li>
+            )}
+          </ul>
+        </>
+      )}
+      {bands.length > 0 && (
+        <div className="space-y-1 pt-1">
+          <p className="text-xs font-medium">After walking ({walking.walks_measured.toLocaleString()} walks of {walking.median_walk_minutes ? `median ${walking.median_walk_minutes} min` : "8+ min"}; Google Health steps)</p>
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                <th className="py-0.5 text-left font-medium">Glucose at start</th>
+                <th className="py-0.5 text-right font-medium">Walks</th>
+                <th className="py-0.5 text-right font-medium">Change at 2 h</th>
+                <th className="py-0.5 text-right font-medium">Lowest within 2 h</th>
+                <th className="py-0.5 text-right font-medium">Reached &lt;70</th>
+                <th className="py-0.5 text-right font-medium">Sitting: change / &lt;70</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bands.map(([key, label]) => {
+                const walk = walking.bands[key].walking;
+                const sit = walking.bands[key].sitting;
+                return (
+                  <tr key={key} className="border-t border-border tabular-nums">
+                    <td className="py-0.5">{label}</td>
+                    <td className="py-0.5 text-right">{walk.n}</td>
+                    <td className="py-0.5 text-right">{signed(walk.delta_120)}</td>
+                    <td className="py-0.5 text-right">{signed(walk.nadir_delta)}</td>
+                    <td className={`py-0.5 text-right ${walk.went_low_pct >= 25 ? "text-red-600 font-semibold" : ""}`}>{walk.went_low_pct}%</td>
+                    <td className="py-0.5 text-right text-muted-foreground">{sit ? `${signed(sit.delta_120)} / ${sit.went_low_pct}%` : "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {middle?.at_stop_delta != null && middle?.after_stop_delta != null && (
+            <p className="text-xs">
+              Walks starting at 121–170: {signed(middle.at_stop_delta)} mg/dL by the end of the walk, then a further {signed(middle.after_stop_delta)} after it ended.
+            </p>
+          )}
+          <p className="text-[11px] text-muted-foreground">
+            Changes are medians in mg/dL from the reading at the start. Sitting comparison: half-hour marks with no walking in the next 2 hours, from the same starting range.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function A1cVsGmi({ rows }) {
+  if (!rows?.length) return null;
+  return (
+    <TableCard title="A1c and CGM-estimated GMI" sub="GMI from the CGM readings in the 90 days before each draw.">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            <th className="px-3 py-0.5 text-left font-medium">A1c drawn</th>
+            <th className="px-3 py-0.5 text-right font-medium">A1c</th>
+            <th className="px-3 py-0.5 text-right font-medium">GMI</th>
+            <th className="px-3 py-0.5 text-right font-medium">A1c − GMI</th>
+            <th className="px-3 py-0.5 text-right font-medium">CGM days</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.date} className="border-t border-border tabular-nums">
+              <td className="px-3 py-0.5">{row.date}</td>
+              <td className="px-3 py-0.5 text-right">{fixed(row.a1c)}%</td>
+              <td className="px-3 py-0.5 text-right">{fixed(row.gmi)}%</td>
+              <td className="px-3 py-0.5 text-right font-semibold">{signed(row.difference, 1)}</td>
+              <td className="px-3 py-0.5 text-right text-muted-foreground">{row.cgm_days}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </TableCard>
+  );
+}
+
+function PumpUse({ pump, insulin }) {
+  if (!pump) return null;
+  const modes = pump.modes;
+  const temp = pump.temp_basals;
+  return (
+    <div className="report-card bg-card rounded-lg border border-border p-3 space-y-2">
+      <p className="text-xs font-medium">How the pump is used</p>
+      {modes && (
+        <>
+          <div>
+            <div className="flex h-4 rounded overflow-hidden border border-border" aria-label="Manual mode share by hour">
+              {modes.manual_share_by_hour.map((share, hour) => (
+                <div
+                  key={hour}
+                  className="flex-1 border-r border-white/60 last:border-r-0"
+                  style={{ background: `rgba(217, 119, 6, ${0.12 + 0.88 * share / 100})` }}
+                  title={`${hourLabel(hour)}: manual ${share}%`}
+                />
+              ))}
+            </div>
+            <div className="flex justify-between text-[10px] text-muted-foreground mt-0.5">
+              <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span>
+            </div>
+          </div>
+          <p className="text-xs">
+            {modes.manual_span
+              ? `Manual mode in most of each hour from ${hourLabel(modes.manual_span.start_hour)} to ${hourLabel(modes.manual_span.end_hour)}; automated mode the rest of the day. `
+              : ""}
+            Over {modes.days_with_mode_records} days: automated {modes.automated_pct}% of logged pump time, manual {modes.manual_pct}%. Darker hours are mostly manual.
+          </p>
+        </>
+      )}
+      <ul className="text-xs space-y-0.5">
+        {temp && (
+          <li>
+            Temporary basal increases: {temp.per_day} per day ({temp.count} in the window), median +{temp.median_increase_pct}%,
+            median recorded length {temp.median_minutes} min.
+          </li>
+        )}
+        {insulin?.boluses_per_day != null && <li>Boluses recorded: {insulin.boluses_per_day} per day.</li>}
+      </ul>
+    </div>
+  );
+}
+
+function InsulinByMonth({ months, units }) {
+  if (!months?.length) return null;
+  const carried = months.some((m) => m.weight_carried);
+  const cell = "px-2 py-0.5 text-right tabular-nums";
+  return (
+    <TableCard title="Insulin by month" sub="Pump-reported daily totals (Omnipod 5 via Glooko), averaged over the days on file.">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            <th className="px-3 py-0.5 text-left font-medium">Month</th>
+            <th className={`${cell} font-medium`}>Days</th>
+            <th className={`${cell} font-medium`}>Total U/day</th>
+            <th className={`${cell} font-medium`}>Basal</th>
+            <th className={`${cell} font-medium`}>Bolus</th>
+            <th className={`${cell} font-medium`}>Weight</th>
+            <th className={`${cell} font-medium pr-3`}>U/kg/day</th>
+          </tr>
+        </thead>
+        <tbody>
+          {months.map((m) => (
+            <tr key={m.month} className="border-t border-border">
+              <td className="px-3 py-0.5 whitespace-nowrap">{monthName(m.month)}</td>
+              <td className={`${cell} text-muted-foreground`}>{m.days}</td>
+              <td className={`${cell} font-semibold`}>{fixed(m.tdd)}</td>
+              <td className={cell}>{fixed(m.basal)}</td>
+              <td className={cell}>{fixed(m.bolus)}</td>
+              <td className={cell}>{m.weight_kg != null ? `${formatWeight(m.weight_kg, units)}${m.weight_carried ? "†" : ""}` : "—"}</td>
+              <td className={`${cell} pr-3`}>{fixed(m.units_per_kg, 2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {carried && <p className="px-3 py-1 text-[10px] text-muted-foreground">† No weight logged that month; the latest earlier weight is used.</p>}
+    </TableCard>
+  );
+}
+
+function ImagingSection({ studies }) {
+  if (!studies?.length) return null;
+  return (
+    <div className="space-y-2">
+      <SectionTitle sub="Summaries machine-extracted from the uploaded reports.">Imaging</SectionTitle>
+      {studies.map((study) => (
+        <div key={study.id} className="report-card bg-card rounded-lg border border-border p-3 space-y-1">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <p className="text-sm font-semibold">{study.title}</p>
+            <span className="text-xs text-muted-foreground tabular-nums">{study.date || "date unknown"}</span>
+          </div>
+          {study.summary && <p className="text-xs leading-relaxed">{study.summary}</p>}
+          {study.measurements?.length > 0 && (
+            <ul className="text-xs flex flex-wrap gap-x-4 gap-y-0.5">
+              {study.measurements.map((m) => (
+                <li key={m.name}>
+                  {m.name}: <b>{m.value}{m.unit ? ` ${m.unit}` : ""}</b>
+                  {m.flag && m.flag !== "normal" && <span className="ml-1 text-[10px] uppercase font-semibold text-red-600">{m.flag}</span>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // Facts that need the clinician's attention, computed from the report data.
 function summaryFindings(report) {
   const findings = [];
@@ -610,11 +956,22 @@ function summaryFindings(report) {
   }
   if (g.tbr70 > TBR70_TARGET || g.tbr54 > TBR54_TARGET) {
     const lows = g.low_episodes;
+    const recentMonths = (report.trends?.glucose_by_month || []).slice(-FINDING_MONTHS_LISTED);
     findings.push({
       tone: "red",
       label: "Hypoglycemia",
       text: `Time below range exceeds the consensus target: ${g.tbr70}% of readings below 70 mg/dL (target <${TBR70_TARGET}%), ${g.tbr54}% below 54 mg/dL (target <${TBR54_TARGET}%).`
-        + (lows?.episodes ? ` ${plural(lows.episodes, "low episode")} of 15+ minutes (${lows.per_week}/week), ${lows.nocturnal_episodes} overnight (00:00–06:00), ${lows.level2_episodes} reaching below 54 mg/dL.` : ""),
+        + (lows?.episodes ? ` ${plural(lows.episodes, "low episode")} of 15+ minutes (${lows.per_week}/week), ${lows.nocturnal_episodes} overnight (00:00–06:00), ${lows.level2_episodes} reaching below 54 mg/dL.` : "")
+        + (recentMonths.length > 1 ? ` Below 70 by month: ${recentMonths.map((m) => `${MONTH_NAMES[Number(m.month.slice(5)) - 1]} ${m.tbr70}%`).join(", ")}.` : ""),
+    });
+  }
+  const a1c = report.trends?.a1c_vs_gmi || [];
+  const direction = a1c.every((row) => row.difference <= -A1C_GMI_GAP) ? "lower" : a1c.every((row) => row.difference >= A1C_GMI_GAP) ? "higher" : null;
+  if (a1c.length > 1 && direction) {
+    findings.push({
+      tone: "amber",
+      label: "A1c vs GMI",
+      text: `A1c is ${direction} than the CGM-estimated GMI at every draw: ${a1c.map((row) => `${row.a1c}% vs ${row.gmi}% (${row.date})`).join("; ")}.`,
     });
   }
   if (g.tar180 > TAR180_TARGET || g.tar250 > TAR250_TARGET) {
@@ -1253,6 +1610,9 @@ export default function Report() {
           <p className="text-[11px] text-muted-foreground mb-2">Median (line) with 25–75% and 5–95% bands by time of day. Green dashes mark the 70–180 target.</p>
           <AGPChart agp={g.agp} />
         </div>
+        <GlucoseByMonth months={report.trends?.glucose_by_month} />
+        <LowTiming lows={report.trends?.lows_by_hour} walking={ap?.walking_response} />
+        <A1cVsGmi rows={report.trends?.a1c_vs_gmi} />
         <FingerstickReconciliation g={g} />
       </div>
 
@@ -1283,6 +1643,8 @@ export default function Report() {
             {i.scheduled_avg_daily_basal != null && <Metric label="Programmed basal schedule" value={`${i.scheduled_avg_daily_basal}`} sub="units/day · pump settings, not delivered amount" />}
             {i.carbs_representative !== false && <Metric label="Carbs logged" value={`${i.avg_daily_carbs}`} sub="g/day · logged entries only" />}
           </div>
+          <PumpUse pump={report.trends?.pump_use} insulin={i} />
+          <InsulinByMonth months={report.trends?.insulin_by_month} units={report.weight?.units} />
           <div className="space-y-1 text-[11px] text-muted-foreground">
             {i.bolus_stream_incomplete && (
               <p className="text-amber-800">
@@ -1466,6 +1828,8 @@ export default function Report() {
           </OptionalSection>
         </div>
       )}
+
+      <ImagingSection studies={report.imaging} />
 
       {hasAnalyses && (
         <OptionalSection

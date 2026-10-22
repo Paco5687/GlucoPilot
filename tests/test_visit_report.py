@@ -257,6 +257,18 @@ def test_only_out_of_range_results_are_flagged_newest_first(report_db):
     assert (anion["value"], anion["count"], anion["reported_names"]) == (17, 2, ["Anion Gap"])
 
 
+def test_imaging_measurements_stay_out_of_the_lab_tables(report_db):
+    _lab("Spleen length", 12.5, "2026-06-30", unit="cm", reference_high=12, category="Imaging - CT Abdomen/Pelvis")
+    _lab("Free T3", 2.4, "2026-06-23", unit="pg/mL", reference_low=2.8, reference_high=3.5)
+
+    labs = report._labs()
+
+    names = [entry["test_name"] for entries in labs["categories"].values() for entry in entries]
+    assert names == ["Free T3"]
+    assert [entry["test_name"] for entry in labs["flagged"]] == ["Free T3"]
+    assert [entry["test_name"] for entry in labs["key_results"]] == ["Free T3"]
+
+
 def test_glucose_counts_low_episodes(report_db):
     start = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=2)
     readings = []

@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from .analytics_confidence import phase_provenance
 from .auth import require_login
+from . import report_trends
 from .canonical_time import temporal_metadata
 from .clinician_briefs import low_episodes
 from .clinical_evidence import build_context as build_clinical_evidence
@@ -606,7 +607,8 @@ def _lab_date(value: Any) -> date | None:
 
 # Core labs for the key-results panel, in display order.
 KEY_LABS = (
-    "Hemoglobin A1c", "TSH", "Free T4", "TPO antibodies", "Cortisol (AM)", "Prolactin",
+    "Hemoglobin A1c", "TSH", "Free T4", "Free T3", "TPO antibodies", "Thyroglobulin antibodies",
+    "Cortisol (AM)", "ACTH", "Prolactin",
     "FSH", "LH", "Estradiol", "Glucose", "C-peptide", "Creatinine", "eGFR",
     "Urine albumin/creatinine ratio", "LDL cholesterol", "Vitamin D, 25-OH", "Ferritin", "Hemoglobin",
     "Sodium", "Potassium",
@@ -667,7 +669,9 @@ def _labs() -> dict[str, Any]:
     reported_names: dict[str, set[str]] = {}
     qualification_counts = {"approved": 0, "edited": 0, "unverified": 0, "rejected": 0, "invalid": 0}
     for r in rows:
-        if r.get("value") is None or not r.get("test_name"):
+        # Imaging measurements (spleen length, cyst size) are listed with
+        # their study under Imaging, not as lab results.
+        if r.get("value") is None or not r.get("test_name") or report_trends.is_imaging_category(r.get("category")):
             continue
         quality = lab_qualification(r)
         verification = quality["verification_status"]
@@ -897,6 +901,11 @@ def _narrative_metrics(payload: dict) -> dict[str, Any]:
         if weight.get("available") else None,
         "glucose": {
             **{k: g.get(k) for k in ("avg", "gmi", "cv", "tir", "tbr70", "tbr54", "tar180", "tar250", "days", "low_episodes")},
+            # The latest months, so the summary can state the direction of change.
+            "by_month": [
+                {key: month[key] for key in ("month", "tir", "tbr70", "tbr54", "tar180")}
+                for month in ((payload.get("trends") or {}).get("glucose_by_month") or [])[-5:]
+            ] or None,
             "consensus_targets_pct": {"tbr70_below": TBR70_TARGET_PCT, "tbr54_below": TBR54_TARGET_PCT, "tir_above": 70},
             "fingerstick_reconciliation": {
                 key: fingersticks.get(key)
@@ -1145,6 +1154,56 @@ class ReportBody(BaseModel):
     days: int = 90
 
 
+def _a1c_points(labs: dict[str, Any]) -> list[dict[str, Any]]:
+    """Dated A1c results, from the merged lab entry's history."""
+    entry = next(
+        (entry for entries in labs.get("categories", {}).values() for entry in entries
+         if entry["test_name"] == "Hemoglobin A1c"),
+        None,
+    )
+    points = []
+    for point in (entry or {}).get("history") or []:
+        try:
+            value = float(point.get("value"))
+        except (TypeError, ValueError):
+            continue
+        if point.get("parsed_date") and math.isfinite(value):
+            points.append({"date": point["parsed_date"], "value": value})
+    return points
+
+
+def _history(tz: ZoneInfo, since: datetime, days: int, weight: dict[str, Any], labs: dict[str, Any]) -> dict[str, Any]:
+    """Month-by-month glucose and insulin over the past year, plus when lows
+    fall and how the pump is used within the report window."""
+    now = datetime.now(timezone.utc)
+    first_month = datetime.combine(report_trends.history_start(now.astimezone(tz).date()), datetime.min.time(), tz)
+    start = min(first_month.astimezone(timezone.utc), since)
+    start_iso = start.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    points = cgm_points(_paged("GlucoseReading", start_iso), tz, start=start, end=now)
+    treatments = _paged("Treatment", start_iso)
+    window_points = [point for point in points if point[0] >= since]
+    window_treatments = [row for row in treatments if str(row.get("timestamp") or "") >= since.isoformat()[:19]]
+    year_points = [point for point in points if point[0] >= first_month]
+    reconciled = reconcile_treatments(
+        [row for row in treatments if str(row.get("timestamp") or "") >= first_month.astimezone(timezone.utc).isoformat()[:19]],
+        tz,
+    )["days"]
+    return {
+        "glucose_by_month": report_trends.glucose_by_month(year_points, tz),
+        "insulin_by_month": report_trends.insulin_by_month(reconciled, (weight or {}).get("series") or []),
+        "a1c_vs_gmi": report_trends.a1c_vs_gmi(_a1c_points(labs), points, tz),
+        "lows_by_hour": report_trends.lows_by_hour(window_points, tz),
+        "pump_use": report_trends.pump_use(window_treatments, tz, days),
+    }
+
+
+def _imaging() -> list[dict[str, Any]]:
+    repositories = get_repositories()
+    records = repositories.entity("MedicalRecord").query({"owner_email": OWNER_EMAIL}, "-created_date", 1000)
+    labs = repositories.labs.query({"owner_email": OWNER_EMAIL}, "collected_date", 5000)
+    return report_trends.imaging_studies(records, labs)
+
+
 def _demo_narrative_allowed(payload: dict[str, Any]) -> bool:
     return bool(
         payload["glucose"].get("quality", {}).get("ai_eligible")
@@ -1186,6 +1245,7 @@ async def visit_report(body: ReportBody):
     cycle = _cycle(tz, since_iso, glucose)
     wellness = _wellness(days)
     labs = _labs()
+    weight = _weight(since.astimezone(tz).date())
 
     from . import (
         care_notes,
@@ -1220,7 +1280,9 @@ async def visit_report(body: ReportBody):
         "start_date": since_iso[:10],
         "end_date": datetime.now(timezone.utc).date().isoformat(),
         "patient": _patient(),
-        "weight": _weight(since.astimezone(tz).date()),
+        "weight": weight,
+        "trends": _history(tz, since, glucose.get("days") or days, weight, labs),
+        "imaging": _imaging(),
         "glucose": glucose,
         "insulin": insulin,
         "pump_settings": pump_settings.report_block(),
