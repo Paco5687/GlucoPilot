@@ -200,7 +200,7 @@ describe("ClinicianBrief", () => {
       evidence_strength: { status: "observed" },
       concern: { kind: "reported_symptoms", reason: `Reported symptoms: ${title} (2026-07-02). ${text}` },
     });
-    const bedtime = symptom("bedtime", "Synthetic bedtime text.");
+    const bedtime = symptom("bedtime", "Glucose rises after 9 pm for 2.5 hours. Synthetic bedtime detail.");
     const appetite = symptom("appetite", "Synthetic appetite text.");
     const recorded = [bedtime, appetite].map(({ concern: _concern, ...entry }) => entry);
     fetch.mockImplementation(async (url) => (String(url) === "/api/clinical-reviews"
@@ -212,11 +212,12 @@ describe("ClinicianBrief", () => {
     render(<ClinicianBrief />);
 
     const concerns = (await screen.findByRole("heading", { name: "Concerns" })).closest("section");
-    expect(within(concerns).getByText("Bedtime · Appetite")).toBeTruthy();
-    expect(within(concerns).queryByText(/Synthetic bedtime text/)).toBeNull();
+    const rows = within(concerns).getAllByRole("listitem").map((row) => row.textContent);
+    expect(rows).toEqual(["Bedtime: Glucose rises after 9 pm for 2.5 hours.", "Appetite: Synthetic appetite text."]);
+    expect(within(concerns).queryByText(/Synthetic bedtime detail/)).toBeNull();
     const history = screen.getByRole("heading", { name: "Symptoms & history" }).closest("section");
     expect(within(history).getByText("Bedtime")).toBeTruthy();
-    expect(within(history).getByText("Synthetic bedtime text.")).toBeTruthy();
+    expect(within(history).getByText("Glucose rises after 9 pm for 2.5 hours. Synthetic bedtime detail.")).toBeTruthy();
     expect(within(history).queryByText("note")).toBeNull();
   });
 
