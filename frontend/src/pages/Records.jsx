@@ -154,14 +154,20 @@ export default function Records() {
                   {rec.status === "failed" && (
                     <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">failed</span>
                   )}
+                  {rec.status === "needs_review" && (
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">needs review</span>
+                  )}
                 </div>
                 {rec.summary && <p className="text-sm text-muted-foreground mt-1 leading-relaxed">{rec.summary}</p>}
+                {rec.status === "needs_review" && rec.error && (
+                  <p className="text-xs text-amber-700 mt-1">{rec.error}</p>
+                )}
                 {rec.lab_count != null && (
                   <p className="text-xs text-muted-foreground mt-1">{rec.lab_count} lab results extracted</p>
                 )}
               </div>
               <div className="flex items-center gap-1 flex-shrink-0">
-                {rec.status === "processed" && (
+                {(rec.status === "processed" || rec.status === "needs_review") && (
                   <MedicalRecordReview record={rec} isAdmin={isAdmin} onChanged={load} />
                 )}
                 {isAdmin && (
