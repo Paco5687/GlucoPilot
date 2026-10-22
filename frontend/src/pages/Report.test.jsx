@@ -463,8 +463,8 @@ describe("visit report summary page", () => {
     history: {
       narrative: null,
       events: [
-        { date: "2026-04-20", type: "note", title: "Reported symptoms: bedtime", details: "Synthetic bedtime text." },
-        { date: "2026-04-20", type: "note", title: "Reported symptoms: appetite", details: "Synthetic appetite text." },
+        { date: "2026-04-20", type: "note", title: "Reported symptoms: bedtime", details: "Glucose rises after 9 pm for 2.5 hours. Synthetic second sentence." },
+        { date: "2026-04-20", type: "note", title: "Reported symptoms: appetite", details: "No hunger cues. Synthetic appetite detail." },
         { date: "2026-01-15", type: "prescription", title: "Synthetic single injection", details: "One dose." },
       ],
     },
@@ -508,7 +508,10 @@ describe("visit report summary page", () => {
     expect(findings.textContent).toContain("233 low episodes of 15+ minutes (17.9/week), 7 overnight (00:00–06:00), 51 reaching below 54 mg/dL");
     expect(findings.textContent).toContain("2 results outside the reference range at the latest draw");
     expect(findings.textContent).toContain("Synthetic antibody 212 IU/mL (high, 2026-04-24)");
-    expect(findings.textContent).toContain("Recorded 2026-04-20: bedtime; appetite.");
+    expect(findings.textContent).toContain("Reported symptoms. Recorded 2026-04-20.");
+    expect(findings.textContent).toContain("Bedtime: Glucose rises after 9 pm for 2.5 hours.");
+    expect(findings.textContent).toContain("Appetite: No hunger cues.");
+    expect(findings.textContent).not.toContain("Synthetic second sentence.");
   });
 
   it("prints patient-reported symptoms by title without the record prefix", async () => {
@@ -516,7 +519,7 @@ describe("visit report summary page", () => {
 
     expect(await screen.findByText("Patient-reported symptoms")).toBeTruthy();
     expect(screen.getByText("Bedtime")).toBeTruthy();
-    expect(screen.getByText("Synthetic bedtime text.")).toBeTruthy();
+    expect(screen.getByText("Glucose rises after 9 pm for 2.5 hours. Synthetic second sentence.")).toBeTruthy();
     expect(screen.getByText("Synthetic single injection")).toBeTruthy();
   });
 

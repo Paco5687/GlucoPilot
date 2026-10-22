@@ -651,10 +651,13 @@ function summaryFindings(report) {
   const symptoms = (report.history?.events || []).filter((event) => REPORTED_SYMPTOMS.test(event.title || ""));
   if (symptoms.length) {
     const dates = [...new Set(symptoms.map((event) => event.date).filter(Boolean))];
+    // A topic ("Teeth") says nothing on its own; each entry's opening
+    // sentence states the symptom in the patient's words.
     findings.push({
       tone: "amber",
       label: "Reported symptoms",
-      text: `${dates.length ? `Recorded ${dates.join(", ")}: ` : ""}${symptoms.map((event) => event.title.replace(REPORTED_SYMPTOMS, "")).join("; ")}.`,
+      text: dates.length ? `Recorded ${dates.join(", ")}.` : "",
+      items: symptoms.map((event) => ({ topic: symptomTitle(event.title), text: firstSentence(event.details) })),
     });
   }
   const effort = report.management_burden;
@@ -679,7 +682,16 @@ function Findings({ findings }) {
       {findings.map((finding) => (
         <li key={finding.label} className="flex gap-2">
           <span className={`mt-1.5 inline-block w-2 h-2 shrink-0 rounded-full ${finding.tone === "red" ? "bg-red-600" : "bg-amber-500"}`} />
-          <span><b>{finding.label}.</b> {finding.text}</span>
+          <div className="min-w-0">
+            <span><b>{finding.label}.</b> {finding.text}</span>
+            {finding.items?.length > 0 && (
+              <ul className="mt-1 columns-1 md:columns-2 print:columns-2 gap-5 text-xs leading-snug">
+                {finding.items.map((item) => (
+                  <li key={item.topic} className="break-inside-avoid mb-0.5"><span className="font-semibold">{item.topic}:</span> {item.text}</li>
+                ))}
+              </ul>
+            )}
+          </div>
         </li>
       ))}
     </ul>
@@ -739,6 +751,11 @@ function ClinicalRecord({ report }) {
       </RecordColumn>
     </div>
   );
+}
+
+// Sentences end at punctuation followed by a space, so "8.5" stays whole.
+function firstSentence(text) {
+  return String(text || "").trim().split(/(?<=[.!?])\s+/)[0];
 }
 
 function symptomTitle(title) {

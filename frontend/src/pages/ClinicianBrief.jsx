@@ -65,10 +65,18 @@ function plainLabel(label = "") {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+// Sentences end at punctuation followed by a space, so "90.7%" stays whole.
+function sentences(text) {
+  return String(text || "").trim().split(/(?<=[.!?])\s+/);
+}
+
+function firstSentence(text) {
+  return sentences(text)[0];
+}
+
 function factualDetail(text) {
   if (!text) return "";
-  // Sentences end at punctuation followed by a space, so "90.7%" stays whole.
-  return String(text).split(/(?<=[.!?])\s+/)
+  return sentences(text)
     .map((sentence) => sentence.trim())
     .filter((sentence) => sentence && !BOILERPLATE.test(sentence))
     .join(" ");
@@ -172,15 +180,22 @@ function Concerns({ items = [], onReview }) {
   const symptoms = items.filter((item) => item.concern?.kind === "reported_symptoms");
   const others = items.filter((item) => item.concern?.kind !== "reported_symptoms");
   const dates = [...new Set(symptoms.map((item) => item.display?.date).filter(Boolean))];
+  // Each symptom's topic with the opening sentence of the patient's own
+  // account; a logged symptom without text gives its severity.
   const symptomRow = symptoms.length > 0 && (
     <div key="reported-symptoms" className="report-section border-t border-border first:border-t-0 py-2 text-xs">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <span className="flex flex-wrap items-baseline gap-2">
-          <span className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-red-800">{CONCERN_LABELS.reported_symptoms}</span>
-          <b className="text-sm">{symptoms.map((item) => plainLabel(item.display?.label || item.title)).join(" · ")}</b>
-        </span>
+        <span className="rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-red-800">{CONCERN_LABELS.reported_symptoms}</span>
         {dates.length > 0 && <span className="text-muted-foreground tabular-nums">{dates.join(", ")}</span>}
       </div>
+      <ul className="mt-1 columns-1 md:columns-2 print:columns-2 gap-5 leading-snug">
+        {symptoms.map((item) => (
+          <li key={item.id} className="break-inside-avoid mb-0.5">
+            <span className="font-semibold">{plainLabel(item.display?.label || item.title)}:</span>{" "}
+            {item.display?.detail ? firstSentence(item.display.detail) : item.data?.severity || ""}
+          </li>
+        ))}
+      </ul>
     </div>
   );
   // Ranked order holds: symptoms take the place of the first symptom concern.
