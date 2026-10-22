@@ -183,6 +183,27 @@ describe("Insulin page", () => {
     expect(screen.getByText(/23 mg\/dL\/U · n=4/i)).toBeTruthy();
   });
 
+  it("flags suspect undercount days and their exclusion in the method details", async () => {
+    apiMocks.invoke.mockImplementation(async (_name, body) => {
+      const response = await invokeImplementation(_name, body);
+      if (body.action === "resistance") {
+        response.data.reconciliation = {
+          suspect_undercount_days: 3,
+          suspect_undercount_dates: ["2026-08-09", "2026-08-10", "2026-08-11"],
+        };
+      }
+      return response;
+    });
+
+    const { container } = render(<Insulin />);
+    await screen.findByText("How much you use");
+
+    const details = container.querySelector("details");
+    expect(details.textContent).toMatch(/3 days reported a daily total below what the programmed basal schedule alone would deliver/i);
+    expect(details.textContent).toMatch(/suspect undercounts/i);
+    expect(details.textContent).toMatch(/left out of the averages and trend/i);
+  });
+
   it("keeps measured response visible when complete TDD is unavailable", async () => {
     apiMocks.invoke.mockImplementation(async (_name, body) => {
       if (body.action === "resistance") {
