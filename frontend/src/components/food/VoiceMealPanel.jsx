@@ -23,11 +23,28 @@ export function mealTotals(items) {
 }
 
 export function itemsForLog(items) {
-  return items.map((i) => ({ name: i.name, portion: i.portion || null, preset_id: i.preset_id || null, servings: i.servings ?? null, ...Object.fromEntries(MEAL_MACROS.map(([k]) => [k, num(i[k])])) }));
+  return items.map((i) => ({
+    name: i.name, portion: i.portion || null, preset_id: i.preset_id || null, servings: i.servings ?? null,
+    source: i.source || null, fdc_id: i.fdc_id ?? null, fdc_name: i.fdc_name || null, grams: i.grams ?? null,
+    ...Object.fromEntries(MEAL_MACROS.map(([k]) => [k, num(i[k])])),
+  }));
+}
+
+// Where a food's numbers came from: the USDA table (with the entry and grams
+// it was scaled to), a saved food, the model's own estimate, or the person.
+function SourceNote({ item }) {
+  if (item.source === "usda") {
+    return <div className="text-[10px] text-muted-foreground"><b className="font-semibold text-primary">USDA</b> · {item.fdc_name}{item.grams ? ` · ${Math.round(item.grams)} g` : ""}</div>;
+  }
+  if (item.source === "preset") return <div className="text-[10px] text-muted-foreground">Saved food</div>;
+  if (item.source === "estimate") return <div className="text-[10px] text-amber-700">Model estimate — not table-backed, check it</div>;
+  if (item.source === "edited") return <div className="text-[10px] text-muted-foreground">Edited</div>;
+  return null;
 }
 
 // Confirm step for a described meal: what was heard (editable, re-estimable),
-// one editable row per food, and the totals that get logged.
+// one editable row per food with where its numbers came from, and the totals
+// that get logged.
 export default function VoiceMealPanel({ meal, setMeal, when, setWhen, busy, onEstimate, onLog, onCancel }) {
   const items = meal.items;
   const totals = mealTotals(items);
@@ -35,12 +52,14 @@ export default function VoiceMealPanel({ meal, setMeal, when, setWhen, busy, onE
   // The words were changed after estimating: the foods below no longer match them.
   const stale = items.length > 0 && squash(meal.transcript) !== squash(meal.estimatedFrom);
   const setItem = (idx, patch) => setMeal({ ...meal, items: items.map((it, i) => (i === idx ? { ...it, ...patch } : it)) });
+  // Changing an amount or a number makes the row the person's own.
+  const editItem = (idx, patch) => setItem(idx, { ...patch, source: "edited" });
   const removeItem = (idx) => setMeal({ ...meal, items: items.filter((_, i) => i !== idx) });
 
   return (
     <div className="rounded-lg border border-border p-3 space-y-2 bg-muted/20">
       <div className="flex items-center justify-between">
-        <div className="text-xs font-medium">{items.length ? "From what you said — estimates, check the numbers" : "What did you eat?"}</div>
+        <div className="text-xs font-medium">{items.length ? "From what you said — check the portions and numbers" : "What did you eat?"}</div>
         <button type="button" onClick={onCancel} aria-label="cancel"><X className="w-4 h-4" /></button>
       </div>
       <form className="flex flex-col sm:flex-row gap-2" onSubmit={(e) => { e.preventDefault(); if (canEstimate) onEstimate(); }}>
@@ -56,14 +75,15 @@ export default function VoiceMealPanel({ meal, setMeal, when, setWhen, busy, onE
           <div className="flex items-center gap-2">
             {item.preset_id && <Star className="w-3 h-3 text-primary shrink-0" aria-label="saved food" />}
             <Input value={item.name} onChange={(e) => setItem(idx, { name: e.target.value })} aria-label={`food ${idx + 1} name`} className="h-8 flex-[3] min-w-0" />
-            <Input value={item.portion || ""} placeholder="portion" onChange={(e) => setItem(idx, { portion: e.target.value })} aria-label={`food ${idx + 1} portion`} className="h-8 flex-[2] min-w-0" />
+            <Input value={item.portion || ""} placeholder="portion" onChange={(e) => editItem(idx, { portion: e.target.value })} aria-label={`food ${idx + 1} portion`} className="h-8 flex-[2] min-w-0" />
             <button type="button" onClick={() => removeItem(idx)} aria-label={`remove ${item.name}`}><X className="w-3 h-3 text-muted-foreground" /></button>
           </div>
+          <SourceNote item={item} />
           <div className="grid grid-cols-3 sm:grid-cols-6 gap-1">
             {MEAL_MACROS.map(([k, label]) => (
               <label key={k} className="text-[10px] text-muted-foreground">
                 {label}
-                <Input type="number" inputMode="decimal" min="0" value={item[k] ?? ""} onChange={(e) => setItem(idx, { [k]: e.target.value })} aria-label={`${label} for ${item.name}`} className={`h-8 px-2 ${k === "carbs" ? "border-primary" : ""}`} />
+                <Input type="number" inputMode="decimal" min="0" value={item[k] ?? ""} onChange={(e) => editItem(idx, { [k]: e.target.value })} aria-label={`${label} for ${item.name}`} className={`h-8 px-2 ${k === "carbs" ? "border-primary" : ""}`} />
               </label>
             ))}
           </div>
@@ -78,7 +98,7 @@ export default function VoiceMealPanel({ meal, setMeal, when, setWhen, busy, onE
             {totals.protein != null && <> · {totals.protein} g protein</>}
             {totals.fat != null && <> · {totals.fat} g fat</>}
             {totals.calories != null && <> · {Math.round(totals.calories)} kcal</>}
-            {meal.confidence != null && meal.confidence < 0.5 && <div className="text-muted-foreground">Rough estimate — change anything you know better.</div>}
+            {meal.confidence != null && meal.confidence < 0.5 && items.some((i) => i.source === "estimate") && <div className="text-muted-foreground">Rough estimate — change anything you know better.</div>}
           </div>
           {stale && (
             <div role="alert" className="rounded-md border border-amber-500/50 bg-amber-500/10 p-2 text-xs space-y-1">

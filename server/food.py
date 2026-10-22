@@ -9,9 +9,12 @@ machine; no health data is involved, and the lookup can be switched off in
 Settings. Label photos go to the configured vision model exactly as lab
 reports do — with a local model they never leave the machine. Voice logs are
 transcribed on this machine (``speech.py``); the words then go to the
-configured text model for a per-food estimate, preferring the exact numbers of
-any saved preset the person names. What glucose did after each logged meal is
-measured read-only by ``meal_response.py``.
+configured text model, which splits them into foods and amounts. Each food's
+numbers come, in order of preference, from a saved preset the person named,
+from the bundled USDA table (``nutrition.py``, searched on this machine, with
+the model choosing among the closest entries), or from the model's own
+estimate — and each food says which. What glucose did after each logged meal
+is measured read-only by ``meal_response.py``.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
-from . import db, meal_response, speech
+from . import db, meal_response, nutrition, speech
 from .activity_position import SqliteActivityPositionRepository, resolve_intervals
 from .config import APP_TIMEZONE, OWNER_EMAIL
 from .data_contracts import DEPLOYMENT_OWNER_ID
@@ -42,6 +45,8 @@ RECENT_LIMIT = 30
 MEAL_ITEM_LIMIT = 12
 PRESET_HINT_LIMIT = 8
 TRANSCRIPT_LIMIT = 500
+USDA_CHOICE_LIMIT = 8
+ITEM_SOURCES = ("usda", "preset", "estimate", "edited")
 
 NUTRITION_SCHEMA = {
     "type": "object",
@@ -110,19 +115,50 @@ What they said: "{said}"
 Their local time now: {now}
 {known}
 List each food they ate. For each one give:
-- name: a short food name, e.g. "Gluten-free bread"
-- portion: the amount eaten, e.g. "2 slices", "1 bag (28 g)", "1 cup"
+- name: a short, plain food name as a nutrition table would list it, e.g. "Gluten-free bread", "Blueberry muffin". Include a brand only if they said one.
+- portion: the amount of that food alone, in household units, as they said it, e.g. "2 slices", "1 bag", "1 cup", "1 medium", "1 bowl", "3 oz"
 - carbs, fiber, sugars, protein, fat in grams and calories, all for that portion
 
 Rules:
 - When no amount is given, assume one typical serving. Use typical US nutrition values.
-- Split a mixed dish into its main parts when they carry different carbs (a sandwich is bread + filling + cheese + spread). Keep a packaged food or a single prepared dish as one item.
+- A dish that is cooked or served together is ONE item with one portion, named as the dish: "Penne with marinara", "Chicken fried rice", "Beef stew", "Lasagna". Never list its sauce, noodles or rice as separate items.
+- Only these are split: a sandwich they describe by its parts into bread (as "2 slices") + filling + cheese + spread, and a plate of separate foods (steak, potato, broccoli) into those foods. A sandwich or burger named on its own ("a cheeseburger", "a BLT") is one item.
+- Keep a packaged food as one item.
 - If a food is one of their saved foods listed above, set preset_id to that id and servings to how many servings they ate. Otherwise preset_id and servings are null.
 - Always estimate carbs, even when unsure. Never return null for carbs.
 - title: a short name for the whole meal, e.g. "Chicken sandwich on GF bread".
 - If they said a clock time ("at 8", "at noon"), set eaten_at to it as 24-hour "HH:MM" (use their local time to tell morning from evening). If they said a relative time ("an hour ago"), set minutes_ago. Otherwise both are null.
 - confidence: 0 to 1, how close you think the carb total is.
 - If what they said is not about food or drink, return an empty items list.
+"""
+
+MATCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "matches": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"food": {"type": "string"}, "usda": {"type": "string"}},
+                "required": ["food", "usda"],
+            },
+        },
+    },
+    "required": ["matches"],
+}
+
+MATCH_PROMPT = """You are matching the foods in someone's meal to entries in the USDA nutrition table, so their carb count uses measured values.
+
+What they said: "{said}"
+
+{foods}
+For each food, copy the one USDA entry that is that same food, exactly as written above. Rules:
+- It must be the same dish in the same form: a pasta dish is not a pasta sauce, a cooked food is not its dry mix, a drink is not a cocktail made with it.
+- It must be that food by itself, not a sandwich, meal or snack that contains it.
+- When several entries fit, choose the plainest, most generic one. NFS means "not further specified": the general version.
+- A different brand or recipe of the same food is fine.
+- If no entry is that food, answer "none".
+Return one match per food, in the order given: food is the food's name as given, usda is the copied entry or "none".
 """
 
 # Words that say nothing about which food was meant, ignored when matching
@@ -450,6 +486,13 @@ def _clean_item(raw: Any) -> dict[str, Any] | None:
     for m in MACROS:
         value = _num(raw.get(m))
         item[m] = round(max(value, 0.0), 1) if value is not None else None
+    # Where the numbers came from, kept with the logged meal.
+    item["source"] = raw.get("source") if raw.get("source") in ITEM_SOURCES else None
+    fdc_id = _num(raw.get("fdc_id"))
+    item["fdc_id"] = int(fdc_id) if fdc_id and fdc_id > 0 else None
+    item["fdc_name"] = (str(raw.get("fdc_name") or "").strip()[:160] or None) if item["fdc_id"] else None
+    grams = _num(raw.get("grams"))
+    item["grams"] = round(grams, 1) if grams and grams > 0 else None
     return item
 
 
@@ -459,7 +502,73 @@ def _apply_preset(item: dict[str, Any], preset: dict[str, Any], servings: Any) -
     label = preset.get("serving_label") or "serving"
     values = {m: (round(_num(preset.get(m)) * count, 1) if _num(preset.get(m)) is not None else None) for m in MACROS}
     return {**item, "name": preset["name"], "portion": label if count == 1 else f"{count:g} × {label}",
-            "preset_id": preset["id"], "servings": count, **values}
+            "preset_id": preset["id"], "servings": count, **values,
+            "source": "preset", "fdc_id": None, "fdc_name": None, "grams": None}
+
+
+def _usda_choices_prompt(said: str, offered: list[tuple[dict[str, Any], list[nutrition.Match]]]) -> str:
+    blocks = []
+    for item, matches in offered:
+        lines = [f'Food: "{item["name"]}"' + (f' ({item["portion"]})' if item["portion"] else "")]
+        lines += [f"  - {m.food.name}" + (f" (also: {'; '.join(m.also)})" if m.also else "") for m in matches]
+        blocks.append("\n".join(lines))
+    return MATCH_PROMPT.format(said=said.replace('"', "'"), foods="\n\n".join(blocks) + "\n")
+
+
+def _copied_entry(text: Any, matches: list[nutrition.Match]) -> nutrition.Food | None:
+    """The candidate the model copied, tolerating case, spacing and a dropped
+    "(also: ...)" note. Anything else, including "none", is no match."""
+    def norm(value: Any) -> str:
+        return " ".join(re.sub(r"\(also:.*", "", str(value or "")).lower().split()).strip(" .")
+    wanted = norm(text)
+    return next((m.food for m in matches if norm(m.food.name) == wanted), None) if wanted else None
+
+
+async def _choose_usda_foods(said: str, items: list[dict[str, Any]]) -> list[nutrition.Food | None]:
+    """For each food, the USDA entry it is, or None. The closest entries by
+    wording are found on this machine. A food said by its USDA name takes that
+    entry; for the rest the model, which can tell a pasta dish from a pasta
+    sauce, picks among them. If it can't be asked, a food is matched only when
+    one entry alone carries its whole name."""
+    chosen: list[nutrition.Food | None] = [None] * len(items)
+    asked = []
+    for n, item in enumerate(items):
+        matches = nutrition.candidates(item["name"], USDA_CHOICE_LIMIT, item["portion"] or "")
+        named = nutrition.named_match(item["name"], matches)
+        if named:
+            chosen[n] = named.food
+        elif matches:
+            asked.append((n, item, matches))
+    if not asked:
+        return chosen
+    prompt = _usda_choices_prompt(said, [(item, matches) for _, item, matches in asked])
+    try:
+        result = await invoke_llm(prompt, response_json_schema=MATCH_SCHEMA, max_tokens=400, site="food_match")
+        replies = result.get("matches") if isinstance(result, dict) else None
+        if not isinstance(replies, list):
+            raise ValueError("no matches list")
+    except Exception as err:  # the model layer already logs details
+        log.warning("usda match choice unavailable, using word match: %s", type(err).__name__)
+        for n, item, _ in asked:
+            best = nutrition.best_match(item["name"], item["portion"] or "")
+            chosen[n] = best.food if best else None
+        return chosen
+    replies = [r for r in replies if isinstance(r, dict)]
+    by_name = {str(r.get("food") or "").strip().lower(): r for r in replies}
+    for k, (n, item, matches) in enumerate(asked):
+        reply = by_name.get(item["name"].lower()) or (replies[k] if k < len(replies) else None)
+        chosen[n] = _copied_entry(reply.get("usda"), matches) if reply else None
+    return chosen
+
+
+def _apply_usda(item: dict[str, Any], food: nutrition.Food | None) -> dict[str, Any]:
+    """Replace an estimate with USDA values for the spoken portion, when the
+    food was matched and the portion converts to grams."""
+    grounded = nutrition.ground(food, item["portion"]) if food else None
+    if grounded is None:
+        return {**item, "source": "estimate", "fdc_id": None, "fdc_name": None, "grams": None}
+    return {**item, **{m: grounded[m] for m in MACROS}, "source": "usda",
+            "fdc_id": grounded["fdc_id"], "fdc_name": grounded["fdc_name"], "grams": grounded["grams"]}
 
 
 def _totals(items: list[dict[str, Any]]) -> dict[str, float | None]:
@@ -511,6 +620,10 @@ async def estimate_meal(body: dict[str, Any]) -> dict[str, Any]:
         items.append(_apply_preset(item, preset, item["servings"]) if preset else {**item, "preset_id": None, "servings": None})
     if not items:
         return {"error": "That didn't sound like food. Try again, or type it.", "_status": 422, "transcript": said}
+    unsaved = [n for n, item in enumerate(items) if item["source"] != "preset"]
+    matched = await _choose_usda_foods(food_said, [items[n] for n in unsaved])
+    for n, usda_food in zip(unsaved, matched):
+        items[n] = _apply_usda(items[n], usda_food)
     when = spoken_when or resolve_eaten_at(result, now_local)
     confidence = _num(result.get("confidence"))
     return {

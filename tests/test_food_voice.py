@@ -1,10 +1,13 @@
 """Voice food logging: on-box transcription, the per-food estimate, preset
-reuse, spoken times, and logging a described meal as one carb Treatment."""
+reuse, USDA table grounding, spoken times, and logging a described meal as one
+carb Treatment."""
 
 import asyncio
 import base64
+import gzip
 import io
 import math
+import re
 import struct
 import time
 import wave
@@ -13,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from server import db, food, speech
+from server import breeze, db, food, nutrition, speech
 from server.migrations import run_migrations
 from server.repositories import get_repositories
 
@@ -111,21 +114,32 @@ SANDWICH = {
 }
 
 
-def test_estimate_from_text_returns_items_and_totals(database, monkeypatch):
-    seen = {}
+def test_estimate_from_text_grounds_items_in_usda(database, monkeypatch):
+    seen = []
 
     async def fake_invoke(prompt, response_json_schema=None, max_tokens=0, images=None, site=""):
-        seen.update(prompt=prompt, site=site, schema=response_json_schema, images=images)
+        seen.append({"prompt": prompt, "site": site, "schema": response_json_schema, "images": images})
+        if site == "food_match":
+            return {"matches": [{"food": "Chicken breast", "usda": "Chicken breast, grilled without sauce, skin not eaten"}]}
         return SANDWICH
 
     monkeypatch.setattr(food, "invoke_llm", fake_invoke)
     r = asyncio.run(food.handle({"action": "estimate_meal", "text": "chicken sandwich on gluten free bread with swiss cheese"}))
     assert r["ok"] and r["transcript"] == "chicken sandwich on gluten free bread with swiss cheese"
-    assert seen["site"] == "food_estimate" and seen["schema"] is food.MEAL_SCHEMA and not seen["images"]
-    assert "chicken sandwich on gluten free bread" in seen["prompt"] and "Their saved foods" not in seen["prompt"]
+    estimate, match = seen
+    assert estimate["site"] == "food_estimate" and estimate["schema"] is food.MEAL_SCHEMA and not estimate["images"]
+    assert "chicken sandwich on gluten free bread" in estimate["prompt"] and "Their saved foods" not in estimate["prompt"]
+    # Bread and cheese were said by their USDA names; only the chicken needed choosing.
+    assert match["site"] == "food_match" and match["schema"] is food.MATCH_SCHEMA
+    assert 'Food: "Chicken breast" (3 oz)' in match["prompt"] and "Gluten-free bread" not in match["prompt"]
     meal = r["meal"]
     assert meal["title"] == "Chicken sandwich on GF bread" and len(meal["items"]) == 3
-    assert meal["totals"]["carbs"] == 34.4 and meal["totals"]["protein"] == 38 and meal["totals"]["fiber"] == 4
+    bread, chicken, cheese = meal["items"]
+    assert bread["source"] == "usda" and bread["fdc_name"] == "Bread, gluten free" and bread["grams"] == 56
+    assert bread["carbs"] == 25.6 and bread["fiber"] == 2.4  # USDA, not the model's 34 g
+    assert chicken["source"] == "usda" and chicken["carbs"] == 0 and chicken["grams"] == 85.1
+    assert cheese["source"] == "usda" and cheese["fdc_name"] == "Cheese, Swiss" and cheese["carbs"] == 0.3
+    assert meal["totals"]["carbs"] == 25.9
     assert meal["confidence"] == 0.7 and r["timestamp"] is None
 
 
@@ -146,6 +160,7 @@ def test_estimate_uses_a_named_presets_exact_numbers(database, monkeypatch):
     assert f'id={bites["id"]}: "Yogurt Bites" (Gerber), per 1 bag (28 g): 21 g carbs' in seen["prompt"]
     assert "Oat bar" not in seen["prompt"]
     item = r["meal"]["items"][0]
+    assert item["source"] == "preset" and item["fdc_id"] is None  # the saved food beats the table
     assert item["preset_id"] == bites["id"] and item["servings"] == 2
     assert item["name"] == "Yogurt Bites" and item["portion"] == "2 × 1 bag (28 g)"
     assert item["carbs"] == 42 and item["protein"] == 6 and item["calories"] == 220
@@ -158,7 +173,8 @@ def test_estimate_ignores_a_preset_id_it_was_not_offered(database, monkeypatch):
 
     monkeypatch.setattr(food, "invoke_llm", fake_invoke)
     item = asyncio.run(food.estimate_meal({"text": "toast"}))["meal"]["items"][0]
-    assert item["preset_id"] is None and item["servings"] is None and item["carbs"] == 34
+    assert item["preset_id"] is None and item["servings"] is None
+    assert item["source"] == "usda" and item["carbs"] == 25.6
 
 
 def test_estimate_from_audio_transcribes_first(database, monkeypatch):
@@ -254,6 +270,265 @@ def test_preset_candidates_match_meaningful_words(database):
     assert food.preset_candidates("a bag") == []
 
 
+# ── USDA table ────────────────────────────────────────────────────────────
+
+
+def _food(name):
+    return next(f for f in nutrition.table().foods if f.name == name)
+
+
+def test_bundled_table_is_usda_with_all_macros():
+    t = nutrition.table()
+    assert len(t.foods) > 7000 and "USDA FoodData Central" in gzip.open(nutrition.TABLE_PATH).read(200).decode()
+    assert all(len(f.per_100g) == len(nutrition.MACROS) and f.per_100g[0] is not None for f in t.foods)
+    assert {f.dataset for f in t.foods} == {"fndds", "sr"}
+
+
+@pytest.mark.parametrize("text, quantity, unit, size, stated", [
+    ("2 slices", 2, "slic", None, None),
+    ("1 bag (28 g)", 1, "bag", None, 28.0),
+    ("half a cup", 0.5, "cup", None, None),
+    ("1 1/2 cups", 1.5, "cup", None, None),
+    ("1½ cups", 1.5, "cup", None, None),
+    ("two large eggs", 2, "egg", "larg", None),
+    ("3 oz", 3, "oz", None, 85.0),
+    ("12 oz can", 12, "floz", None, None),  # a can's ounces are fluid ounces
+    ("8 fl oz", 8, "floz", None, None),
+    ("2 tablespoons", 2, "tbsp", None, None),
+    ("1 medium", 1, None, "medium", None),
+    ("", 1, None, None, None),
+])
+def test_parse_portion(text, quantity, unit, size, stated):
+    p = nutrition.parse_portion(text)
+    assert (p.quantity, p.unit, p.size) == (quantity, unit, size)
+    assert p.stated_grams == (pytest.approx(stated, abs=0.1) if stated else None)
+
+
+@pytest.mark.parametrize("name, portion, grams", [
+    ("Bread, gluten free", "2 slices", 56.0),            # 2 × "1 medium or regular slice", not the crust-off one
+    ("Muffin, fruit", "1", 130.0),                        # a muffin is a medium one
+    ("Muffin, fruit", "1 large", 180.0),
+    ("Soft drink, cola", "1 can", 372.0),
+    ("Soft drink, cola", "12 oz can", 372.0),
+    ("Pasta with tomato-based sauce and meat, restaurant", "1 bowl", 375.0),  # a bowl is 1.5 cups
+    ("Babyfood, snack, GERBER, GRADUATES, YOGURT MELTS", "1 bag", 28.0),
+    ("Chicken breast, grilled without sauce, skin not eaten", "3 oz", 85.0),
+    ("Pizza with pepperoni, from restaurant or fast food, NS as to type of crust", "1 slice", 124.0),  # piece, NFS
+    ("Potato, french fries, restaurant", "1 medium order", 145.0),
+    ("Rice, white, cooked, no added fat", "1 serving", 118.0),  # USDA's typical amount
+    ("Soft drink, cola", "1 bag (28 g)", 28.0),          # no such USDA measure: the stated weight
+])
+def test_portion_grams_uses_usdas_household_measures(name, portion, grams):
+    assert nutrition.portion_grams(_food(name), portion)[0] == pytest.approx(grams, abs=0.2)
+
+
+def test_portion_grams_gives_up_on_a_unit_usda_does_not_list():
+    assert nutrition.portion_grams(_food("Bread, gluten free"), "1 plate") is None
+    assert nutrition.portion_grams(_food("Restaurant, Italian, spaghetti with meat sauce"), "1 bowl") is None
+
+
+def test_negated_words_are_not_counted():
+    assert nutrition.tokens("Chicken breast, grilled without sauce, skin not eaten") == ["chicken", "breast", "grill", "skin"]
+    assert "fat" not in nutrition.tokens("Rice, white, cooked, no added fat")
+
+
+@pytest.mark.parametrize("said, usda", [
+    ("Swiss cheese", "Cheese, Swiss"),
+    ("Gluten-free bread", "Bread, gluten free"),
+    ("Banana", "Banana, raw"),
+    ("Cheeseburger", "Cheeseburger, NFS"),
+    ("Yogurt bites", "Babyfood, snack, GERBER, GRADUATES, YOGURT MELTS"),  # a curated common name
+    ("Spaghetti with meat sauce", None),  # same words as "Spaghetti sauce with meat", different food
+    ("Cream cheese", "Cream cheese, regular, plain"),  # not a baked potato listing it as a topping
+    ("Blueberry muffin", None),
+])
+def test_named_match_only_takes_a_foods_own_name(said, usda):
+    found = nutrition.named_match(said, nutrition.candidates(said))
+    assert (found.food.name if found else None) == usda
+
+
+def test_candidates_offer_the_dish_and_only_what_the_portion_can_weigh():
+    names = [m.food.name for m in nutrition.candidates("Spaghetti with meat sauce", 8, "1 bowl")]
+    assert "Pasta with tomato-based sauce and meat, restaurant" in names
+    assert "Restaurant, Italian, spaghetti with meat sauce" not in names  # only "1 serving (554 g)"
+    fries = nutrition.candidates("French fries", 8, "1 medium order")
+    assert fries and all(nutrition.portion_grams(m.food, "1 medium order")[1].endswith("medium fast food order")
+                         for m in fries)
+
+
+def test_candidates_keep_versions_that_differ_in_carbs():
+    names = [m.food.name for m in nutrition.candidates("French fries")]
+    assert "Potato, french fries, NFS" in names and "Potato, french fries, restaurant" in names
+
+
+def _two_step(estimate, choices):
+    async def fake_invoke(prompt, site="", **kwargs):
+        if site == "food_match":
+            asked = re.findall(r'^Food: "([^"]+)"', prompt, flags=re.MULTILINE)
+            return {"matches": [{"food": name, "usda": choices.get(name, "none")} for name in asked]}
+        return estimate
+    return fake_invoke
+
+
+def _meal(*items, **extra):
+    return {"title": "Meal", "items": [
+        {"preset_id": None, "servings": None, "fiber": None, "sugars": None, "protein": None, "fat": None,
+         "calories": None, **item} for item in items
+    ], "eaten_at": None, "minutes_ago": None, "confidence": 0.6, **extra}
+
+
+def test_estimate_keeps_the_models_numbers_when_no_usda_entry_fits(database, monkeypatch):
+    estimate = _meal({"name": "Grandma's casserole", "portion": "1 cup", "carbs": 31},
+                     {"name": "Spaghetti with meat sauce", "portion": "1 bowl", "carbs": 45})
+    monkeypatch.setattr(food, "invoke_llm", _two_step(estimate, {"Spaghetti with meat sauce": "none"}))
+    casserole, spaghetti = asyncio.run(food.estimate_meal({"text": "grandma's casserole and spaghetti"}))["meal"]["items"]
+    assert casserole["source"] == "estimate" and casserole["carbs"] == 31 and casserole["fdc_id"] is None
+    assert spaghetti["source"] == "estimate" and spaghetti["carbs"] == 45
+
+
+def test_estimate_ignores_a_usda_entry_it_was_not_offered(database, monkeypatch):
+    estimate = _meal({"name": "Spaghetti with meat sauce", "portion": "1 bowl", "carbs": 45})
+    monkeypatch.setattr(food, "invoke_llm", _two_step(estimate, {"Spaghetti with meat sauce": "Lasagna, made up"}))
+    item = asyncio.run(food.estimate_meal({"text": "spaghetti"}))["meal"]["items"][0]
+    assert item["source"] == "estimate" and item["carbs"] == 45
+
+
+def test_estimate_accepts_a_loosely_copied_entry(database, monkeypatch):
+    estimate = _meal({"name": "Spaghetti with meat sauce", "portion": "1 bowl", "carbs": 45})
+    copied = "  pasta with tomato-based sauce and meat, RESTAURANT (also: spaghetti, any shape pasta)."
+    monkeypatch.setattr(food, "invoke_llm", _two_step(estimate, {"Spaghetti with meat sauce": copied}))
+    item = asyncio.run(food.estimate_meal({"text": "spaghetti"}))["meal"]["items"][0]
+    assert item["source"] == "usda" and item["grams"] == 375 and item["carbs"] == 66.5
+
+
+def test_estimate_keeps_the_estimate_when_the_portion_cannot_be_weighed(database, monkeypatch):
+    estimate = _meal({"name": "Gluten-free bread", "portion": "1 plate", "carbs": 20})
+    monkeypatch.setattr(food, "invoke_llm", _two_step(estimate, {}))
+    item = asyncio.run(food.estimate_meal({"text": "a plate of gluten free bread"}))["meal"]["items"][0]
+    assert item["source"] == "estimate" and item["carbs"] == 20
+
+
+def test_estimate_falls_back_to_word_matching_when_the_choice_call_fails(database, monkeypatch):
+    estimate = _meal({"name": "Gluten-free bread", "portion": "2 slices", "carbs": 18},
+                     {"name": "Blueberry muffin", "portion": "1", "carbs": 20},
+                     {"name": "Mystery bar", "portion": "1", "carbs": 22})
+
+    async def fake_invoke(prompt, site="", **kwargs):
+        if site == "food_match":
+            raise RuntimeError("model busy")
+        return estimate
+
+    monkeypatch.setattr(food, "invoke_llm", fake_invoke)
+    bread, muffin, bar = asyncio.run(food.estimate_meal({"text": "toast, a muffin and a bar"}))["meal"]["items"]
+    assert bread["source"] == "usda" and bread["carbs"] == 25.6        # named: no choice needed
+    assert muffin["source"] == "usda" and muffin["fdc_name"] == "Muffin, fruit" and muffin["carbs"] == 68.9
+    assert bar["source"] == "estimate" and bar["carbs"] == 22
+
+
+# What the live local model (qwen3-vl-8b on vLLM) said for each phrase, recorded
+# 2026-10-16: the foods and portions it heard with its own carb guess, and its
+# reply when asked to pick USDA entries (None: every food was said by its USDA
+# name, so it wasn't asked). The reference is what USDA's dietary-recall coding
+# assigns the phrase: the FNDDS food at its household measure ("a bowl" taken as
+# 1.5 cups), or the package label for a branded food (Gerber Yogurt Melts, a
+# 1 oz bag). The model's own guesses miss 15 of these 23 by more than 15%.
+VOICE_PHRASES = [
+    ("one bag of yogurt bites", 20.1,
+     [("Yogurt bites", "1 bag", 30)],
+     None),
+    ("chicken sandwich on gluten-free bread with Swiss cheese", 25.9,
+     [("Gluten-free bread", "2 slices", 20), ("Chicken breast", "3 oz", 0), ("Swiss cheese", "1 slice", 0)],
+     [{"food": "Chicken breast", "usda": "Chicken breast, grilled without sauce, skin not eaten"}]),
+    ("blueberry muffin", 68.9,
+     [("Blueberry muffin", "1", 30)],
+     [{"food": "Blueberry muffin", "usda": "Muffin, fruit (also: blueberry; Hostess Banana Walnut Mini Muffins)"}]),
+    ("bowl of spaghetti with meat sauce", 71.8,
+     [("Spaghetti with meat sauce", "1 bowl", 45)],
+     [{"food": "Spaghetti with meat sauce", "usda": "Pasta with tomato-based sauce and meat, restaurant "
+                                                    "(also: spaghetti, any shape pasta; marinara, red sauce)"}]),
+    ("a banana", 28.6,
+     [("Banana", "1 medium", 27)],
+     None),
+    ("a cup of 2% milk", 12.0,
+     [("2% milk", "1 cup", 12)],
+     [{"food": "a cup of 2% milk", "usda": "Milk, reduced fat (2%)"}]),
+    ("two scrambled eggs and a slice of white toast", 14.5,
+     [("Scrambled eggs", "2 eggs", 0), ("White bread", "1 slice", 12)],
+     None),
+    ("a cup of white rice", 44.2,
+     [("White rice", "1 cup", 45)],
+     None),
+    ("a slice of pepperoni pizza", 39.7,
+     [("Pepperoni pizza", "1 slice", 12)],
+     [{"food": "a slice of pepperoni pizza", "usda": "Pizza with pepperoni, from restaurant or fast food, "
+                                                    "NS as to type of crust"}]),
+    ("a plain bagel with cream cheese", 56.4,
+     [("Bagel", "1", 49), ("Cream cheese", "2 tbsp", 1)],
+     None),
+    ("a medium order of french fries", 60.1,
+     [("French fries", "1 medium order", 30)],
+     [{"food": "French fries", "usda": "Potato, french fries, restaurant"}]),
+    ("a glass of orange juice", 25.2,
+     [("Orange juice", "1 cup", 24)],
+     None),
+    ("a cheeseburger", 30.9,
+     [("Cheeseburger", "1", 25)],
+     None),
+    ("two chocolate chip cookies", 39.2,
+     [("Chocolate chip cookie", "2", 36)],
+     None),
+    ("a cup of mashed potatoes", 44.0,
+     [("Mashed potatoes", "1 cup", 27)],
+     None),
+    ("a can of Coke", 38.5,
+     [("Coke", "1 can", 39)],
+     [{"food": "Coke", "usda": "Soft drink, cola (also: Coke)"}]),
+    ("a cup of grapes", 29.1,
+     [("Grapes", "1 cup", 15)],
+     None),
+    ("two pancakes with two tablespoons of maple syrup", 62.1,
+     [("Pancake", "2 pancakes", 36), ("Maple syrup", "2 tablespoons", 16)],
+     None),
+    ("a granola bar", 27.7,
+     [("Granola bar", "1 bar", 20)],
+     [{"food": "a granola bar", "usda": "Cereal or Granola bar, NFS "
+                                        "(also: New Trail Granola Bars; Sunbelt Granola Bar, all flavors)"}]),
+    ("a cup of oatmeal with a tablespoon of brown sugar", 40.3,
+     [("Oatmeal", "1 cup", 27), ("Brown sugar", "1 tablespoon", 12)],
+     None),
+    ("an apple", 29.6,
+     [("Apple", "1 medium", 25)],
+     None),
+    ("half a cup of vanilla ice cream", 15.9,
+     [("Vanilla ice cream", "half a cup", 27)],
+     None),
+    ("turkey sandwich on whole wheat bread with mayo", 31.1,
+     [("Whole wheat bread", "2 slices", 24), ("Turkey", "3 oz", 0), ("Mayonnaise", "1 tbsp", 1)],
+     None),
+]
+
+
+@pytest.mark.parametrize("phrase, reference, said, replies", VOICE_PHRASES, ids=[p[0] for p in VOICE_PHRASES])
+def test_spoken_meals_land_within_15_percent_of_the_usda_reference(database, monkeypatch, phrase, reference, said,
+                                                                    replies):
+    estimate = _meal(*({"name": name, "portion": portion, "carbs": carbs} for name, portion, carbs in said))
+
+    async def recorded(prompt, site="", **kwargs):
+        if site == "food_match":
+            return {"matches": replies or []}
+        return estimate
+
+    monkeypatch.setattr(food, "invoke_llm", recorded)
+    meal = asyncio.run(food.estimate_meal({"text": phrase}))["meal"]
+    assert [i["source"] for i in meal["items"]] == ["usda"] * len(said)
+    assert meal["totals"]["carbs"] == pytest.approx(reference, rel=0.15)
+
+
+def test_food_lookups_stay_off_the_breeze_route():
+    assert "food_estimate" not in breeze.BREEZE_ELIGIBLE_SITES
+    assert "food_match" not in breeze.BREEZE_ELIGIBLE_SITES
+
+
 # ── log ───────────────────────────────────────────────────────────────────
 
 
@@ -274,6 +549,20 @@ def test_log_meal_creates_one_carb_treatment_with_the_breakdown(database):
     assert [x["id"] for x in food.recent_logs()] == [t["id"]]
     assert food._get("FoodPreset", bites["id"])["use_count"] == 3
     assert len(get_repositories().treatments.query({"owner_email": food.OWNER_EMAIL, "type": "carb"}, "-timestamp", 10)) == 1
+
+
+def test_log_meal_keeps_where_each_foods_numbers_came_from(database):
+    items = [
+        {"name": "Gluten-free bread", "portion": "2 slices", "carbs": 25.6, "source": "usda", "fdc_id": 2707797,
+         "fdc_name": "Bread, gluten free", "grams": 56},
+        {"name": "Swiss cheese", "portion": "1 slice", "carbs": 1, "source": "edited", "fdc_id": 2705735,
+         "fdc_name": "Cheese, Swiss", "grams": 21},
+        {"name": "Pickles", "carbs": 1, "source": "made-up", "fdc_id": "x", "fdc_name": "Nope", "grams": -3},
+    ]
+    logged = food.log_meal({"items": items})["treatment"]["items"]
+    assert [(i["source"], i["fdc_id"], i["grams"]) for i in logged] == [
+        ("usda", 2707797, 56), ("edited", 2705735, 21), (None, None, None)]
+    assert logged[0]["fdc_name"] == "Bread, gluten free" and logged[2]["fdc_name"] is None
 
 
 def test_log_meal_can_save_the_meal_as_a_preset(database):
@@ -376,16 +665,17 @@ def test_estimate_reads_the_spoken_time_itself_and_hides_it_from_the_model(datab
         def now(cls, tz=None):
             return LATE.astimezone(tz)
 
-    seen = {}
+    prompts = []
 
     async def fake_invoke(prompt, **kwargs):
-        seen["prompt"] = prompt
+        prompts.append(prompt)
         return {**SANDWICH, "eaten_at": "13:00"}  # the model's misreading loses to the parse
 
     monkeypatch.setattr(food, "datetime", FixedDatetime)
     monkeypatch.setattr(food, "invoke_llm", fake_invoke)
     r = asyncio.run(food.estimate_meal({"text": "a bag of chips at 330", "tz": "America/New_York"}))
-    assert 'What they said: "a bag of chips"' in seen["prompt"] and "330" not in seen["prompt"]
+    assert 'What they said: "a bag of chips"' in prompts[0]
+    assert all("330" not in p for p in prompts)  # neither the estimate nor the USDA match sees the time
     assert r["transcript"] == "a bag of chips at 330"
     assert r["timestamp"] == "2026-10-16T19:30:00.000Z"
 

@@ -54,8 +54,8 @@ const SANDWICH = {
     title: "Chicken sandwich on GF bread",
     confidence: 0.7,
     items: [
-      { name: "Gluten-free bread", portion: "2 slices", preset_id: null, servings: null, carbs: 34, fiber: 4, sugars: 3, protein: 4, fat: 4, calories: 180 },
-      { name: "Chicken breast", portion: "3 oz", preset_id: null, servings: null, carbs: 0, fiber: 0, sugars: 0, protein: 26, fat: 3, calories: 130 },
+      { name: "Gluten-free bread", portion: "2 slices", preset_id: null, servings: null, carbs: 34, fiber: 4, sugars: 3, protein: 4, fat: 4, calories: 180, source: "usda", fdc_id: 2707797, fdc_name: "Bread, gluten free", grams: 56 },
+      { name: "Chicken breast", portion: "3 oz", preset_id: null, servings: null, carbs: 0, fiber: 0, sugars: 0, protein: 26, fat: 3, calories: 130, source: "estimate", fdc_id: null, fdc_name: null, grams: null },
     ],
     totals: { carbs: 34 },
   },
@@ -83,9 +83,13 @@ describe("FoodLogger voice", () => {
     await waitFor(() => expect(apiMocks.invoke).toHaveBeenCalledWith("food", expect.objectContaining({ action: "estimate_meal", text: "chicken sandwich on gluten free bread" })));
     expect(await screen.findByDisplayValue("Gluten-free bread")).toBeTruthy();
     expect(screen.getByText("34 g carbs")).toBeTruthy();
+    expect(screen.getByText(/Bread, gluten free · 56 g/)).toBeTruthy();
+    expect(screen.getByText(/Model estimate/)).toBeTruthy();
 
     fireEvent.change(screen.getByLabelText("Carbs g for Gluten-free bread"), { target: { value: "40" } });
     expect(screen.getByText("40 g carbs")).toBeTruthy();
+    expect(screen.queryByText(/Bread, gluten free · 56 g/)).toBeNull();
+    expect(screen.getByText("Edited")).toBeTruthy();
     fireEvent.click(screen.getByText("Log it"));
     await waitFor(() => expect(apiMocks.invoke).toHaveBeenCalledWith("food", expect.objectContaining({
       action: "log_meal",
@@ -93,8 +97,8 @@ describe("FoodLogger voice", () => {
       entry_method: "text",
       save_preset: false,
       items: [
-        expect.objectContaining({ name: "Gluten-free bread", carbs: 40, protein: 4 }),
-        expect.objectContaining({ name: "Chicken breast", carbs: 0, protein: 26 }),
+        expect.objectContaining({ name: "Gluten-free bread", carbs: 40, protein: 4, source: "edited", fdc_id: 2707797, grams: 56 }),
+        expect.objectContaining({ name: "Chicken breast", carbs: 0, protein: 26, source: "estimate", fdc_id: null }),
       ],
     })));
   });
