@@ -1,5 +1,6 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AuthContext } from "@/lib/AuthContext";
 import Report from "./Report";
 
 const report = {
@@ -790,5 +791,84 @@ describe("visit report specialty views", () => {
     expect(docRow.textContent).toContain("7 results");
     expect(docRow.querySelector("details").className).toContain("print:hidden");
     expect(screen.getByText("Synthetic brain MRI").querySelector("a").getAttribute("href")).toBe("/api/records/file/mri?inline=true");
+  });
+});
+
+describe("visit report points to discuss", () => {
+  const specialties = [
+    { key: "primary_care", label: "Primary care", domains: ["clinical", "labs", "records", "glucose", "insulin"], keywords: [], omit_unconfirmed_hypotheses: true },
+  ];
+  const discussed = {
+    ...report,
+    contradictions: { unresolved: [] },
+    specialties,
+    narrative: {
+      headline: "Synthetic headline.",
+      discussion_points: ["Synthetic suggestion about lows.", "Synthetic suggestion about oxygen."],
+    },
+    agenda: {
+      primary_care: { points: ["Synthetic nutrition question."], updated_at: "2026-10-22T12:00:00Z" },
+    },
+  };
+  const asOwner = (ui) => render(<AuthContext.Provider value={{ isAdmin: true }}>{ui}</AuthContext.Provider>);
+
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    });
+    vi.stubGlobal("fetch", vi.fn(async (url, options = {}) => {
+      if (String(url) === "/api/report/agenda") {
+        const body = JSON.parse(String(options.body));
+        return { ok: true, json: async () => ({ agenda: { ...discussed.agenda, [body.view]: { points: body.points, updated_at: "2026-10-22T13:00:00Z" } } }) };
+      }
+      return { ok: true, json: async () => discussed };
+    }));
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+    window.history.replaceState({}, "", "/");
+  });
+
+  const pointsCard = () => screen.getByRole("heading", { name: "Points to discuss" }).closest(".report-card");
+
+  it("shows the suggestions in the full report, read-only without the owner login", async () => {
+    render(<Report />);
+
+    expect(await screen.findByText("Synthetic suggestion about lows.")).toBeTruthy();
+    expect(pointsCard().textContent).toContain("Suggested from the data");
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+  });
+
+  it("prints the points saved for a view in place of the suggestions", async () => {
+    window.history.replaceState({}, "", "/report?for=primary_care");
+    render(<Report />);
+
+    expect(await screen.findByText("Synthetic nutrition question.")).toBeTruthy();
+    expect(screen.queryByText("Synthetic suggestion about lows.")).toBeNull();
+    expect(pointsCard().textContent).toContain("Edited");
+  });
+
+  it("lets the owner edit and save the points for the view on screen", async () => {
+    asOwner(<Report />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+    const editor = screen.getByLabelText("Points to discuss");
+    expect(editor).toHaveProperty("value", "Synthetic suggestion about lows.\nSynthetic suggestion about oxygen.");
+    fireEvent.change(editor, { target: { value: "Nutrition: is she getting the nutrients she needs?\n\n" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Nutrition: is she getting the nutrients she needs?")).toBeTruthy();
+    const call = vi.mocked(fetch).mock.calls.find(([url]) => String(url) === "/api/report/agenda");
+    expect(call[1].method).toBe("PUT");
+    expect(JSON.parse(String(call[1].body))).toEqual({
+      view: "full",
+      points: ["Nutrition: is she getting the nutrients she needs?", "", ""],
+    });
+    await waitFor(() => expect(screen.queryByText("Synthetic suggestion about lows.")).toBeNull());
   });
 });

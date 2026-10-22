@@ -21,6 +21,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clinical documents link to the uploaded document they came from, and the
   report lists the clinical documents on file. `/brief` now opens the Visit
   Report; Share Export still builds briefs.
+- **Editable discussion points** — the owner edits the Visit Report's "Points
+  to discuss" before printing; the edit is saved per view and prints in place
+  of the suggested points until cleared. Suggested points no longer raise
+  correlations between wearable signals and glucose.
+- **Visit Report printing** — no forced page break after the summary, so a
+  long summary no longer leaves a mostly blank page; section headings stay
+  with the content after them.
 
 ### Fixed
 - **Visit Report weight** — the headline is change from the 12-month high to
