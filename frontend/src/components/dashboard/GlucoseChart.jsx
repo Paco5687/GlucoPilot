@@ -1,30 +1,32 @@
-import { ResponsiveContainer, ComposedChart, Area, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ReferenceArea, ZAxis } from "recharts";
+import { ResponsiveContainer, ComposedChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ReferenceArea, ReferenceDot, Symbols } from "recharts";
 import { format, differenceInHours, parseISO } from "date-fns";
+
+function FingerstickNote({ f }) {
+  const up = f.delta > 0;
+  return (
+    <div className="mt-2 pt-2 border-t border-border">
+      <p className="font-mono font-bold">
+        🩸 {f.value} <span className="text-xs text-muted-foreground">mg/dL fingerstick · {format(new Date(f.timestamp), "h:mm a")}</span>
+      </p>
+      {f.cgm_value != null ? (
+        <p className="text-xs mt-1">
+          CGM read <b>{f.cgm_value}</b> ·{" "}
+          <span className={Math.abs(f.delta) >= 20 ? "text-red-600 font-medium" : "text-muted-foreground"}>
+            Δ {up ? "+" : ""}{f.delta} {up ? "(CGM high)" : "(CGM low)"}
+          </span>
+        </p>
+      ) : (
+        <p className="text-xs mt-1 text-muted-foreground">no CGM reading nearby</p>
+      )}
+    </div>
+  );
+}
 
 function CustomTooltip({ active, payload }) {
   if (!active || !payload?.length) return null;
-  const d = payload.find((p) => p.payload?.isFingerstick)?.payload || payload[0].payload;
+  const d = payload[0].payload;
   const ts = d.timestamp ? new Date(d.timestamp) : null;
   if (!ts || isNaN(ts.getTime())) return null;
-  if (d.isFingerstick) {
-    const up = d.delta > 0;
-    return (
-      <div className="bg-card border border-border rounded-lg shadow-lg p-3 text-sm">
-        <p className="font-mono font-bold text-lg">🩸 {d.fingerstick} <span className="text-xs text-muted-foreground">mg/dL fingerstick</span></p>
-        <p className="text-muted-foreground text-xs">{format(ts, "MMM d, h:mm a")}</p>
-        {d.cgm_value != null ? (
-          <p className="text-xs mt-1">
-            CGM read <b>{d.cgm_value}</b> ·{" "}
-            <span className={Math.abs(d.delta) >= 20 ? "text-red-600 font-medium" : "text-muted-foreground"}>
-              Δ {up ? "+" : ""}{d.delta} {up ? "(CGM high)" : "(CGM low)"}
-            </span>
-          </p>
-        ) : (
-          <p className="text-xs mt-1 text-muted-foreground">no CGM reading nearby</p>
-        )}
-      </div>
-    );
-  }
   return (
     <div className="bg-card border border-border rounded-lg shadow-lg p-3 text-sm">
       <p className="font-mono font-bold text-lg">{d.value} <span className="text-xs text-muted-foreground">mg/dL</span></p>
@@ -35,8 +37,13 @@ function CustomTooltip({ active, payload }) {
       {d.carbAmount > 0 && (
         <p className="text-orange-600 text-xs">🍞 {d.carbAmount}g carbs</p>
       )}
+      {d.fingersticks.map((f, i) => <FingerstickNote key={i} f={f} />)}
     </div>
   );
+}
+
+function FingerstickDiamond({ cx, cy }) {
+  return <Symbols cx={cx} cy={cy} type="diamond" size={20} fill="hsl(292, 84%, 48%)" stroke="hsl(0, 0%, 100%)" strokeWidth={1} />;
 }
 
 const PHASE_COLORS = {
@@ -63,28 +70,34 @@ export default function GlucoseChart({ readings, treatments, periodLogs, fingers
   // Date format based on time span
   const xFormat = spanHours > 48 ? "MMM d" : spanHours > 24 ? "d HH:mm" : "HH:mm";
 
-  // Build treatment lookups — match to nearest 5 min
-  const insulinByTime = {};
-  const carbsByTime = {};
-  (treatments || []).forEach((t) => {
-    if (t.event_type === "Daily Total") return;
-    const ts = new Date(t.timestamp);
-    ts.setMinutes(Math.round(ts.getMinutes() / 5) * 5, 0, 0);
-    const key = ts.getTime();
-    if (t.type === "insulin" && t.amount) insulinByTime[key] = (insulinByTime[key] || 0) + t.amount;
-    if (t.type === "carb" && t.amount) carbsByTime[key] = (carbsByTime[key] || 0) + t.amount;
-  });
-
   const sorted = downsampled.map((r) => {
     const time = new Date(r.timestamp).getTime();
     return {
       ...r,
       time,
       timeLabel: format(new Date(r.timestamp), xFormat),
-      insulinAmount: insulinByTime[time] || 0,
-      carbAmount: carbsByTime[time] || 0,
+      insulinAmount: 0,
+      carbAmount: 0,
+      fingersticks: [],
     };
   });
+  const chartStart = sorted[0]?.time;
+  const chartEnd = sorted[sorted.length - 1]?.time;
+
+  // The reading a marker's details show under in the tooltip: the closest one,
+  // if it is within one (downsampled) reading interval.
+  const matchWindow = step * 5 * 60000;
+  const nearestReading = (time) => {
+    let lo = 0;
+    let hi = sorted.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sorted[mid].time < time) lo = mid + 1;
+      else hi = mid;
+    }
+    const i = lo > 0 && time - sorted[lo - 1].time < sorted[lo].time - time ? lo - 1 : lo;
+    return Math.abs(sorted[i].time - time) <= matchWindow ? sorted[i] : null;
+  };
 
   // Period phase bands
   const phaseBands = [];
@@ -110,41 +123,43 @@ export default function GlucoseChart({ readings, treatments, periodLogs, fingers
     if (bandStart) phaseBands.push(bandStart);
   }
 
-  // Treatment markers — show as separate scatter points pinned to top/bottom of chart
-  const insulinEvents = (treatments || []).filter((t) => t.type === "insulin" && t.amount && t.event_type !== "Daily Total");
-  const carbEvents = (treatments || []).filter((t) => t.type === "carb" && t.amount);
-  const insulinMarkers = insulinEvents.map((t) => ({
-    time: new Date(t.timestamp).getTime(),
-    timeLabel: format(new Date(t.timestamp), xFormat),
-    markerY: 305,
-    insulinAmount: t.amount,
-    carbAmount: 0,
-    value: 0,
-  }));
-  const carbMarkers = carbEvents.map((t) => ({
-    time: new Date(t.timestamp).getTime(),
-    timeLabel: format(new Date(t.timestamp), xFormat),
-    markerY: 55,
-    insulinAmount: 0,
-    carbAmount: t.amount,
-    value: 0,
-  }));
+  // Markers are ReferenceDots, not Scatter series. A series with its own `data`
+  // replaces the chart data in Recharts' axis and tooltip lookup, which pinned
+  // the hover tooltip to the markers' positions and showed the wrong reading.
+  // Treatment markers sit at the top (insulin) and bottom (carbs) of the chart.
+  const insulinMarkers = (treatments || [])
+    .filter((t) => t.type === "insulin" && t.amount && t.event_type !== "Daily Total")
+    .map((t) => ({ time: new Date(t.timestamp).getTime(), amount: t.amount }))
+    .filter((m) => !Number.isNaN(m.time));
+  const carbMarkers = (treatments || [])
+    .filter((t) => t.type === "carb" && t.amount)
+    .map((t) => ({ time: new Date(t.timestamp).getTime(), amount: t.amount }))
+    .filter((m) => !Number.isNaN(m.time));
 
   // Fingerstick "correction points" — plotted at the meter value (on the y-axis),
   // overlaid on the CGM trace to mark where the graph disagreed. Never replaces it.
-  const chartStart = sorted[0]?.time;
-  const chartEnd = sorted[sorted.length - 1]?.time;
   const fingerstickMarkers = (fingersticks || [])
-    .map((f) => ({
-      time: new Date(f.timestamp).getTime(),
-      value: f.value,
-      timestamp: f.timestamp,
-      isFingerstick: true,
-      fingerstick: f.value,
-      cgm_value: f.cgm_value,
-      delta: f.delta,
-    }))
-    .filter((m) => !Number.isNaN(m.time) && (chartStart == null || (m.time >= chartStart && m.time <= chartEnd)));
+    .map((f) => ({ ...f, time: new Date(f.timestamp).getTime() }))
+    .filter((m) => !Number.isNaN(m.time) && m.time >= chartStart && m.time <= chartEnd);
+
+  for (const m of insulinMarkers) {
+    const r = nearestReading(m.time);
+    if (r) r.insulinAmount += m.amount;
+  }
+  for (const m of carbMarkers) {
+    const r = nearestReading(m.time);
+    if (r) r.carbAmount += m.amount;
+  }
+  for (const m of fingerstickMarkers) {
+    nearestReading(m.time)?.fingersticks.push(m);
+  }
+
+  // Axes cover the readings plus every marker. Recharts still widens the y-axis
+  // for readings outside 40–320.
+  const treatmentTimes = [...insulinMarkers, ...carbMarkers].map((m) => m.time);
+  const fingerstickValues = fingerstickMarkers.map((m) => m.value);
+  const xDomain = [Math.min(chartStart, ...treatmentTimes), Math.max(chartEnd, ...treatmentTimes)];
+  const yDomain = [Math.min(40, ...fingerstickValues), Math.max(320, ...fingerstickValues)];
 
   return (
     <div className="bg-card rounded-xl border border-border p-4">
@@ -189,10 +204,7 @@ export default function GlucoseChart({ readings, treatments, periodLogs, fingers
           <XAxis
             dataKey="time"
             type="number"
-            // Recharts sizes "dataMin"/"dataMax" from the Scatters' own data once
-            // any marker exists, which squeezed the trace onto the marker times.
-            // Pin the axis to the readings; a marker outside still widens it.
-            domain={[chartStart, chartEnd]}
+            domain={xDomain}
             tickFormatter={(t) => format(new Date(t), xFormat)}
             tick={{ fontSize: 10, fill: "hsl(210, 10%, 50%)" }}
             tickLine={false}
@@ -200,14 +212,13 @@ export default function GlucoseChart({ readings, treatments, periodLogs, fingers
             minTickGap={60}
           />
           <YAxis
-            domain={[40, 320]}
+            domain={yDomain}
             tick={{ fontSize: 10, fill: "hsl(210, 10%, 50%)" }}
             tickLine={false}
             axisLine={false}
             width={35}
             ticks={[40, 70, 110, 180, 250, 320]}
           />
-          <ZAxis range={[20, 20]} />
           <Tooltip content={<CustomTooltip />} />
           <Area
             type="monotone"
@@ -219,32 +230,15 @@ export default function GlucoseChart({ readings, treatments, periodLogs, fingers
             activeDot={{ r: 3, fill: "hsl(168, 80%, 30%)" }}
             isAnimationActive={false}
           />
-          <Scatter
-            data={insulinMarkers}
-            dataKey="markerY"
-            fill="hsl(217, 91%, 60%)"
-            opacity={0.7}
-            legendType="none"
-            isAnimationActive={false}
-          />
-          <Scatter
-            data={carbMarkers}
-            dataKey="markerY"
-            fill="hsl(25, 95%, 53%)"
-            opacity={0.7}
-            legendType="none"
-            isAnimationActive={false}
-          />
-          <Scatter
-            data={fingerstickMarkers}
-            dataKey="value"
-            shape="diamond"
-            fill="hsl(292, 84%, 48%)"
-            stroke="hsl(0, 0%, 100%)"
-            strokeWidth={1}
-            legendType="none"
-            isAnimationActive={false}
-          />
+          {insulinMarkers.map((m, i) => (
+            <ReferenceDot key={`insulin-${i}`} x={m.time} y={305} r={2.5} fill="hsl(217, 91%, 60%)" fillOpacity={0.7} stroke="none" />
+          ))}
+          {carbMarkers.map((m, i) => (
+            <ReferenceDot key={`carb-${i}`} x={m.time} y={55} r={2.5} fill="hsl(25, 95%, 53%)" fillOpacity={0.7} stroke="none" />
+          ))}
+          {fingerstickMarkers.map((m, i) => (
+            <ReferenceDot key={`fingerstick-${i}`} x={m.time} y={m.value} shape={FingerstickDiamond} />
+          ))}
         </ComposedChart>
       </ResponsiveContainer>
     </div>

@@ -1,5 +1,5 @@
 import { cloneElement } from "react";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import GlucoseChart from "./GlucoseChart";
 
@@ -38,9 +38,22 @@ function traceXs(container) {
 }
 
 function markerXs(container) {
-  return [...container.querySelectorAll(".recharts-scatter-symbol path")].map((p) =>
-    Number(/translate\((-?[\d.]+)/.exec(p.getAttribute("transform"))[1]),
-  );
+  return [...container.querySelectorAll(".recharts-reference-dot-dot")].map((c) => Number(c.getAttribute("cx")));
+}
+
+// x of reading i (36 readings across the plot).
+function xOf(i) {
+  return PLOT_LEFT + (i / 35) * (PLOT_RIGHT - PLOT_LEFT);
+}
+
+// Recharts throttles mouse moves, so each hover gets a fresh chart.
+function tooltipAt(i, props) {
+  const { container, unmount } = render(<GlucoseChart readings={readingsOverThreeHours()} {...props} />);
+  const x = xOf(i);
+  fireEvent.mouseMove(container.querySelector(".recharts-wrapper"), { clientX: x, clientY: 150, pageX: x, pageY: 150 });
+  const text = container.querySelector(".recharts-tooltip-wrapper")?.textContent || "";
+  unmount();
+  return text;
 }
 
 afterEach(cleanup);
@@ -64,5 +77,39 @@ describe("GlucoseChart x-axis", () => {
     expect(marker).toBeCloseTo(PLOT_LEFT, 0);
     expect(Math.min(...xs)).toBeGreaterThan(marker);
     expect(Math.max(...xs)).toBeCloseTo(PLOT_RIGHT, 0);
+  });
+});
+
+describe("GlucoseChart tooltip", () => {
+  it("shows the reading under the pointer while a marker is in the window", () => {
+    const treatments = [carb("2026-10-25T23:00:00Z")];
+    expect(tooltipAt(3, { treatments })).toContain("191 mg/dL");
+    expect(tooltipAt(17, { treatments })).toContain("149 mg/dL");
+    expect(tooltipAt(31, { treatments })).toContain("107 mg/dL");
+  });
+
+  it("lists carbs and insulin under the nearest reading only", () => {
+    // Reading 18 is at 00:28:31.
+    const treatments = [
+      carb("2026-10-26T00:30:00Z"),
+      { id: "i1", type: "insulin", amount: 1.5, timestamp: "2026-10-26T00:27:00Z" },
+    ];
+    const at18 = tooltipAt(18, { treatments });
+    expect(at18).toContain("146 mg/dL");
+    expect(at18).toContain("15g carbs");
+    expect(at18).toContain("1.50 U");
+    expect(tooltipAt(17, { treatments })).not.toContain("carbs");
+  });
+
+  it("lists a fingerstick under the nearest reading and draws its marker", () => {
+    // Reading 9 is at 23:43:31.
+    const fingersticks = [{ timestamp: "2026-10-25T23:44:00Z", value: 71, cgm_value: 173, delta: 102 }];
+    const at9 = tooltipAt(9, { fingersticks });
+    expect(at9).toContain("173 mg/dL");
+    expect(at9).toContain("71 mg/dL fingerstick");
+    expect(at9).toContain("CGM read 173");
+
+    const { container } = render(<GlucoseChart readings={readingsOverThreeHours()} fingersticks={fingersticks} />);
+    expect(container.querySelectorAll(".recharts-reference-dot .recharts-symbols")).toHaveLength(1);
   });
 });
