@@ -15,6 +15,7 @@ import binascii
 import io
 import logging
 import os
+import re
 import threading
 from typing import Any
 
@@ -29,10 +30,14 @@ MAX_AUDIO_BYTES = 8 * 1024 * 1024
 MAX_SECONDS = 90
 # Whisper keeps the style and vocabulary of its prompt, which helps with food
 # words and gets punctuation right on short clips. "Chips" is here because
-# Whisper wrote "Toe chips" for it. No clock time is in it: a time leaked
-# from the prompt into a transcript would be logged as when the meal was eaten.
-VOCAB_PROMPT = ("Food log. One bag of yogurt bites. A bag of potato chips. "
+# Whisper wrote "Toe chips" for it, and "hash browns" because it wrote "Cash
+# browns". No clock time is in it: a time leaked from the prompt into a
+# transcript would be logged as when the meal was eaten.
+VOCAB_PROMPT = ("Food log. One bag of yogurt bites. A bag of potato chips. Hash browns and eggs. "
                 "Chicken sandwich on gluten-free bread with Swiss cheese.")
+# Mishearings already seen, put right in case the prompt doesn't prevent them.
+# Only ones that can't be meant as said: nobody logs eating "cash".
+_MISHEARD = ((re.compile(r"\bcash(?=\s*browns?\b)", re.IGNORECASE), "hash"),)
 
 _model: Any = None
 _load_lock = threading.Lock()
@@ -89,7 +94,14 @@ def _transcribe_sync(data: bytes) -> str:
     with _run_lock:
         segments, _info = model.transcribe(samples, language="en", beam_size=5, vad_filter=True,
                                            initial_prompt=VOCAB_PROMPT, condition_on_previous_text=False)
-        return " ".join(s.text.strip() for s in segments).strip()
+        return put_right(" ".join(s.text.strip() for s in segments).strip())
+
+
+def put_right(text: str) -> str:
+    """The transcript with known mishearings replaced, keeping a capital."""
+    for pattern, meant in _MISHEARD:
+        text = pattern.sub(lambda m, meant=meant: meant.capitalize() if m.group(0)[0].isupper() else meant, text)
+    return text
 
 
 def _split_payload(audio: str) -> bytes:

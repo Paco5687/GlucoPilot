@@ -184,6 +184,13 @@ def table() -> _Table:
     return _Table(foods)
 
 
+def is_food_word(word: str) -> bool:
+    """Whether the word appears in some USDA food's name or descriptions — an
+    everyday food word rather than a brand or product name."""
+    stems = tokens(word)
+    return bool(stems) and all(s in table().postings for s in stems)
+
+
 @dataclass(frozen=True)
 class Match:
     food: Food

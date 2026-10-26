@@ -30,6 +30,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with the content after them.
 
 ### Fixed
+- **Voice food log matching** — a saved food is offered to the estimate only
+  when what was said names it: most of its name, or a brand word no USDA food
+  has. "Yogurt bowl" and "Greek yogurt bowl with blueberries" no longer log as
+  the saved yogurt bites. A bare hour ending the sentence ("rice bowl at 12.")
+  sets the meal time instead of leaving it to the model, which sometimes dropped
+  it. Whisper's "cash browns" is logged as hash browns, and hash browns are in
+  its vocabulary prompt.
 - **Visit Report weight** — the headline is change from the 12-month high to
   the latest weight. Change since the first entry is shown as secondary context.
 - **Visit Report narrative** — the prompt is capped at 8,000 tokens (less when

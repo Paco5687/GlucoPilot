@@ -98,6 +98,25 @@ def test_transcribe_runs_the_local_model_on_decoded_samples(monkeypatch):
     assert seen["opts"]["language"] == "en" and seen["opts"]["vad_filter"] is True
 
 
+def test_transcribe_puts_right_a_known_mishearing(monkeypatch):
+    class FakeModel:
+        def transcribe(self, samples, **opts):
+            return iter([type("Segment", (), {"text": " Cash browns corned beef at 10.45 a.m."})()]), None
+
+    monkeypatch.setattr(speech, "_load_model", lambda: FakeModel())
+    assert asyncio.run(speech.transcribe(_audio_payload(_tone_wav(0.5)))) == "Hash browns corned beef at 10.45 a.m."
+
+
+@pytest.mark.parametrize("heard, meant", [
+    ("eggs and cash brown", "eggs and hash brown"),
+    ("CASH BROWNS", "Hash BROWNS"),
+    ("paid cash for a muffin", "paid cash for a muffin"),
+    ("cashews", "cashews"),
+])
+def test_put_right(heard, meant):
+    assert speech.put_right(heard) == meant
+
+
 # ── estimate ──────────────────────────────────────────────────────────────
 
 SANDWICH = {
@@ -268,6 +287,17 @@ def test_preset_candidates_match_meaningful_words(database):
     _preset(name="Bag of chips", carbs=15)
     assert [p["id"] for p in food.preset_candidates("one bag of yogurt bite")] == [bites["id"]]
     assert food.preset_candidates("a bag") == []
+
+
+def test_preset_candidates_need_more_than_one_everyday_word(database):
+    bites = _preset(name="Yoggies yogurt bites", carbs=15)
+    # One shared word that any yogurt carries isn't the saved bites.
+    assert food.preset_candidates("Yogurt bowl") == []
+    assert food.preset_candidates("Greek yogurt bowl with blueberries") == []
+    # Most of its name, or its brand alone, is.
+    assert [p["id"] for p in food.preset_candidates("Two bags of yogurt bites.")] == [bites["id"]]
+    assert [p["id"] for p in food.preset_candidates("some Yoggies")] == [bites["id"]]
+    assert nutrition.is_food_word("yogurt") and not nutrition.is_food_word("yoggies")
 
 
 # ── USDA table ────────────────────────────────────────────────────────────
@@ -618,6 +648,11 @@ def _at(day, hour, minute):
     ("a burger at 5 p.m.", _at(15, 17, 0), "a burger"),  # later than now -> yesterday
     ("popcorn at 1030 p.m.", _at(15, 22, 30), "popcorn"),
     ("an apple at 4 45", _at(16, 16, 45), "an apple"),  # a few minutes ahead is still today
+    # A bare hour that ends the sentence or clause.
+    ("Chicken broccoli bowl with rice at 12.", _at(16, 12, 0), "Chicken broccoli bowl with rice."),
+    ("Chicken with crackers at 11.", _at(16, 11, 0), "Chicken with crackers."),
+    ("a sandwich at 9", _at(16, 9, 0), "a sandwich"),
+    ("toast at 7, then coffee", _at(16, 7, 0), "toast, then coffee"),
 ])
 def test_parse_spoken_time(said, expected, rest):
     assert food.parse_spoken_time(said, LATE) == (expected, rest)
@@ -633,7 +668,10 @@ def test_a_bare_spoken_time_is_the_most_recent_past_one():
 
 @pytest.mark.parametrize("said", [
     "a bag of chips",
-    "a sandwich at 9",  # a bare hour is left to the model
+    "burgers at 5 Guys",  # a bare hour mid-sentence is left to the model
+    "cookies, about 2.",
+    "a granola bar at 2 for one",
+    "rice at 20.",
     "1.5 cups of rice",
     "about 150 grams of rice",
     "one bag at 140 calories",

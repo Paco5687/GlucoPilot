@@ -363,13 +363,25 @@ def _match_words(text: str) -> set[str]:
     return words
 
 
+def _preset_overlap(spoken: set[str], preset: dict[str, Any]) -> int:
+    """How many words what was said shares with a preset, or 0 when that isn't
+    enough to mean it. It is enough when they cover more than half the preset's
+    words, or include one no USDA food carries (a brand like "Yoggies"). One
+    shared everyday word is not: "yogurt bowl" is not "Yoggies yogurt bites"."""
+    words = _match_words(f"{preset.get('name') or ''} {preset.get('brand') or ''}")
+    shared = spoken & words
+    if 2 * len(shared) > len(words) or any(not nutrition.is_food_word(w) for w in shared):
+        return len(shared)
+    return 0
+
+
 def preset_candidates(said: str) -> list[dict[str, Any]]:
-    """Saved presets sharing a meaningful word with what was said, most-used
-    first, so the model can reuse their exact package numbers."""
+    """Saved presets that what was said names, most-used first, so the model
+    can reuse their exact package numbers."""
     spoken = _match_words(said)
     if not spoken:
         return []
-    scored = [(len(spoken & _match_words(f"{p.get('name') or ''} {p.get('brand') or ''}")), p) for p in list_presets()]
+    scored = [(_preset_overlap(spoken, p), p) for p in list_presets()]
     return [p for score, p in sorted(scored, key=lambda pair: -pair[0]) if score > 0][:PRESET_HINT_LIMIT]
 
 
@@ -395,8 +407,9 @@ def _local_zone(name: Any) -> Any:
 
 
 # A clock time as Whisper writes it: "at 3:30", "at 330", "at 3 30", "at 12.15",
-# "at 5 p.m.", "10.05am", "8.45 a.m.". A bare "at 5" is left to the model, since
-# without minutes or am/pm it is too easily something else.
+# "at 5 p.m.", "10.05am", "8.45 a.m.". A bare hour counts only as "at 12" ending
+# the sentence or clause; elsewhere ("burgers at 5 Guys", "about 2") it is too
+# easily something else and is left to the model.
 _SPOKEN_TIME = re.compile(
     r"(?:\b(?P<at>at|around|about)(?:\s+(?:about|around))?\s+)?"
     r"(?<![\d.:,$])\b(?:(?P<hm>\d{3,4})|(?P<h>\d{1,2})(?:(?:[:.]|\s)(?P<m>[0-5]\d))?)"
@@ -405,6 +418,14 @@ _SPOKEN_TIME = re.compile(
     r"(?!\s*(?:g|grams?|mg|kg|ml|oz|ounces?|lbs?|pounds?|cal|calories|kcal|carbs?|cups?|%|percent)\b)",
     re.IGNORECASE,
 )
+_CLAUSE_END = re.compile(r"\s*(?:[.!?,;]|$)")
+
+
+def _bare_hour_at_end(match: re.Match[str]) -> bool:
+    """An hour from 1 to 12 after "at" that ends a sentence or clause: "at 12."
+    or "at 11, then ..."."""
+    return ((match.group("at") or "").lower() == "at" and bool(match.group("h")) and not match.group("m")
+            and 1 <= int(match.group("h")) <= 12 and bool(_CLAUSE_END.match(match.string, match.end())))
 
 
 def _clock_of(match: re.Match[str]) -> tuple[int, int, str | None] | None:
@@ -413,7 +434,8 @@ def _clock_of(match: re.Match[str]) -> tuple[int, int, str | None] | None:
     else:
         hour, minute = int(match.group("h")), int(match.group("m") or 0)
     meridiem = (match.group("mer") or "").lower() or None
-    if meridiem is None and not (match.group("at") and (match.group("hm") or match.group("m") or match.group("oclock"))):
+    with_minutes = match.group("at") and (match.group("hm") or match.group("m") or match.group("oclock"))
+    if meridiem is None and not (with_minutes or _bare_hour_at_end(match)):
         return None
     if minute > 59 or hour > (12 if meridiem else 23) or (meridiem and hour == 0):
         return None
