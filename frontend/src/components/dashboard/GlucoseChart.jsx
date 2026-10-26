@@ -189,7 +189,10 @@ export default function GlucoseChart({ readings, treatments, periodLogs, fingers
           <XAxis
             dataKey="time"
             type="number"
-            domain={["dataMin", "dataMax"]}
+            // Recharts sizes "dataMin"/"dataMax" from the Scatters' own data once
+            // any marker exists, which squeezed the trace onto the marker times.
+            // Pin the axis to the readings; a marker outside still widens it.
+            domain={[chartStart, chartEnd]}
             tickFormatter={(t) => format(new Date(t), xFormat)}
             tick={{ fontSize: 10, fill: "hsl(210, 10%, 50%)" }}
             tickLine={false}
