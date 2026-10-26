@@ -37,6 +37,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sets the meal time instead of leaving it to the model, which sometimes dropped
   it. Whisper's "cash browns" is logged as hash browns, and hash browns are in
   its vocabulary prompt.
+- **Voice food log portions** — counting a food's pieces no longer multiplies
+  by a whole bag ("10 crackers" was 10 snack bags, about 276 g of carbs; it is
+  now 10 crackers). "1 serving" is USDA's typical amount unless USDA lists a
+  serving itself, so a serving of crackers is no longer a snack bag and a
+  serving of raisins no longer one raisin. "1 medium" potato is the any-size
+  potato (170 g), not a 60 g baby potato.
 - **Visit Report weight** — the headline is change from the 12-month high to
   the latest weight. Change since the first entry is shown as secondary context.
 - **Visit Report narrative** — the prompt is capped at 8,000 tokens (less when

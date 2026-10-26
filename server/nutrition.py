@@ -107,12 +107,17 @@ _CONTAINER_UNITS = _stems("bag package packet pack pouch box carton tub")
 _DRINK_VESSELS = _stems("can bottle glass cup carton mug drink")
 _SLICE_UNITS = _stems("slice piece")
 _COUNT_UNITS = _stems("each piece item whole serving unit portion one")
+_SERVING_UNITS = _stems("serving portion")
 _SIZES = _stems("small medium large regular extra jumbo mini miniature big thin thick")
+# Sizes as USDA measures put them ("1 baby potato", "1 new potato"), unless the
+# food is named by them (baby carrots).
+_MEASURE_SIZES = _stems("baby new")
 _DEFAULT_SIZES = _stems("medium regular")
 # Portion descriptions that are never what someone means by a plain count.
 _ODD_PORTIONS = _stems("crust yields raw melted cubic linear surface guideline calorie snack bite miniature mini "
                        "kid child dipping cracker cooked dry")
 _GENERIC_PORTION = re.compile(r"\bNFS\b|\bNS as to size\b|any size", re.IGNORECASE)
+_SINGLE_SERVING = re.compile(r"\bsingle[\s-]+serving", re.IGNORECASE)  # a bag's size, not a serving
 
 
 def _fold_measures(text: str) -> str:
@@ -385,6 +390,11 @@ def _cup_grams(food: Food) -> float | None:
     return best[1] if best else None
 
 
+def _says_serving(desc: str) -> bool:
+    """A USDA measure that is a serving itself, not a single-serving bag."""
+    return bool(set(_portion_parts(desc)[1]) & _SERVING_UNITS) and not _SINGLE_SERVING.search(desc)
+
+
 def _typical(food: Food) -> float | None:
     """USDA's "Quantity not specified": the amount people typically report."""
     return next((g for d, g in food.portions if d.lower() == "quantity not specified"), None)
@@ -404,6 +414,8 @@ def _count_portion(food: Food, portion: Portion) -> tuple[str, float] | None:
         family = {unit} if unit else set()
     # "1 muffin", "1 serving", or no unit at all: one of the food itself.
     as_count = unit is None or unit in _COUNT_UNITS or unit in food.words or unit in food.alias_words
+    # An odd word isn't odd when it was said: "10 crackers", "1 mini muffin".
+    said = {unit, portion.size}
     best = None
     for desc, grams in food.portions:
         if desc.lower() == "quantity not specified":
@@ -413,8 +425,13 @@ def _count_portion(food: Food, portion: Portion) -> tuple[str, float] | None:
             continue
         wordset = set(words)
         named = bool(wordset & family)
-        sizes = wordset & _SIZES
+        sizes = wordset & _SIZES | (wordset & _MEASURE_SIZES) - food.words - said
         generic = bool(_GENERIC_PORTION.search(desc))
+        # A bag of crackers is not one cracker: when the food itself is being
+        # counted, a container is used only if nothing else fits, or if it is
+        # the size asked for ("1 small" chips is the small bag).
+        last_resort = (as_count and not named and bool(wordset & _CONTAINER_UNITS)
+                       and not (portion.size and portion.size in sizes))
         if named and not as_count:
             score = 4.0
         elif as_count and (named or sizes or generic or wordset & food.words):
@@ -425,8 +442,8 @@ def _count_portion(food: Food, portion: Portion) -> tuple[str, float] | None:
             score += 3 if portion.size in sizes else (-2 if sizes else 0)
         else:
             score += 2.5 if generic else (2 if sizes & _DEFAULT_SIZES else (-1 if sizes else 0))
-        score -= 2 * len(wordset & _ODD_PORTIONS)
-        rank = (-score, len(words))
+        score -= 2 * len((wordset & _ODD_PORTIONS) - said)
+        rank = (last_resort, -score, len(words))
         if score > 0 and (best is None or rank < best[0]):
             best = (rank, desc, grams / amount)
     return (best[1], best[2]) if best else None
@@ -451,6 +468,10 @@ def _grams(food: Food, portion: Portion) -> tuple[float, str] | None:
             return round(cups * per_cup, 1), f"{cups:g} cup"
     else:
         found = _count_portion(food, portion)
+        if found and unit in _SERVING_UNITS and _typical(food) and not _says_serving(found[0]):
+            # "A serving" of crackers is the amount people usually eat, not
+            # one cracker; USDA's own "1 serving" measure still wins.
+            found = None
         if found:
             return round(qty * found[1], 1), f"{qty:g} × {found[0]}"
         if unit is None or unit in _COUNT_UNITS or unit in food.words:

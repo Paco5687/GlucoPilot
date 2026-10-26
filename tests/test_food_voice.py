@@ -347,6 +347,22 @@ def test_parse_portion(text, quantity, unit, size, stated):
     ("Potato, french fries, restaurant", "1 medium order", 145.0),
     ("Rice, white, cooked, no added fat", "1 serving", 118.0),  # USDA's typical amount
     ("Soft drink, cola", "1 bag (28 g)", 28.0),          # no such USDA measure: the stated weight
+    # No medium potato listed: the any-size potato, not the 60 g baby one.
+    ("Potato, NFS", "1 medium", 170.0),
+    ("Potato, NFS", "1 small", 170.0),
+    ("Potato, NFS", "1 baby potato", 60.0),
+    ("Carrots, raw", "1 medium", 60.0),                   # USDA's typical amount, not a baby carrot
+    # Crackers are counted one by one; a serving is the typical amount, not a bag.
+    ("Crackers, NFS", "10 crackers", 30.0),
+    ("Crackers, NFS", "1 serving", 18.0),
+    ("Crackers, NFS", "1 small serving (about 10 crackers)", 18.0),
+    ("Crackers, NFS", "1 bag", 45.0),
+    ("Crackers, saltines, whole wheat (includes multi-grain)", "1 serving", 14.0),  # USDA's own serving
+    ("Crackers, cheese, regular", "1 serving", 28.0),     # no typical amount: the single-serving bag
+    ("Raisins", "1 serving", 40.0),                       # not one raisin
+    ("Tortilla chips, cool ranch flavor (Doritos)", "12 chips", 36.0),
+    ("Tortilla chips, cool ranch flavor (Doritos)", "1 small", 28.0),  # the small bag, at the size asked
+    ("Chocolate candy", "1 bar", 45.0),                   # the regular-size pouch, when nothing else fits
 ])
 def test_portion_grams_uses_usdas_household_measures(name, portion, grams):
     assert nutrition.portion_grams(_food(name), portion)[0] == pytest.approx(grams, abs=0.2)
