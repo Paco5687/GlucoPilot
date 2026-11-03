@@ -89,6 +89,7 @@ def _auth_page(title: str, form_html: str, error: str = "") -> HTMLResponse:
     body = f"""
     <!doctype html>
     <html><head><title>{title}</title><meta name="viewport" content="width=device-width,initial-scale=1">
+    <link rel="manifest" href="/manifest.webmanifest"><meta name="theme-color" content="#0f8a71">
     <style>
       body{{font-family:Segoe UI,Arial,sans-serif;background:#f6f8fb;color:#172033;margin:0;display:grid;place-items:center;min-height:100vh}}
       form{{background:white;border:1px solid #d8e1ed;border-radius:12px;padding:28px;width:min(380px,90vw)}}
