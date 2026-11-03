@@ -74,9 +74,15 @@ SYSTEM = (
     "BE CALIBRATED: Separate what her data shows from what it cannot show. Call a lab value high or low only when "
     "its flag or reference range in the evidence says so. If you offer a possible explanation, give "
     "at most two, call them possibilities, and say what test or record would check each one. Never call something "
-    "likely, classic, or unmistakable, and never present a diagnosis; diagnoses belong to her care team. If a lab or "
-    "record is not in the evidence you were given, say you don't see it in the records you were given, rather than "
-    "claiming it was never done. When the evidence holds an unresolved contradiction, show both sides and call it unresolved. "
+    "likely, classic, or unmistakable, and never present a diagnosis; diagnoses belong to her care team. If a lab, "
+    "record, or kind of data such as heart rate or sleep is not in the evidence you were given, say you weren't shown "
+    "it, rather than claiming it doesn't exist or was never done. When the evidence holds an unresolved contradiction, "
+    "show both sides and call it unresolved. Call a symptom or condition hers only when an evidence item, a memory, or "
+    "her own message says so, in her words; never add one she has not reported. Use the standard meaning of any "
+    "medical term or abbreviation she uses, and if you are not sure what she means, ask her. When she asks whether "
+    "she could have a condition, never answer yes or no: say which of her own reported symptoms and results bear on "
+    "it, and which exam or test her care team would use to check it. Describe a condition's typical symptoms or "
+    "criteria only from a supplied [G#] source; without one, do not list them. "
     "The clinical_reviews block is authoritative: only entries under clinician_confirmed_facts may be described as "
     "clinician-confirmed; provider annotations are attributed notes, and owner_disputed_reviews stay disputed.\n"
     "BE STEADYING: She is often frightened about her health. Use calm, plain language and no alarming metaphors "
@@ -251,6 +257,14 @@ def _thread_history(thread_id: str, limit: int = HISTORY_TURNS * 2) -> list[dict
         limit,
     )
     return list(reversed(newest))
+
+
+def _her_messages(history: list[dict[str, Any]], actor: str) -> list[str]:
+    """Emily's own turns, which can back a symptom the reply says she has.
+    A clinician's thread holds the clinician's words, not hers."""
+    if actor != "owner":
+        return []
+    return [str(message.get("content") or "") for message in history if message.get("role") == "user"]
 
 
 def _new_thread(first_msg: str, actor: str = "owner") -> dict[str, Any]:
@@ -556,10 +570,11 @@ async def _finalize_grounded_reply(
     *,
     tier: str = "default",
     care_notes: list[dict[str, Any]] | None = None,
+    her_messages: list[str] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Validate a reply and make one bounded repair attempt when citations fail."""
     reply, evidence = companion_evidence.finalize_reply(
-        raw_reply, public_evidence, memories, sources, care_notes
+        raw_reply, public_evidence, memories, sources, care_notes, her_messages
     )
     initial_omissions = int((evidence.get("omissions") or {}).get("count") or 0)
     if not initial_omissions:
@@ -585,7 +600,7 @@ async def _finalize_grounded_reply(
             )
         )
         repaired_reply, repaired_evidence = companion_evidence.finalize_reply(
-            repaired_raw, public_evidence, memories, sources, care_notes
+            repaired_raw, public_evidence, memories, sources, care_notes, her_messages
         )
         repaired_omissions = int(
             (repaired_evidence.get("omissions") or {}).get("count") or 0
@@ -619,6 +634,7 @@ async def _safe_grounded_reply(
     tier: str = "default",
     care_notes: list[dict[str, Any]] | None = None,
     user_msg: str | None = None,
+    her_messages: list[str] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Ground the reply, with the treatment-change guard applied before and
     after so neither the draft nor its grounding repair can slip one through."""
@@ -630,6 +646,7 @@ async def _safe_grounded_reply(
         sources,
         tier=tier,
         care_notes=care_notes,
+        her_messages=her_messages,
     )
     reply, guarded_after = companion_safety.guard_reply(reply, user_msg)
     evidence["safety_guard"] = {"guarded_lines": guarded + guarded_after}
@@ -662,7 +679,7 @@ def _save_assistant_message(
     return message
 
 
-FOLLOW_UP_MAX_WORDS = 8
+FOLLOW_UP_MAX_WORDS = companion_evidence.FOLLOW_UP_MAX_WORDS
 
 
 def _retrieval_question(text: str, history: list[dict[str, Any]]) -> str:
@@ -918,6 +935,7 @@ async def handle(body: dict[str, Any], actor: str = "owner") -> dict[str, Any]:
                 tier=body.get("tier", "default"),
                 care_notes=notes,
                 user_msg=text,
+                her_messages=_her_messages(history, actor),
             )
         except Exception as err:
             log.exception("companion reply failed")
@@ -1107,6 +1125,7 @@ async def stream_send(text: str, tier: str = "default", thread_id: str | None = 
         tier=tier,
         care_notes=notes,
         user_msg=text,
+        her_messages=_her_messages(history, actor),
     )
     if not reply:
         yield json.dumps({"error": "Companion returned no supported response."}) + "\n"

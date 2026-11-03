@@ -18,6 +18,7 @@ from .clinical_reviews import companion_context as clinical_review_context
 
 CONTRACT_VERSION = "companion-evidence-context/1.0.0"
 MAX_PROMPT_CONTEXT_CHARS = 48_000
+FOLLOW_UP_MAX_WORDS = 8  # a message this short continues the one before it
 MAX_INTENT_CHARS = 500  # EvidenceBundleQuery.question_intent max_length
 _CITATION_RE = re.compile(r"\[([EMGC])(\d+)\]", re.IGNORECASE)
 # The local model often cites as "(E3)", "(M2, M5)" or "[ E3 ]" instead of the
@@ -116,9 +117,10 @@ SCOPES = (
         12,
         frozenset({
             "activity", "bedtime", "cycle", "energy", "exercise", "exhausted", "fatigue",
-            "fitbit", "foggy", "heart", "hormone", "hrv", "menstrual", "nap", "oura",
-            "period", "position", "sit", "sitting", "sleep", "spo2", "standing", "steps",
-            "tired", "walk", "walking", "workout",
+            "dizziness", "dizzy", "fitbit", "foggy", "heart", "hormone", "hrv", "lightheaded",
+            "menstrual", "nap", "orthostatic", "oura", "palpitations", "period", "position",
+            "pots", "pulse", "sit", "sitting", "sleep", "spo2", "standing", "steps",
+            "tachycardia", "tired", "walk", "walking", "workout",
         }),
     ),
     Scope(
@@ -139,9 +141,11 @@ SCOPES = (
         12,
         12,
         frozenset({
-            "allergy", "armor", "armour", "condition", "diagnosed", "diagnosis", "disease",
-            "dose", "history", "med", "medication", "medicine", "profile", "rash", "skin",
-            "supplement", "symptom", "treatment", "weight",
+            "allergy", "armor", "armour", "bruise", "bruising", "condition", "danlos",
+            "diagnosed", "diagnosis", "disease", "dizziness", "dizzy", "dose", "eds",
+            "ehlers", "heds", "history", "hypermobile", "hypermobility", "joint", "mcas",
+            "med", "medication", "medicine", "pain", "pots", "profile", "rash", "skin",
+            "supplement", "symptom", "syndrome", "treatment", "weight",
         }),
     ),
     Scope(
@@ -461,6 +465,17 @@ def _source_ids(item: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(values))
 
 
+_EXCERPT_FIELDS = ("name", "symptom", "details", "notes", "summary", "findings", "narrative", "description")
+MAX_EXCERPT_CHARS = 1_000
+
+
+def _excerpt(data: dict[str, Any]) -> str | None:
+    text = " ".join(
+        str(data[key]) for key in _EXCERPT_FIELDS if isinstance(data.get(key), str) and data[key].strip()
+    )
+    return text[:MAX_EXCERPT_CHARS] or None
+
+
 def _public_item(alias: str, item: dict[str, Any]) -> dict[str, Any]:
     data = item.get("data") if isinstance(item.get("data"), dict) else {}
     public = {
@@ -496,12 +511,17 @@ def _public_item(alias: str, item: dict[str, Any]) -> dict[str, Any]:
             for key in ("summary", "findings", "supporting_data")
             if key in data
         }
+    elif excerpt := _excerpt(data):
+        # Her words and the record's, so a symptom the reply says she has can
+        # be checked against what the model was actually shown.
+        public["excerpt"] = excerpt
     return public
 
 
 def _reasoning_item(alias: str, item: dict[str, Any]) -> dict[str, Any]:
     public = _public_item(alias, item)
     public.pop("analysis", None)  # the same values travel in data
+    public.pop("excerpt", None)
     return {
         **public,
         "data": _reasoning_data(item),
@@ -1396,10 +1416,301 @@ def _misstated_analysis(sentence: str, items: list[dict[str, Any]], kinds: set[s
     return _misplaced_event_time(sentence, support.events) or _misread_time_course(sentence, support)
 
 
+# A symptom or condition the reply says she has must appear somewhere she or her
+# records said it: an evidence item, a memory, a care note or, for symptoms, her
+# own messages in the thread. Asked about hypermobility, the model wrote "your
+# joint hypermobility" and "your reported symptoms like joint instability" with
+# no such report anywhere, and cited a glucose reading for it. Each entry lists
+# the ways she or a record may word the same thing.
+_SYMPTOMS = {
+    "joint hypermobility": r"hypermobil\w*|double[-\s]jointed|(?:joint|ligament)s?\s+(?:laxity|looseness)|loose\s+joints",
+    "joint instability": r"joint\s+instability|unstable\s+joints?|sublux\w*|dislocat\w*",
+    "joint pain": r"joint\s+(?:pain|aches?|aching|stiffness|swelling)|(?:achy|aching|painful|stiff|swollen)\s+joints|arthralgia",
+    "bruising": r"bruis\w*",
+    "brain fog": r"brain\s+fog|fogg(?:y|iness)|mental\s+fog|trouble\s+(?:thinking|concentrating)",
+    "fatigue": r"fatigu\w*|tired\w*|exhaust\w*|worn\s+out|(?:no|low)\s+energy",
+    "dizziness": r"dizz\w*|light[-\s]?headed\w*|vertigo",
+    "fainting": r"faint(?:ed|ing)\b|syncop\w*|passed\s+out|blacked\s+out",
+    "palpitations": r"palpitat\w*|racing\s+heart|heart\s+(?:racing|pounding)|tachycardi\w*|(?:rapid|fast)\s+heart\s*(?:beat|rate)",
+    "nausea": r"nause\w*",
+    "hair loss": r"hair\s+(?:loss|shedding|thinning|(?:is\s+)?falling\s+out)|losing\s+(?:\w+\s+)?hair",
+    "rash": r"rash(?:es)?\b|dermatitis|dermatos[ie]s|terra\s+firma",
+    "headaches": r"headaches?|migraines?",
+    "muscle pain": r"muscle\s+(?:pain|aches?)|myalgia",
+    "numbness": r"numb(?:ness)?\b|tingl\w*|pins\s+and\s+needles",
+    "irregular cycles": r"irregular\s+(?:menstrual\s+)?(?:cycles?|periods?)|cycle\s+irregularit\w*|missed\s+periods?|"
+                        r"oligomenorrh\w*|(?:cycles?|periods?)\s+(?:is|are|has\s+been|have\s+been)\s+irregular",
+    "bloating": r"bloat\w*",
+    "insomnia": r"insomnia|trouble\s+sleeping|can(?:'|’)?t\s+sleep",
+    "shortness of breath": r"short(?:ness)?\s+of\s+breath|breathless\w*",
+}
+_SYMPTOM_PATTERNS = {name: re.compile(rf"\b(?:{pattern})", re.IGNORECASE) for name, pattern in _SYMPTOMS.items()}
+_CONDITIONS = {
+    "hEDS": r"\b(?:hypermobile\s+|hypermobility[-\s]type\s+)?(?:h?eds\b|ehlers[-\s–]danlos(?:\s+syndrome)?)"
+            r"|\bhypermobility\s+spectrum\s+disorder|\bhsd\b",
+    "POTS": r"\bpots\b|postural\s+orthostatic\s+tachycardia",
+    "MCAS": r"\bmcas\b|mast\s+cell\s+activation",
+    "gastroparesis": r"gastroparesis",
+    "fibromyalgia": r"fibromyalgia",
+    "dysautonomia": r"dysautonomi\w*",
+    "neuropathy": r"neuropath\w*",
+}
+_CONDITION_PATTERNS = {name: re.compile(pattern, re.IGNORECASE) for name, pattern in _CONDITIONS.items()}
+# Who has the symptom: her, said of her.
+_HERS = re.compile(
+    r"\b(?:your|you(?:'|’)(?:ve|re|d)|you\s+(?:have|had|are|were|get|got|feel|felt|report\w*|mention\w*|"
+    r"describ\w*|said|told|noted|experienc\w*|deal\w*|struggl\w*|live|suffer\w*)|emily(?:'|’)?s?|she|her)\b",
+    re.IGNORECASE,
+)
+# Asking about a symptom, advising a check for it, or saying it is absent is
+# not claiming she has it.
+_NOT_A_CLAIM = re.compile(
+    r"\b(?:if|whether|ask\w*|check\w*|test\w*|exam\w*|screen\w*|evaluat\w*|assess\w*|look\w*\s+for|"
+    r"rule\w*\s+out|watch\w*\s+for|track\w*|log\w*|no|not|never|none|without)\b|n(?:'|’)t\b",
+    re.IGNORECASE,
+)
+_HERS_AFTER = re.compile(  # "the joint instability you described"
+    r"^\W{0,3}(?:that\s+|which\s+)?(?:you(?:'|’)(?:ve|re)|you\s+(?:have|had|describ\w*|mention\w*|report\w*|"
+    r"noted|feel|felt|get|experienc\w*)|she\s+(?:has|had|describ\w*|mention\w*|report\w*))\b",
+    re.IGNORECASE,
+)
+_NEGATED_AFTER = re.compile(r"^\W{0,3}(?:\w+\W+){0,3}?(?:is|are|was|were)(?:n(?:'|’)t|\s+not)\b", re.IGNORECASE)
+# "You haven't reported hair loss or fatigue" was said with both on record.
+_DENIES_REPORT = re.compile(
+    r"\b(?:you|she|emily)\s+(?:haven(?:'|’)t|have\s+not|hasn(?:'|’)t|has\s+not|didn(?:'|’)t|did\s+not|"
+    r"don(?:'|’)t|do\s+not|doesn(?:'|’)t|does\s+not|never)\s+(?:\w+\s+){0,2}?"
+    r"(?:report\w*|mention\w*|describ\w*|not\w*|had|have|experienc\w*|logg\w*|told)\b"
+    r"|\bno\s+(?:\w+\s+)?(?:mention|report|record|history|sign|complaint)s?\s+of\b"
+    r"|\b(?:records?|data|history|notes?|logs?)\s+(?:don(?:'|’)t|doesn(?:'|’)t|do\s+not|does\s+not|never)\s+"
+    r"(?:\w+\s+)?(?:show|mention|include|list|contain|record|note)\w*\b",
+    re.IGNORECASE,
+)
+_ABOUT_HER = re.compile(r"\b(?:you|your|she|her|emily)\b", re.IGNORECASE)
+_DENIAL_SCOPE_BREAK = re.compile(r"[—–()]|\s-\s|\b(?:which|that|and\s+your|your\s+\w+\s+(?:like|such\s+as))\b", re.IGNORECASE)
+_STRONG_BREAK = re.compile(r"[;:]|\b(?:but|however|although|though|while|whereas)\b", re.IGNORECASE)
+# "Your hEDS", "you have POTS": a diagnosis said to be hers. "Could fit POTS" is
+# a possibility, which the prompt allows.
+_HAS_CONDITION = re.compile(
+    r"\b(?:you\s+(?:have|had|are\s+living\s+with|live\s+with|suffer\s+from|were\s+diagnosed\s+with)|"
+    r"you(?:'|’)ve\s+(?:got|had|been\s+diagnosed\s+with)|"
+    r"(?:your|her|emily(?:'|’)s)(?:\s+(?:possible|suspected|likely|probable|diagnosed|current|underlying))?)\s+$",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class _HerRecord:
+    records: str  # evidence items, memories and care notes the model was shown
+    her_words: str  # what she said in this thread ("why am I so tired?" reports tiredness)
+    question: str  # her latest message
+
+
+def _her_record(
+    public_context: dict[str, Any],
+    memories: list[dict[str, Any]],
+    care_notes: list[dict[str, Any]],
+    her_messages: list[str],
+) -> _HerRecord:
+    records = [
+        " ".join(str(item.get(key) or "") for key in ("title", "claim", "excerpt"))
+        for item in public_context.get("evidence_items") or []
+    ]
+    records += [str(memory.get("content") or "") for memory in memories]
+    records += [f"{note.get('title') or ''} {note.get('body') or ''}" for note in care_notes]
+    said = [str(message or "") for message in her_messages]
+    # Naming a condition is not reporting its symptom: "hypermobile
+    # Ehlers-Danlos syndrome" in her question does not mean she is hypermobile.
+    words = " ".join(said)
+    for pattern in _CONDITION_PATTERNS.values():
+        words = pattern.sub(" ", words)
+    # A short follow-up ("Hypermobile Ehlers-Danlos syndrome") continues the
+    # question before it, as it does for retrieval.
+    question = said[-1] if said else ""
+    if len(said) > 1 and len(question.split()) <= FOLLOW_UP_MAX_WORDS:
+        question = f"{said[-2]} {question}"
+    return _HerRecord(" ".join(records), words, question)
+
+
+def _unreported_symptom(sentence: str, record: _HerRecord) -> bool:
+    """A sentence that says she has a symptom no record, memory, care note or
+    message of hers mentions, or that she has not reported one they do; or
+    gives her a condition no record or memory gives her. Her asking "could I
+    have POTS?" does not give her POTS."""
+    if _QUESTION_END.search(sentence):
+        return False
+    for segment in _STRONG_BREAK.split(sentence):
+        for pattern in _SYMPTOM_PATTERNS.values():
+            for match in pattern.finditer(segment):
+                window = segment[:match.start()][-100:]
+                on_record = bool(pattern.search(record.records) or pattern.search(record.her_words))
+                denials = list(_DENIES_REPORT.finditer(window))
+                # "Your data doesn't show hEDS—your symptoms like brain numbness
+                # don't match": the denial is of hEDS, not of the numbness.
+                if denials and not _DENIAL_SCOPE_BREAK.search(window[denials[-1].end():]) and _ABOUT_HER.search(segment):
+                    if on_record:
+                        return True
+                    continue
+                if not (_HERS.search(window) or _HERS_AFTER.search(segment[match.end():])):
+                    continue
+                if _NOT_A_CLAIM.search(window) or _NEGATED_AFTER.search(segment[match.end():]):
+                    continue
+                if not on_record:
+                    return True
+        for pattern in _CONDITION_PATTERNS.values():
+            for match in pattern.finditer(segment):
+                if _HAS_CONDITION.search(segment[:match.start()]) and not pattern.search(record.records):
+                    return True
+    return False
+
+
+# Asked "is it possible I could have hEDS?", the model opened with "Yes, hEDS
+# is a possibility". Whether she has a condition is her care team's call; the
+# prompt asks for what fits and what doesn't instead.
+_ASKS_IF_SHE_HAS = re.compile(
+    r"\b(?:(?:do|could|can|might|may)\s+i\s+(?:\w+\s+)?have|is\s+it\s+possible\s+(?:that\s+)?i\s+(?:\w+\s+)?have|"
+    r"do\s+you\s+think\s+i\s+(?:\w+\s+)?have|could\s+(?:this|it|that)\s+be|am\s+i\s+(?:\w+\s+)?(?:dealing|living)\s+with)\b",
+    re.IGNORECASE,
+)
+_YES = re.compile(r"^\W*(?:unverified[^:]*:\s*)?(?:yes|yeah|yep|absolutely|definitely)\b", re.IGNORECASE)
+_POSSIBLE = re.compile(
+    r"\b(?:possib\w*|could|might|may|likely|fits?|consistent|sounds\s+like|you\s+have|you(?:'|’)ve\s+got)\b",
+    re.IGNORECASE,
+)
+
+
+def _affirmed_condition(sentence: str, record: _HerRecord) -> bool:
+    return bool(
+        _YES.match(sentence) and _POSSIBLE.search(sentence) and _ASKS_IF_SHE_HAS.search(record.question)
+    )
+
+
+# One semaglutide dose in January set off months of questions, and the model
+# keeps calling it "the GLP-1 you're on". Current use needs a medication record.
+_GLP1 = r"(?:glp[-\s]?1(?:\s+(?:agonist|medication|drug))?|semaglutide|ozempic|wegovy|rybelsus|tirzepatide|mounjaro|zepbound)"
+_ON_GLP1 = re.compile(
+    rf"\b(?:you(?:'|’)re|you\s+are)\s+(?:still\s+|currently\s+|now\s+)?(?:on|taking|using)\s+(?:a\s+|the\s+|your\s+)?{_GLP1}"
+    rf"|\b{_GLP1}\s+(?:that\s+)?you(?:'|’)re\s+(?:still\s+|currently\s+)?(?:on|taking|using)\b"
+    rf"|\byou\s+(?:currently\s+|still\s+)?(?:take|use)\s+(?:a\s+)?{_GLP1}"
+    # "Your GLP-1 use may be affecting", "your GLP-1 regimen": ongoing use.
+    rf"|\byour\s+(?:current\s+|ongoing\s+)?{_GLP1}\s+(?:(?:use|treatment|therapy)\s+(?:is|may\s+be|might\s+be|could\s+be)\s+\w+ing"
+    r"|regimen|therapy|treatment\s+plan)\b",
+    re.IGNORECASE,
+)
+_GLP1_MEDICATION = re.compile(_GLP1, re.IGNORECASE)
+
+
+def _unrecorded_glp1_use(sentence: str, public_context: dict[str, Any]) -> bool:
+    if not _ON_GLP1.search(sentence):
+        return False
+    return not any(
+        item.get("entity_type") == "Medication"
+        and _GLP1_MEDICATION.search(f"{item.get('title') or ''} {item.get('excerpt') or ''}")
+        for item in public_context.get("evidence_items") or []
+    )
+
+
+# "hEds (hypothalamic-pituitary-ovarian axis dysfunction)": an expansion whose
+# words cannot spell the abbreviation was made up. The match is the
+# Schwartz–Hearst test: each letter, last to first, found in order in the long
+# form, the first one at the start of a word.
+_ABBREVIATION_DEFINED = re.compile(
+    r"(?<![\w-])(?P<short>[^\W\d_][^\W\d_-]{0,2}(?:-?[^\W\d_]){1,6})\s*"
+    r"(?:\((?P<paren>[^()]{3,80})\)|,?\s+(?:which\s+)?(?:stands\s+for|is\s+short\s+for|short\s+for)\s+"
+    r"(?P<named>[^\W\d_][^\d,.;:()\[\]]{3,80}?)(?=[,.;:)\[]|$))",
+)
+_LONG_FORM = re.compile(r"^[^\W\d_]+(?:[\s'’–—-]+[^\W\d_]+)+$")
+# A gloss, not an expansion: "TSH (your thyroid signal)", "GMI (an estimate of A1c)".
+_GLOSS = re.compile(
+    r"\b(?:your|my|her|the|a|an|this|that|which|how|what|is|are|was|or|like|about|such|e\.?g|i\.?e|also|called)\b",
+    re.IGNORECASE,
+)
+
+
+def _abbreviation_like(token: str) -> bool:
+    letters = token.replace("-", "")
+    upper = sum(1 for char in letters if char.isupper())
+    return 2 <= len(letters) <= 8 and (upper >= 2 or any(char.isupper() for char in letters[1:]))
+
+
+def _spells(short: str, long: str) -> bool:
+    letters = [char for char in short.lower() if char.isalpha()]
+    text = long.lower()
+    position = len(text) - 1
+    for index in range(len(letters) - 1, -1, -1):
+        char = letters[index]
+        while position >= 0 and (
+            text[position] != char or (index == 0 and position > 0 and text[position - 1].isalnum())
+        ):
+            position -= 1
+        if position < 0:
+            return False
+        position -= 1
+    return True
+
+
+_SHOUTED_WORD = re.compile(r"\b[^\W\d_a-z]{3,}\W*$")  # "STOP THE TOXIC LOAD (First Priority)" is a heading
+
+
+def _misdefined_abbreviation(sentence: str) -> bool:
+    for match in _ABBREVIATION_DEFINED.finditer(sentence):
+        short = match.group("short")
+        long = (match.group("paren") or match.group("named") or "").strip()
+        if not _abbreviation_like(short) or not _LONG_FORM.match(long) or _GLOSS.search(long):
+            continue
+        if _SHOUTED_WORD.search(sentence[:match.start()]):
+            continue
+        if not _spells(short, long):
+            return True
+    return False
+
+
+# "HRV via Oura/Fitbit: not available here" was said with months of nightly HRV
+# on file; the question had pulled only labs, so the model was never shown it.
+_WEARABLE_DATA = re.compile(
+    r"\b(?:hrv|(?:heart[-\s]rate|hr)\s+variability|(?:resting\s+)?heart[-\s]rate\s+data|sleep\s+(?:data|scores?|stag\w*)|"
+    r"step\s+counts?|spo2|oxygen\s+saturation|oura|fitbit|wearables?)\b",
+    re.IGNORECASE,
+)
+_DATA_ABSENT = re.compile(
+    rf"{_ABSENCE.pattern}|\bno\s+(?:\w+\s+){{0,2}}?data\b|\bnot\s+(?:in\s+(?:your|the|her)\s+records|here)\b|"
+    r"\b(?:is|are)(?:n(?:'|’)?t|\s+not)\s+(?:available|here)\b|\bunavailable\b|"
+    r"\bneither(?:\s+of\s+(?:which|them|these|those))?\s+(?:is|are)\b|"
+    r"\bno\s+record\s+of\b|\bno\b[^.;]{0,60}\b(?:exists?|available)\b",
+    re.IGNORECASE,
+)
+# "Last night's Oura hasn't synced yet" is about freshness, which source
+# diagnostics report; only a claim that the data does not exist is judged.
+_FRESHNESS = re.compile(r"\b(?:today|yesterday|last\s+night|this\s+week|yet|sync\w*|latest|since)\b", re.IGNORECASE)
+_WEARABLE_SOURCES = {"oura", "fitbit", "google_health"}
+
+
+def _unsupported_wearable_absence(sentence: str, public_context: dict[str, Any]) -> bool:
+    if _FRESHNESS.search(sentence):
+        return False
+    absences = list(_DATA_ABSENT.finditer(sentence))
+    if not absences or not any(
+        abs(absence.start() - mention.start()) <= 80
+        for absence in absences
+        for mention in _WEARABLE_DATA.finditer(sentence)
+    ):
+        return False
+    scopes = {scope.get("scope") for scope in public_context.get("scopes") or []}
+    if "wellness" not in scopes:
+        return True
+    # A connected wearable has the data even when ranking left it out of this
+    # question's evidence.
+    return any(
+        item.get("domain") == "wearables" for item in public_context.get("evidence_items") or []
+    ) or any(
+        source.get("source") in _WEARABLE_SOURCES for source in public_context.get("source_diagnostics") or []
+    )
+
+
 def _drop_unsupported_sentences(
     line: str,
     public_context: dict[str, Any],
     evidence_by_alias: dict[str, dict[str, Any]],
+    record: _HerRecord,
 ) -> tuple[str, int]:
     """Judge each sentence by its own citations. A paragraph that cites flagged
     antibodies in one sentence must not carry "TSH 2.17 (flagged high)" in the
@@ -1415,6 +1726,11 @@ def _drop_unsupported_sentences(
             or _glucose_claim_without_glucose_evidence(sentence, items, kinds)
             or _unsupported_lab_absence(sentence, public_context)
             or _misstated_analysis(sentence, items, kinds)
+            or _unsupported_wearable_absence(sentence, public_context)
+            or _unreported_symptom(sentence, record)
+            or _misdefined_abbreviation(sentence)
+            or _affirmed_condition(sentence, record)
+            or _unrecorded_glp1_use(sentence, public_context)
         ):
             dropped += 1
             continue
@@ -1454,8 +1770,11 @@ def finalize_reply(
     memories: list[dict[str, Any]],
     sources: list[dict[str, Any]],
     care_notes: list[dict[str, Any]] | None = None,
+    her_messages: list[str] | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """Validate aliases, qualify labs, and persist bounded claim/source links."""
+    """Validate aliases, qualify labs, and persist bounded claim/source links.
+    `her_messages` are her own turns in the thread: a symptom she described
+    there is hers even when no record holds it yet."""
     evidence_by_alias = {
         item["alias"].upper(): item
         for item in public_context.get("evidence_items", [])
@@ -1485,11 +1804,12 @@ def finalize_reply(
     used_memories: dict[str, dict[str, Any]] = {}
     used_notes: dict[str, dict[str, Any]] = {}
     omitted_claims = 0
+    record = _her_record(public_context, memories, care_notes or [], her_messages or [])
 
     for line in companion_safety.plain(reply).splitlines():
         line = _normalize_citations(line)
         if line.strip():
-            line, dropped = _drop_unsupported_sentences(line, public_context, evidence_by_alias)
+            line, dropped = _drop_unsupported_sentences(line, public_context, evidence_by_alias, record)
             omitted_claims += dropped
             if not line.strip():
                 continue

@@ -902,6 +902,245 @@ def test_scope_keywords_match_plurals_and_everyday_words():
     assert "labs_records" in names("Do i have elevated liver enzymes?")
     assert names("Is my free T4 okay on Armour?")[0] in {"clinical", "labs_records"}
     assert "metabolic" not in names("Is my ferritin low?")
+    # Questions about a syndrome reach her symptom history and heart-rate data.
+    assert {"clinical", "wellness"} <= set(names("Could I have hEDS or POTS?"))
+    assert "clinical" in names("Hypermobile Ehlers-Danlos syndrome")
+    assert "wellness" in names("How to test for Hyperadrenergic POTS")
+
+
+MEMORIES = [
+    {"id": "memory-1", "category": "symptom", "content": "Reports increased bruising compared to normal."},
+    {"id": "memory-2", "category": "symptom", "content": "Reports feeling exhausted and foggy lately."},
+]
+
+
+def _finalize(reply, public, *, her_messages=None, memories=MEMORIES):
+    return companion_evidence.finalize_reply(reply, public, memories, [], [], her_messages or [])
+
+
+def test_symptoms_she_never_reported_are_omitted(companion_database):
+    public, _reasoning = companion_evidence.build_context(
+        "Could my symptoms be a joint condition?", as_of=date(2026, 7, 20), refresh=False
+    )
+    reply, evidence = _finalize(
+        "\n".join([
+            "Your joint hypermobility might be linked to a collagen disorder.",
+            "Your reported symptoms, like joint instability and brain fog, could overlap with it [M2].",
+            "Your cycle irregularities also fit this pattern [M2].",
+            "You have reported increased bruising [M1].",
+            "Your fatigue and brain fog [M2] are worth raising at your next visit.",
+            "Your dizziness when you stand is worth raising too.",
+            "A clinician can check for joint hypermobility with a Beighton exam.",
+            "Your records don't mention joint pain.",
+            "Have you noticed joint pain or joints that slip out of place?",
+            "If you have joint pain, mention it at your next visit.",
+            "Your thyroid autoimmunity may be behind your energy crashes [M2].",
+        ]),
+        public,
+        her_messages=["I get dizzy when I stand up. Why am I so tired?"],
+    )
+    assert "joint hypermobility might be linked" not in reply
+    assert "joint instability" not in reply
+    assert "cycle irregularities" not in reply
+    for kept in (
+        "reported increased bruising",
+        "fatigue and brain fog",
+        "dizziness when you stand",
+        "Beighton exam",
+        "don't mention joint pain",
+        "Have you noticed joint pain",
+        "If you have joint pain",
+        "energy crashes",
+    ):
+        assert kept in reply
+    assert evidence["omissions"]["count"] == 3
+
+
+def test_saying_she_never_reported_a_symptom_must_be_true(companion_database):
+    public, _reasoning = companion_evidence.build_context(
+        "Could my symptoms be a joint condition?", as_of=date(2026, 7, 20), refresh=False
+    )
+    reply, evidence = _finalize(
+        "\n".join([
+            "You haven't reported weight loss or chronic fatigue, two signs of it.",
+            "You've had no mention of bruising [M1].",
+            "Your records don't show bruising or joint dislocation [M1].",
+            "Your records don't mention joint pain.",
+            "Your bruising isn't enough on its own to point to a joint condition [M1].",
+            "Your data doesn't show it—your symptoms like brain fog [M2] don't match its criteria.",
+            "Your cycle is irregular, with lighter periods [M2].",
+        ]),
+        public,
+    )
+    assert "symptoms like brain fog" in reply
+    assert "chronic fatigue" not in reply
+    assert "no mention of bruising" not in reply
+    assert "don't show bruising" not in reply
+    assert "cycle is irregular" not in reply
+    assert "don't mention joint pain" in reply
+    assert "isn't enough on its own" in reply
+    assert evidence["omissions"]["count"] == 4
+
+
+def test_current_glp1_use_needs_a_medication_record(companion_database):
+    public, _reasoning = companion_evidence.build_context(
+        "Could my medication explain this?", as_of=date(2026, 7, 20), refresh=False
+    )
+    reply, evidence = _finalize(
+        "\n".join([
+            "These sound like possible effects of the GLP-1 you're on [M2].",
+            "Since you're taking semaglutide, appetite can drop [M2].",
+            "Your GLP-1 use may be affecting your appetite [M2].",
+            "Ask about your GLP-1 regimen [M2].",
+            "Your symptoms worsened after the GLP-1 dose in January [M2].",
+        ]),
+        public,
+    )
+    assert "you're on" not in reply and "taking semaglutide" not in reply
+    assert "use may be affecting" not in reply and "regimen" not in reply
+    assert "after the GLP-1 dose in January" in reply
+    assert evidence["omissions"]["count"] == 4
+
+    db.create_entity(
+        "Medication",
+        {"owner_email": OWNER, "name": "Synthetic semaglutide", "status": "active", "dose": "0.25 mg"},
+    )
+    clear_bundle_cache()
+    on_it, _reasoning = companion_evidence.build_context(
+        "Could my medication explain this?", as_of=date(2026, 7, 20), refresh=False
+    )
+    reply, _evidence = _finalize("Since you're taking semaglutide, appetite can drop [M2].", on_it)
+    assert "taking semaglutide" in reply
+
+
+def test_a_condition_is_hers_only_when_her_records_say_so(companion_database):
+    question = ["Is it possible I could have hEds?", "Hypermobile Ehlers-Danlos syndrome"]
+    public, _reasoning = companion_evidence.build_context(
+        "Could my bruising be hEDS?", as_of=date(2026, 7, 20), refresh=False
+    )
+    reply, evidence = _finalize(
+        "\n".join([
+            "Yes, hEDS is a possibility given your results.",
+            "Your hEDS may explain the bruising [M1].",
+            "Your joint hypermobility could fit hEDS.",
+            "Your bruising alone could fit hEDS or many other causes [M1].",
+            "hEDS is diagnosed by a clinical exam, not a lab test.",
+        ]),
+        public,
+        her_messages=question,
+    )
+    assert "Yes, hEDS" not in reply
+    assert "Your hEDS may explain" not in reply
+    assert "joint hypermobility" not in reply
+    assert "bruising alone could fit hEDS" in reply
+    assert "diagnosed by a clinical exam" in reply
+    assert evidence["omissions"]["count"] == 3
+
+    db.create_entity(
+        "Diagnosis",
+        {"owner_email": OWNER, "name": "Synthetic hypermobile Ehlers-Danlos syndrome", "diagnosed_date": "2020-01-01"},
+    )
+    clear_bundle_cache()
+    diagnosed, _reasoning = companion_evidence.build_context(
+        "Could my bruising be hEDS?", as_of=date(2026, 7, 20), refresh=False
+    )
+    assert any("Ehlers-Danlos" in (item.get("excerpt") or "") for item in diagnosed["evidence_items"])
+    reply, _evidence = _finalize("Your hEDS may explain the bruising [M1].", diagnosed, her_messages=question)
+    assert "Your hEDS may explain" in reply
+
+
+def test_made_up_abbreviation_expansions_are_omitted(companion_database):
+    public, _reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?", as_of=date(2026, 7, 20), refresh=False
+    )
+    reply, evidence = _finalize(
+        "\n".join([
+            "hEds (hypothalamic-pituitary-ovarian axis dysfunction) is one way to read hormone results.",
+            "MCAS stands for metabolic insulin resistance.",
+            "hEDS (hypermobile Ehlers-Danlos syndrome) is diagnosed by clinical exam.",
+            "POTS (postural orthostatic tachycardia syndrome) is checked with a stand test.",
+            "TPOAb (thyroid peroxidase antibodies) and DHEA-S (dehydroepiandrosterone sulfate) are blood tests.",
+            "TSH (the thyroid signal) is a blood test.",
+            "STOP THE TOXIC LOAD (First Priority)",
+        ]),
+        public,
+    )
+    assert "hypothalamic-pituitary-ovarian axis dysfunction" not in reply
+    assert "metabolic insulin resistance" not in reply
+    for kept in ("hypermobile Ehlers-Danlos", "postural orthostatic", "thyroid peroxidase", "thyroid signal", "First Priority"):
+        assert kept in reply
+    assert evidence["omissions"]["count"] == 2
+
+
+def test_claims_that_heart_rate_data_is_missing_must_be_true(companion_database):
+    labs_only, _reasoning = companion_evidence.build_context(
+        "What do my thyroid labs show?", as_of=date(2026, 7, 20), refresh=False
+    )
+    reply, _evidence = _finalize(
+        "\n".join([
+            "Heart rate variability (HRV) via Oura or Fitbit is not available here.",
+            "There's no data on heart rate variability in your records.",
+            "No HR variability or blood pressure logs are available in your data.",
+            "No record of orthostatic testing or HR variability exists in your data.",
+            "Blood pressure readings are not in your records.",
+        ]),
+        labs_only,
+    )
+    assert "HRV" not in reply and "variability" not in reply
+    assert "Blood pressure readings" in reply
+
+    # Asked about sleep with no wearable data on file, the absence is true.
+    no_wearables, _reasoning = companion_evidence.build_context(
+        "How did I sleep?", as_of=date(2026, 7, 20), refresh=False
+    )
+    assert not any(item["domain"] == "wearables" for item in no_wearables["evidence_items"])
+    reply, _evidence = _finalize("We don't have HRV data from a wearable.", no_wearables)
+    assert "HRV data" in reply
+    # A connected Oura has the data even when ranking left it out of the evidence.
+    connected = {**no_wearables, "source_diagnostics": [{"source": "oura", "status": "current"}]}
+    reply, _evidence = _finalize(
+        "Your care team could assess heart rate variability, neither of which is in your records.", connected
+    )
+    assert "heart rate variability" not in reply
+
+    db.create_entity(
+        "OuraDaily",
+        {"owner_email": OWNER, "date": "2026-07-19", "readiness_score": 80, "hrv": 41, "sleep_score": 84},
+    )
+    clear_bundle_cache()
+    wearables, _reasoning = companion_evidence.build_context(
+        "How did I sleep?", as_of=date(2026, 7, 20), refresh=False
+    )
+    assert any(item["domain"] == "wearables" for item in wearables["evidence_items"])
+    reply, _evidence = _finalize(
+        "We don't have HRV data from a wearable.\nYour Oura hasn't synced since yesterday.", wearables
+    )
+    assert "HRV data" not in reply
+    assert "hasn't synced since yesterday" in reply
+
+
+def test_stream_counts_symptoms_she_described_earlier_in_the_thread(companion_database, monkeypatch):
+    public, reasoning = companion_evidence.build_context(
+        "Could my symptoms be a joint condition?", as_of=date(2026, 7, 20), refresh=False
+    )
+    monkeypatch.setattr(companion, "_extract_memories", lambda *_args, **_kwargs: asyncio.sleep(0, []))
+    _stub_reply_pipeline(monkeypatch, public, reasoning, ["Okay."])
+    first = _collect("My joints feel loose and keep dislocating.")
+    thread_id = first[0]["thread"]["id"]
+
+    _stub_reply_pipeline(
+        monkeypatch, public, reasoning,
+        ["The joint instability you described is worth raising at your next visit."],
+    )
+    events = _collect("Could that be hEDS?", thread_id=thread_id)
+    assert "joint instability you described" in "".join(e.get("delta", "") for e in events)
+
+    _stub_reply_pipeline(
+        monkeypatch, public, reasoning,
+        ["The joint instability you described is worth raising at your next visit."],
+    )
+    events = _collect("Could I have hEDS?")
+    assert "joint instability" not in "".join(e.get("delta", "") for e in events)
 
 
 def test_key_labs_ride_along_with_the_labs_scope(companion_database):
