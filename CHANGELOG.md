@@ -9,7 +9,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 - **Install as an app** — GlucoPilot has a web app manifest, icons and a
   service worker, so "Install app" on Android (and Add to Home Screen on iOS)
-  opens it in its own window, starting on the dashboard. With no network the
+  opens it in its own window, starting on the dashboard, with the blood-drop
+  icon. With no network the
   installed app shows a "No connection" page. The service worker caches
   nothing; pages and health data always come from the server.
 - **Pump settings from Glooko** — carb ratios, correction factor (ISF), targets,
