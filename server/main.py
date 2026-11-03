@@ -75,15 +75,36 @@ app.include_router(diagnostics.router)
 app.include_router(relationship_api.router)
 app.include_router(evidence_bundle.router)
 
-if (FRONTEND_DIST / "assets").is_dir():
-    app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+for static_dir in ("assets", "icons"):
+    if (FRONTEND_DIST / static_dir).is_dir():
+        app.mount(f"/{static_dir}", StaticFiles(directory=FRONTEND_DIST / static_dir), name=static_dir)
+
+
+def _dist_file(name: str, media_type: str, headers: dict | None = None):
+    path = FRONTEND_DIST / name
+    if path.is_file():
+        return FileResponse(path, media_type=media_type, headers=headers)
+    return JSONResponse({"detail": "Not found"}, status_code=404)
+
+
+@app.get("/manifest.webmanifest")
+def web_manifest():
+    """Web app manifest: lets phones install GlucoPilot as a standalone app."""
+    return _dist_file("manifest.webmanifest", "application/manifest+json")
+
+
+@app.get("/sw.js")
+def service_worker():
+    # no-cache: the browser revalidates the worker on each launch, so a deploy
+    # replaces it without waiting out an HTTP cache lifetime.
+    return _dist_file("sw.js", "text/javascript", {"Cache-Control": "no-cache"})
 
 
 @app.exception_handler(404)
 async def spa_fallback(request: Request, exc):
     """Serve the SPA for client-side routes; JSON 404 for API paths."""
     path = request.url.path
-    if path.startswith(("/api/", "/dexcom/", "/assets/")):
+    if path.startswith(("/api/", "/dexcom/", "/assets/", "/icons/")):
         return JSONResponse({"detail": "Not found"}, status_code=404)
     index = FRONTEND_DIST / "index.html"
     if index.is_file():
