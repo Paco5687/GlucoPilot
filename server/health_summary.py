@@ -25,6 +25,8 @@ from .db import config_value, set_config_value
 from .data_quality import assess_daily
 from .llm import CONTEXT_SAFETY_MARGIN, context_limit, count_tokens, invoke_llm
 from .lab_audit import qualification as lab_qualification
+from .lab_audit import censored as lab_censored
+from .lab_audit import display_value as lab_display_value
 from .lab_audit import summary_eligible as lab_summary_eligible
 from .repositories import get_repositories
 from .unit_of_work import unit_of_work
@@ -83,11 +85,12 @@ def _labs_snapshot() -> tuple[list, list]:
         latest = pts[-1]
         fl = (latest.get("flag") or "").lower()
         if fl and fl not in ("normal", ""):
-            flagged.append({"name": name, "value": latest["value"], "unit": latest.get("unit", ""),
+            flagged.append({"name": name, "value": lab_display_value(latest), "unit": latest.get("unit", ""),
                             "flag": fl, "category": latest.get("category", ""),
                             "date": latest.get("collected_date", ""),
                             "verification": lab_qualification(latest)})
-        if len(pts) >= 3:
+        # A below-limit "<55" has no exact number to trend from or to.
+        if len(pts) >= 3 and not lab_censored(pts[0]) and not lab_censored(pts[-1]):
             first, last = pts[0]["value"], pts[-1]["value"]
             if first and abs(last - first) / abs(first) >= 0.15:
                 trends.append({"name": name, "from": first, "to": last, "unit": latest.get("unit", ""),

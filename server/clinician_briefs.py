@@ -36,7 +36,7 @@ from .evidence_bundle import (
 from .hypotheses import report_block as hypothesis_report
 from .insulin_reconciliation import reconcile_treatments
 from .insulin_response import build_response_events
-from .lab_audit import ABNORMAL_FLAGS, effective_flag
+from .lab_audit import ABNORMAL_FLAGS, effective_flag, value_prefix as lab_value_prefix
 from .lab_audit import summary_eligible as lab_summary_eligible
 from .repositories import get_repositories
 from .lab_names import canonical_lab_name
@@ -352,7 +352,11 @@ def _display(item: dict[str, Any]) -> dict[str, Any]:
         flag, replaced = effective_flag(data)
         display.update({
             "label": canonical_lab_name(data["test_name"]) if data.get("test_name") else "Lab result",
-            "value": _fmt(data.get("value"), 2) or str(data.get("value_text") or ""),
+            "value": (
+                lab_value_prefix(data) + _fmt(data.get("value"), 2)
+                if _fmt(data.get("value"), 2)
+                else str(data.get("value_text") or "")
+            ),
             "unit": data.get("unit") or None,
             "reference": _reference(data),
             "flag": _flag_label(flag) if flag else None,

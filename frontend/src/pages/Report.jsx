@@ -476,8 +476,14 @@ function WeightBlock({ weight }) {
   );
 }
 
+// A result the lab printed as "<55" (below its reporting limit) arrives with
+// value 55 and value_display "<55"; the display form is what was reported.
+function labValue(entry) {
+  return entry.value_display ?? entry.value;
+}
+
 function labResult(entry) {
-  return `${entry.value}${entry.unit ? ` ${entry.unit}` : ""}`;
+  return `${labValue(entry)}${entry.unit ? ` ${entry.unit}` : ""}`;
 }
 
 function labReference(entry) {
@@ -511,15 +517,15 @@ const EARLIER_RESULTS_SHOWN = 3;
 // name, so it stays out of the series.
 function earlierResults(entry) {
   const unit = String(entry.unit || "").toLowerCase();
-  const seen = new Set([`${entry.date}|${entry.value}`]);
+  const seen = new Set([`${entry.date}|${labValue(entry)}`]);
   const earlier = [];
   for (const point of entry.history || []) {
-    const key = `${point.parsed_date}|${point.value}`;
+    const key = `${point.parsed_date}|${labValue(point)}`;
     if (!point.parsed_date || seen.has(key) || String(point.unit || "").toLowerCase() !== unit) continue;
     seen.add(key);
     earlier.push(point);
   }
-  return earlier.slice(-EARLIER_RESULTS_SHOWN).map((point) => `${point.value} (${point.parsed_date})`);
+  return earlier.slice(-EARLIER_RESULTS_SHOWN).map((point) => `${labValue(point)} (${point.parsed_date})`);
 }
 
 function KeyLabResults({ results, perRow }) {
@@ -549,7 +555,7 @@ function KeyLabResults({ results, perRow }) {
                 <SourceLink recordId={t.source?.record_id} page={t.source?.page} />
               </td>
               <td className="px-3 py-1 text-right tabular-nums whitespace-nowrap">
-                {t.value} <span className="text-muted-foreground">{t.unit}</span>
+                {labValue(t)} <span className="text-muted-foreground">{t.unit}</span>
               </td>
               <td className="px-3 py-1 text-right text-muted-foreground tabular-nums whitespace-nowrap">
                 {t.reference_low != null || t.reference_high != null ? `ref ${labReference(t)}` : "no reference range"}
@@ -630,7 +636,7 @@ function AllLabResults({ categories, perRow }) {
                   )}
                 </td>
                 <td className={`px-3 py-1 text-right tabular-nums ${outOfRange ? "text-red-600 font-semibold" : ""}`}>
-                  {t.value} <span className="text-muted-foreground font-normal">{t.unit}</span>
+                  {labValue(t)} <span className="text-muted-foreground font-normal">{t.unit}</span>
                 </td>
                 <td className="px-3 py-1 text-right text-muted-foreground tabular-nums">
                   {t.reference_low != null && t.reference_high != null ? `${t.reference_low}–${t.reference_high}` : ""}
