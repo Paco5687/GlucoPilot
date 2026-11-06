@@ -33,7 +33,7 @@ from .db import config_value, get_setting, set_setting
 from .data_quality import assess_cgm, assess_daily, assess_nutrition, assess_pump_tdd, cgm_points
 from .glucose_reconciliation import summarize as summarize_fingersticks
 from .insulin_reconciliation import reconcile_treatments
-from .lab_audit import ABNORMAL_FLAGS, effective_flag
+from .lab_audit import ABNORMAL_FLAGS, censored as lab_censored, display_value as lab_display_value, effective_flag
 from .lab_names import canonical_lab_name
 from .lab_audit import qualification as lab_qualification
 from .lab_audit import summary_eligible as lab_summary_eligible
@@ -714,6 +714,8 @@ def _labs() -> dict[str, Any]:
         if (
             prev and prev.get("value") is not None
             and str(prev.get("unit") or "").lower() == str(latest.get("unit") or "").lower()
+            # "<55" then "<55" says nothing about direction.
+            and not lab_censored(prev) and not lab_censored(latest)
         ):
             delta = latest["value"] - prev["value"]
             trend = "up" if delta > 0 else "down" if delta < 0 else "flat"
@@ -722,6 +724,7 @@ def _labs() -> dict[str, Any]:
             "test_name": test,
             "reported_names": sorted(reported_names.get(key, set()) - {test}),
             "value": latest["value"],
+            "value_display": lab_display_value(latest),
             "unit": latest.get("unit", ""),
             "reference_low": latest.get("reference_low"),
             "reference_high": latest.get("reference_high"),
@@ -742,6 +745,7 @@ def _labs() -> dict[str, Any]:
                     "date": p.get("collected_date", ""),
                     "parsed_date": iso(p),
                     "value": p["value"],
+                    "value_display": lab_display_value(p),
                     "unit": p.get("unit", ""),
                     "verification": lab_qualification(p),
                     **time_fields(p),
@@ -935,7 +939,7 @@ def _narrative_metrics(payload: dict) -> dict[str, Any]:
         "key_labs": [
             {
                 "test": entry.get("test_name"),
-                "value": entry.get("value"),
+                "value": entry.get("value_display", entry.get("value")),
                 "unit": entry.get("unit"),
                 "date": entry.get("date") or entry.get("collected_date"),
                 "flag": entry.get("flag"),
@@ -1163,6 +1167,8 @@ def _a1c_points(labs: dict[str, Any]) -> list[dict[str, Any]]:
     )
     points = []
     for point in (entry or {}).get("history") or []:
+        if isinstance(point.get("value_display"), str):
+            continue  # a below/above-limit A1c ("<4.0") is no number to plot
         try:
             value = float(point.get("value"))
         except (TypeError, ValueError):
