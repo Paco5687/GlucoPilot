@@ -84,6 +84,23 @@ def _local_date(iso_ts: str, tz: ZoneInfo) -> str | None:
         return None
 
 
+def _minute_key(value: datetime | str | None) -> str | None:
+    """UTC minute a heart-rate sample belongs to, as stored on FitbitHeartRate
+    (``2026-11-16T12:00:00Z``). Accepts either stored spelling (``...Z`` or
+    ``...000Z``) so lookups compare like with like."""
+    if not value:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    minute = value.astimezone(timezone.utc).replace(second=0, microsecond=0)
+    return minute.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
 def _date_obj(d: dict) -> str | None:
     """YYYY-MM-DD from a Google {year,month,day} Date object."""
     try:
@@ -493,20 +510,22 @@ async def _sync_heart_rate(minutes: int = 180) -> dict[str, Any]:
                 if dt < cutoff:
                     stop = True  # newest-first — the rest are older too
                     continue
-                minute = dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
-                key = minute.isoformat(timespec="seconds").replace("+00:00", "Z")
                 # newest-first: keep the newest sample seen for each minute
-                buckets.setdefault(key, int(float(bpm)))
+                buckets.setdefault(_minute_key(dt), int(float(bpm)))
             page_token = data.get("nextPageToken")
             if stop or not page_token:
                 break
 
-    cutoff_iso = cutoff.isoformat(timespec="seconds").replace("+00:00", "Z")
+    # Buckets are whole minutes, so the cutoff's own minute is usually in
+    # `buckets` even though it starts before `cutoff`. Look up stored minutes
+    # from one minute earlier, with no row cap (a 14-day backfill spans ~20k
+    # minutes), or that minute and anything past the cap are saved twice.
+    lookup_from = _minute_key(cutoff - timedelta(minutes=1))
     sample_repository = get_repositories().fitbit_heart_rate
     existing = {
-        r.get("timestamp")
+        _minute_key(r.get("timestamp"))
         for r in sample_repository.query(
-            {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": cutoff_iso}}, "-timestamp", 5000
+            {"owner_email": OWNER_EMAIL, "timestamp": {"$gte": lookup_from}}, "-timestamp"
         )
     }
     to_create = [
