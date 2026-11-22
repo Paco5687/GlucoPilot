@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, Beaker, CheckCircle2, Loader2, Plus, ShieldAlert, XCircle } from "lucide-react";
+import { AlertTriangle, Beaker, CheckCircle2, FlaskConical, Loader2, Plus, ShieldAlert, XCircle } from "lucide-react";
 import { toast } from "sonner";
+import LabSuggestions from "@/components/hypotheses/LabSuggestions";
 
 /** @param {import("react").InputHTMLAttributes<HTMLInputElement>} props */
 function Input({ className = "", ...props }) {
@@ -243,6 +244,7 @@ export default function HypothesesSettings() {
   const [originLabel, setOriginLabel] = useState("");
   const [verification, setVerification] = useState("");
   const [reviewAt, setReviewAt] = useState("");
+  const [labsFor, setLabsFor] = useState(null);
 
   async function load() {
     try {
@@ -395,7 +397,15 @@ export default function HypothesesSettings() {
                 {canEdit && !["confirmed", "ruled_against", "archived"].includes(item.status) && (
                   <div className="space-y-2">
                     <AddEvidence hypothesis={item} onSaved={replace} />
+                    {labsFor === item.id && (
+                      <LabSuggestions hypothesis={item} onSaved={replace} onClose={() => setLabsFor(null)} />
+                    )}
                     <div className="flex flex-wrap gap-2">
+                      {labsFor !== item.id && (
+                        <Button size="sm" variant="outline" onClick={() => setLabsFor(item.id)} className="gap-1.5">
+                          <FlaskConical className="w-3.5 h-3.5" /> Find labs
+                        </Button>
+                      )}
                       {item.status === "proposed" && (
                         <Button size="sm" variant="outline" onClick={() => transition(item, "under_review")} className="gap-1.5">
                           <ShieldAlert className="w-3.5 h-3.5" /> Begin review

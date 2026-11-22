@@ -4,6 +4,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import HypothesesCard from "./HypothesesCard";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("@/components/hypotheses/LabSuggestions", () => ({
+  default: ({ hypothesis, onClose }) => (
+    <div>
+      Lab panel for {hypothesis.title}
+      <button type="button" onClick={onClose}>Close panel</button>
+    </div>
+  ),
+}));
 
 const base = {
   origin_kind: "patient",
@@ -89,6 +97,21 @@ describe("dashboard hypotheses card", () => {
       suggested_verification: "Synthetic test",
     });
     await waitFor(() => expect(screen.queryByLabelText("What might be wrong?")).toBeNull());
+    expect(screen.getByText("Lab panel for Synthetic new question")).toBeTruthy();
+  });
+
+  it("opens lab suggestions for an existing hypothesis", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(listResponse([proposed, reviewing], true)));
+
+    renderCard();
+    const buttons = await screen.findAllByRole("button", { name: /Find labs/ });
+    expect(buttons).toHaveLength(2);
+    fireEvent.click(buttons[0]);
+
+    expect(screen.getByText("Lab panel for Synthetic adrenal question")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /Find labs/ })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
+    expect(screen.queryByText(/Lab panel for/)).toBeNull();
   });
 
   it("opens the add form when nothing is recorded yet", async () => {
@@ -110,6 +133,7 @@ describe("dashboard hypotheses card", () => {
     expect(screen.queryByRole("button", { name: /Add/ })).toBeNull();
     expect(screen.queryByLabelText("What might be wrong?")).toBeNull();
     expect(screen.queryByRole("link", { name: /Health hypotheses/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Find labs/ })).toBeNull();
   });
 
   it("renders nothing for provider sessions with no open hypotheses", async () => {
