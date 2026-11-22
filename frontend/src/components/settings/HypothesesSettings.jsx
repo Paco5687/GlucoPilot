@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, Beaker, CheckCircle2, FlaskConical, Loader2, Plus, ShieldAlert, XCircle } from "lucide-react";
 import { toast } from "sonner";
+import LabLookupNote from "@/components/hypotheses/LabLookupNote";
 import LabSuggestions from "@/components/hypotheses/LabSuggestions";
+import useLabLookups from "@/components/hypotheses/useLabLookups";
 
 /** @param {import("react").InputHTMLAttributes<HTMLInputElement>} props */
 function Input({ className = "", ...props }) {
@@ -245,6 +247,7 @@ export default function HypothesesSettings() {
   const [verification, setVerification] = useState("");
   const [reviewAt, setReviewAt] = useState("");
   const [labsFor, setLabsFor] = useState(null);
+  const lookups = useLabLookups(canEdit);
 
   async function load() {
     try {
@@ -271,6 +274,11 @@ export default function HypothesesSettings() {
     setItems((current) => current.map((item) => item.id === updated.id ? updated : item));
   }
 
+  function closeLabs() {
+    setLabsFor(null);
+    lookups.refresh();
+  }
+
   async function create() {
     if (!title.trim()) return;
     setSaving(true);
@@ -287,6 +295,7 @@ export default function HypothesesSettings() {
         }),
       });
       setItems((current) => [created, ...current]);
+      lookups.queue(); // look up its labs in the background
       setTitle("");
       setDescription("");
       setOrigin("patient");
@@ -398,12 +407,13 @@ export default function HypothesesSettings() {
                   <div className="space-y-2">
                     <AddEvidence hypothesis={item} onSaved={replace} />
                     {labsFor === item.id && (
-                      <LabSuggestions hypothesis={item} onSaved={replace} onClose={() => setLabsFor(null)} />
+                      <LabSuggestions hypothesis={item} onSaved={replace} onClose={closeLabs} />
                     )}
                     <div className="flex flex-wrap gap-2">
                       {labsFor !== item.id && (
                         <Button size="sm" variant="outline" onClick={() => setLabsFor(item.id)} className="gap-1.5">
                           <FlaskConical className="w-3.5 h-3.5" /> Find labs
+                          <LabLookupNote lookups={lookups} id={item.id} />
                         </Button>
                       )}
                       {item.status === "proposed" && (

@@ -49,6 +49,8 @@ The dedicated API surface is:
 | `PUT /api/hypotheses/{id}/evidence` | admin | Append a complete evidence revision and confidence event. |
 | `POST /api/hypotheses/{id}/transition` | admin | Apply a guarded lifecycle transition; terminal decisions require clinician attribution. |
 | `POST /api/hypotheses/{id}/lab-suggestions` | admin | Suggest lab evidence (read-only; see below). `?anyway=true` skips the lab-tests-used check. |
+| `GET /api/hypothesis-labs` | admin | Stored lab lookups for open hypotheses: per hypothesis, labs on file and tests not on file that are not yet in its evidence; which are still waiting; whether the queue is running. |
+| `POST /api/hypothesis-labs/queue` | admin | Start the background lookup queue (no-op when it is running or nothing is waiting); returns the same status. |
 
 ## Evidence state and audit score
 
@@ -84,7 +86,7 @@ attributable to the exact evidence revision and reason.
 
 Implementation: `server/hypothesis_labs.py` (`hypothesis-labs/1.2.0`).
 
-The endpoint writes nothing. It asks the local model two questions at
+The endpoint writes nothing to the ledger. It asks the local model two questions at
 temperature 0, with the hypothesis, its notes, and the active confirmed
 conditions and medications: whether the hypothesis is usually checked with
 lab tests (and how it is usually diagnosed), and, if so, which lab tests,
@@ -104,6 +106,29 @@ could produce the result. Unmatched named tests (imaging and panels excluded)
 become suggested `missing` items. The owner ticks items and picks a role for
 each lab; the client saves them with the existing evidence-revision route,
 built on the stored evidence it reads just before saving.
+
+### Stored lookups and the queue
+
+The model's answers (the triage answer and, when asked, the test list) are
+stored per hypothesis in `app_settings` under `hypothesis_labs:<id>`, with a
+fingerprint of the method, the model and the prompt. A later request with the
+same fingerprint reuses them and makes no model call; values, dates, flags and
+"already in evidence" are rebuilt from the current lab rows and evidence each
+time. A new title or description, a change to the active conditions or
+medications, or another model gives a new fingerprint and a new lookup. One
+lookup runs per hypothesis at a time; a panel request and the queue wait for
+each other and share the stored answer.
+
+The queue looks up every proposed or under-review hypothesis with no current
+stored answer, one at a time, as its own task. The scheduler starts it every
+5 minutes (only while background sync is enabled), the Settings page starts it
+after adding a hypothesis, and a dashboard addition opens its panel, which
+looks it up directly. The queue asks only the triage question for hypotheses
+usually diagnosed without lab tests; "look anyway" adds the test list on
+request. A failed lookup waits an hour before the queue tries it again. Each
+pass deletes stored answers for hypotheses that are no longer open. The stored
+answers are derived data: deleting them only means the next lookup asks the
+model again.
 
 ## Product surfaces
 

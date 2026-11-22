@@ -4,12 +4,15 @@ import { Beaker, FlaskConical, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import LabLookupNote from "@/components/hypotheses/LabLookupNote";
 import LabSuggestions from "@/components/hypotheses/LabSuggestions";
+import useLabLookups from "@/components/hypotheses/useLabLookups";
 
 // Dashboard view of the hypothesis ledger: things that may be wrong and still
 // need a diagnosis. It reads and writes the same /api/hypotheses ledger as
-// Settings. A new hypothesis opens its lab suggestions straight away; picked
-// labs are saved as evidence. Clinician decisions stay in Settings, where the
+// Settings. A new hypothesis opens its lab suggestions straight away; the
+// server's queue looks up the rest, and each shows how many stored labs are
+// still to review. Picked labs are saved as evidence. Clinician decisions stay in Settings, where the
 // full review controls live.
 
 const OPEN = new Set(["proposed", "under_review"]);
@@ -55,6 +58,7 @@ export default function HypothesesCard() {
   const [confirmBy, setConfirmBy] = useState("");
   const [saving, setSaving] = useState(false);
   const [labsFor, setLabsFor] = useState(null);
+  const lookups = useLabLookups(canEdit);
 
   useEffect(() => {
     let active = true;
@@ -101,6 +105,11 @@ export default function HypothesesCard() {
 
   function replace(updated) {
     setItems((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+  }
+
+  function closeLabs() {
+    setLabsFor(null);
+    lookups.refresh();
   }
 
   if (!loaded) return null;
@@ -155,9 +164,10 @@ export default function HypothesesCard() {
                       <FlaskConical className="w-3 h-3" /> Find labs
                     </button>
                   )}
+                  {canEdit && labsFor !== item.id && <LabLookupNote lookups={lookups} id={item.id} />}
                 </div>
                 {canEdit && labsFor === item.id && (
-                  <LabSuggestions hypothesis={item} onSaved={replace} onClose={() => setLabsFor(null)} />
+                  <LabSuggestions hypothesis={item} onSaved={replace} onClose={closeLabs} />
                 )}
               </li>
             );
