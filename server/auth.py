@@ -18,6 +18,7 @@ from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from . import login_log
 from .config import DEMO_MODE, OWNER_EMAIL, env
 from .db import get_setting, set_setting
 
@@ -206,6 +207,7 @@ def setup(request: Request, username: str = Form(...), password: str = Form(...)
     set_setting("admin_username", username)
     set_setting("admin_password_hash", make_password_hash(password))
     request.session["logged_in"] = True
+    login_log.record("login", request, role="admin", username=username)
     return RedirectResponse("/dashboard", status_code=303)
 
 
@@ -224,6 +226,7 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
             set_setting("admin_password_hash", make_password_hash(password))
         request.session["logged_in"] = True
         request.session["role"] = "admin"
+        login_log.record("login", request, role="admin", username=expected_user)
         return RedirectResponse("/dashboard", status_code=303)
 
     # Provider logins — source data/settings remain read-only; P7 review events
@@ -237,8 +240,23 @@ def login(request: Request, username: str = Form(...), password: str = Form(...)
             request.session["logged_in"] = True
             request.session["role"] = "provider"
             request.session["provider_name"] = p.get("username")
+            login_log.record("login", request, role="provider", username=p.get("username"))
             return RedirectResponse("/dashboard", status_code=303)
 
+    # Name the account only when the attempt targets a real one; anything else
+    # typed into the username box (a mistyped password, a scanner's guess)
+    # stays out of the log.
+    attempted = username.strip().lower()
+    if attempted == expected_user.lower():
+        login_log.record("login_failed", request, role="admin", username=expected_user)
+    else:
+        target = next((p for p in providers if p.get("username", "").lower() == attempted), None)
+        login_log.record(
+            "login_failed",
+            request,
+            role="provider" if target else None,
+            username=target.get("username") if target else None,
+        )
     return login_page("Invalid username or password.")
 
 
@@ -371,6 +389,7 @@ async def provider_reset(request: Request):
     provider["password_hash"] = make_password_hash(new_password)
     save_providers(providers)
     _clear_reset_failures(username)
+    login_log.record("password_reset", request, role="provider", username=provider["username"])
     return {"ok": True}
 
 
@@ -529,17 +548,30 @@ def provider_invite_status(token: str):
 @router.post("/api/provider/invite/accept")
 async def provider_invite_accept(request: Request):
     body = await request.json()
+    username = str(body.get("username") or "")
     accept_provider_invite(
         str(body.get("token") or ""),
-        str(body.get("username") or ""),
+        username,
         str(body.get("password") or ""),
         body.get("questions"),
     )
+    login_log.record("invite_accepted", request, role="provider", username=username.strip())
     return {"ok": True}
+
+
+def _record_logout(request: Request) -> None:
+    if not request.session.get("logged_in"):
+        return
+    if session_role(request) == "provider":
+        login_log.record("logout", request, role="provider", username=request.session.get("provider_name"))
+    else:
+        admin = env("APP_USERNAME", "") or get_setting("admin_username") or "admin"
+        login_log.record("logout", request, role="admin", username=admin)
 
 
 @router.post("/logout")
 def logout(request: Request):
+    _record_logout(request)
     request.session.clear()
     return RedirectResponse("/", status_code=303)
 
@@ -611,6 +643,17 @@ def provider_config_get(request: Request):
     }
 
 
+@router.get("/api/provider/activity")
+def provider_activity_get(request: Request):
+    """Admin-only: each provider's sign-in history plus the latest sign-in events."""
+    require_admin(request)
+    return {
+        "recording_since": login_log.recording_since(),
+        "providers": login_log.provider_activity([p["username"] for p in load_providers()]),
+        "events": login_log.recent_events(),
+    }
+
+
 @router.post("/api/provider/config")
 async def provider_config_set(request: Request):
     """Upsert or remove a read-only provider login (max 4). Body:
@@ -662,5 +705,6 @@ async def update_me(request: Request):
 
 @router.post("/api/auth/logout")
 def api_logout(request: Request):
+    _record_logout(request)
     request.session.clear()
     return {"ok": True}
