@@ -18,8 +18,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   tests, which way each usually reads if the hypothesis is true, and any listed
   condition or medication that moves the test by itself; every value, date and
   flag comes from the lab records. For conditions usually diagnosed without lab
-  tests it says so, with an option to look anyway. Nothing is saved until the
-  owner ticks items and picks Supports or Against for each lab.
+  tests it says so above the list. Nothing is saved until the owner ticks
+  items and picks Supports or Against for each lab.
 - **Lab lookups queued for every open hypothesis** — the app looks up lab
   suggestions for each open hypothesis in the background, one at a time, and
   keeps the model's answers, so "Find labs" opens at once. Each hypothesis shows

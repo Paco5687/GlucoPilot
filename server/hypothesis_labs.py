@@ -2,9 +2,12 @@
 
 Two short questions go to the local model, at temperature 0 so a hypothesis
 gets the same answer each time. First: is this usually checked with lab tests,
-and how is it usually diagnosed? Second, only when the answer is yes: which lab
-tests, which way each usually reads if the hypothesis is true, and whether a
-listed condition or medication pushes the test that way by itself. The model
+and how is it usually diagnosed? Second, asked either way: which lab tests,
+which way each usually reads if the hypothesis is true, and whether a listed
+condition or medication pushes the test that way by itself. The questions are
+separate because one prompt with a "none" option made the model list nothing.
+For a hypothesis usually diagnosed without labs, the answer to the first
+question is shown above the list. The model
 never sees lab values. Code matches the named tests to the tests on file by
 analyte (the key the Companion's same-draw matching uses); every value, unit,
 date and flag in a suggestion comes from LabResult rows, read the way the
@@ -53,7 +56,7 @@ log = logging.getLogger("glucopilot.hypothesis_labs")
 
 router = APIRouter()
 
-METHOD = "hypothesis-labs/1.2.0"
+METHOD = "hypothesis-labs/1.3.0"
 # Fixed, PHI-free call-site id. It is not on the Breeze allowlist, so the call
 # always stays on the local model.
 SITE = "hypothesis_labs"
@@ -389,13 +392,9 @@ def _stored(hypothesis_id: str, fingerprint: str) -> dict[str, Any] | None:
         return None
     if not isinstance(record, dict) or record.get("fingerprint") != fingerprint:
         return None
-    if not isinstance(record.get("triage"), dict):
+    if not isinstance(record.get("triage"), dict) or not isinstance(record.get("tests"), list):
         return None
     return record
-
-
-def _needs_tests(record: dict[str, Any], skip_triage: bool) -> bool:
-    return record.get("tests") is None and (skip_triage or _uses_labs(record["triage"]))
 
 
 # One lookup per hypothesis at a time: the panel and the queue wait for each
@@ -403,28 +402,28 @@ def _needs_tests(record: dict[str, Any], skip_triage: bool) -> bool:
 _locks: dict[str, asyncio.Lock] = {}
 
 
-async def _answers(hypothesis_id: str, header: str, *, skip_triage: bool) -> dict[str, Any]:
+async def _answers(hypothesis_id: str, header: str) -> dict[str, Any]:
     fingerprint = _fingerprint(header)
     async with _locks.setdefault(hypothesis_id, asyncio.Lock()):
         record = _stored(hypothesis_id, fingerprint)
-        if record and not _needs_tests(record, skip_triage):
+        if record:
             return record
-        record = record or {"fingerprint": fingerprint, "triage": None, "tests": None}
-        if record["triage"] is None:
-            triage = await llm.invoke_llm(_triage_prompt(header), TRIAGE_SCHEMA, max_tokens=200, site=SITE, temperature=0)
-            if not isinstance(triage, dict):
-                raise HTTPException(status_code=502, detail="The model returned an unreadable answer.")
-            record["triage"] = {
+        triage = await llm.invoke_llm(_triage_prompt(header), TRIAGE_SCHEMA, max_tokens=200, site=SITE, temperature=0)
+        if not isinstance(triage, dict):
+            raise HTTPException(status_code=502, detail="The model returned an unreadable answer.")
+        raw = await llm.invoke_llm(_tests_prompt(header), TESTS_SCHEMA, max_tokens=1500, site=SITE, temperature=0)
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=502, detail="The model returned an unreadable answer.")
+        tests = raw.get("tests") if isinstance(raw.get("tests"), list) else []
+        record = {
+            "fingerprint": fingerprint,
+            "triage": {
                 "lab_tests_used": _uses_labs(triage),
                 "usually_checked_by": _clean(triage.get("usually_checked_by"), 200),
-            }
-        if _needs_tests(record, skip_triage):
-            raw = await llm.invoke_llm(_tests_prompt(header), TESTS_SCHEMA, max_tokens=1500, site=SITE, temperature=0)
-            if not isinstance(raw, dict):
-                raise HTTPException(status_code=502, detail="The model returned an unreadable answer.")
-            tests = raw.get("tests") if isinstance(raw.get("tests"), list) else []
-            record["tests"] = [item for item in tests[: MAX_TESTS * 2] if isinstance(item, dict)]
-        record["looked_up_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+            },
+            "tests": [item for item in tests[: MAX_TESTS * 2] if isinstance(item, dict)],
+            "looked_up_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        }
         db.set_setting(STORE_PREFIX + hypothesis_id, json.dumps(record))
         return record
 
@@ -434,21 +433,19 @@ def _build(
     record: dict[str, Any],
     catalog: list[dict[str, Any]],
     context_words: set[str],
-    *,
-    skip_triage: bool,
 ) -> dict[str, Any]:
     """Suggestions from stored model answers, the lab rows on file and the
     hypothesis's current evidence."""
     triage = record["triage"]
     base = {
         "method": METHOD,
+        # False when the hypothesis is usually diagnosed without lab tests;
+        # the tests are listed either way.
+        "lab_tests_used": _uses_labs(triage),
         "usually_checked_by": triage.get("usually_checked_by") or "",
         "tests_on_file": len(catalog),
         "looked_up_at": record.get("looked_up_at"),
     }
-    if record.get("tests") is None or (not skip_triage and not _uses_labs(triage)):
-        return {**base, "lab_tests_used": False, "labs": [], "not_on_file": []}
-
     by_key: dict[str, list[dict[str, Any]]] = {}
     for entry in catalog:
         by_key.setdefault(analyte_key(entry["name"]), []).append(entry)
@@ -505,19 +502,18 @@ def _build(
                     "source_link": {},
                 },
             })
-    return {**base, "lab_tests_used": True, "labs": labs, "not_on_file": not_on_file}
+    return {**base, "labs": labs, "not_on_file": not_on_file}
 
 
-async def suggest(hypothesis_id: str, *, skip_triage: bool = False) -> dict[str, Any]:
-    """Lab suggestions for one hypothesis. skip_triage asks for tests even when
-    the model would call the hypothesis one that is diagnosed without labs."""
+async def suggest(hypothesis_id: str) -> dict[str, Any]:
+    """Lab suggestions for one hypothesis."""
     hypothesis = SqliteHypothesisRepository().get(hypothesis_id)
     if not hypothesis:
         raise HTTPException(status_code=404, detail="hypothesis not found")
     conditions, medications = _context()
     header = _header(hypothesis["title"], hypothesis.get("description") or "", conditions, medications)
-    record = await _answers(hypothesis_id, header, skip_triage=skip_triage)
-    result = _build(hypothesis, record, _catalog(), _context_words(conditions + medications), skip_triage=skip_triage)
+    record = await _answers(hypothesis_id, header)
+    result = _build(hypothesis, record, _catalog(), _context_words(conditions + medications))
     log.info("hypothesis lab suggestions: %d labs, %d not on file", len(result["labs"]), len(result["not_on_file"]))
     return result
 
@@ -612,8 +608,7 @@ def _status() -> dict[str, Any]:
         if record is None:
             pending.append(hypothesis["id"])
             continue
-        # A lookup the owner already ran "anyway" counts its tests.
-        result = _build(hypothesis, record, catalog, words, skip_triage=record.get("tests") is not None)
+        result = _build(hypothesis, record, catalog, words)
         ready[hypothesis["id"]] = {
             "lab_tests_used": _uses_labs(record["triage"]),
             "labs": sum(not item["already_added"] for item in result["labs"]),
@@ -624,8 +619,8 @@ def _status() -> dict[str, Any]:
 
 
 @router.post("/api/hypotheses/{hypothesis_id}/lab-suggestions", dependencies=[Depends(require_admin)])
-async def lab_suggestions(hypothesis_id: str, anyway: bool = False):
-    return await suggest(hypothesis_id, skip_triage=anyway)
+async def lab_suggestions(hypothesis_id: str):
+    return await suggest(hypothesis_id)
 
 
 # Not under /api/hypotheses/: that prefix's /{hypothesis_id} route would

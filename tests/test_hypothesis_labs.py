@@ -200,21 +200,23 @@ def test_other_cause_must_be_a_listed_condition_or_medication(lab_database, monk
     assert "Stopped Synthetic Drug" not in prompt
 
 
-def test_clinical_diagnoses_get_no_lab_list_unless_asked(lab_database, monkeypatch):
+def test_clinical_diagnoses_say_so_and_still_list_tests(lab_database, monkeypatch):
     _lab("TSH", 2.0, "2026-06-01", unit="mIU/L", low=0.4, high=4.5)
     hypothesis = _hypothesis("Synthetic clinical syndrome")
-    model = FakeModel([_test("TSH", if_true="any")], lab_tests_used=False, checked_by="examination")
+    model = FakeModel([_test("TSH", if_true="any"), _test("Synthetic Mast Cell Marker")],
+                      lab_tests_used=False, checked_by="examination")
 
     result = _suggest(monkeypatch, model, hypothesis["id"])
+
     assert result["lab_tests_used"] is False
     assert result["usually_checked_by"] == "examination"
-    assert result["labs"] == [] and len(model.calls) == 1
-
-    anyway = _suggest(monkeypatch, model, hypothesis["id"], skip_triage=True)
-    assert anyway["lab_tests_used"] is True
-    assert [item["test"] for item in anyway["labs"]] == ["TSH"]
-    # The stored triage answer is reused; only the test list was asked for.
+    assert [item["test"] for item in result["labs"]] == ["TSH"]
+    assert [item["test"] for item in result["not_on_file"]] == ["Synthetic Mast Cell Marker"]
     assert [call["schema"] for call in model.calls] == [hypothesis_labs.TRIAGE_SCHEMA, hypothesis_labs.TESTS_SCHEMA]
+
+    # The queue stores the same answers, so the panel asks nothing more.
+    assert asyncio.run(hypothesis_labs.run_queue()) == {"done": 0, "failed": 0}
+    assert len(model.calls) == 2
 
 
 def test_censored_values_keep_their_sign(lab_database, monkeypatch):

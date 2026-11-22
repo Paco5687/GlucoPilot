@@ -43,7 +43,7 @@ function labItem(overrides = {}) {
 }
 
 const suggestions = {
-  method: "hypothesis-labs/1.2.0",
+  method: "hypothesis-labs/1.3.0",
   lab_tests_used: true,
   usually_checked_by: "blood tests",
   labs: [
@@ -118,22 +118,31 @@ describe("lab suggestions for a hypothesis", () => {
       ["lab_ft4", "opposing"],
       [null, "missing"],
     ]);
-    expect(body.reason).toMatch(/hypothesis-labs\/1\.2\.0/);
+    expect(body.reason).toMatch(/hypothesis-labs\/1\.3\.0/);
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("says how a clinical diagnosis is made and can look for labs anyway", async () => {
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(respond({ ...suggestions, lab_tests_used: false, usually_checked_by: "examination", labs: [], not_on_file: [] }))
-      .mockResolvedValueOnce(respond(suggestions));
+  it("says how a clinical diagnosis is made above the tests it lists", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(respond({ ...suggestions, lab_tests_used: false, usually_checked_by: "examination" }));
     vi.stubGlobal("fetch", fetchMock);
 
     render(<LabSuggestions hypothesis={hypothesis} onClose={vi.fn()} />);
 
-    expect(await screen.findByText("Usually diagnosed by examination, not lab tests.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Look for lab tests anyway" }));
-    expect(await screen.findByText("Synthetic TSH")).toBeTruthy();
-    expect(fetchMock.mock.calls[1][0]).toBe("/api/hypotheses/hyp_synthetic/lab-suggestions?anyway=true");
+    expect(await screen.findByText(/Usually diagnosed by examination, not lab tests, so these results may not settle it/)).toBeTruthy();
+    expect(screen.getByText("Synthetic TSH")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /anyway/ })).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("says so when a clinical diagnosis has no lab tests listed", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      respond({ ...suggestions, lab_tests_used: false, usually_checked_by: "examination", labs: [], not_on_file: [] }),
+    ));
+
+    render(<LabSuggestions hypothesis={hypothesis} onClose={vi.fn()} />);
+
+    expect(await screen.findByText(/Usually diagnosed by examination, not lab tests\./)).toBeTruthy();
+    expect(screen.queryByText("No related lab tests found.")).toBeNull();
   });
 
   it("offers a retry when the lookup fails", async () => {

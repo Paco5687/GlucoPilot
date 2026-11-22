@@ -48,7 +48,7 @@ The dedicated API surface is:
 | `POST /api/hypotheses` | admin | Create a tentative proposal. The request cannot choose a later status. |
 | `PUT /api/hypotheses/{id}/evidence` | admin | Append a complete evidence revision and confidence event. |
 | `POST /api/hypotheses/{id}/transition` | admin | Apply a guarded lifecycle transition; terminal decisions require clinician attribution. |
-| `POST /api/hypotheses/{id}/lab-suggestions` | admin | Suggest lab evidence (read-only; see below). `?anyway=true` skips the lab-tests-used check. |
+| `POST /api/hypotheses/{id}/lab-suggestions` | admin | Suggest lab evidence (read-only; see below). |
 | `GET /api/hypothesis-labs` | admin | Stored lab lookups for open hypotheses: per hypothesis, labs on file and tests not on file that are not yet in its evidence; which are still waiting; whether the queue is running. |
 | `POST /api/hypothesis-labs/queue` | admin | Start the background lookup queue (no-op when it is running or nothing is waiting); returns the same status. |
 
@@ -84,14 +84,18 @@ attributable to the exact evidence revision and reason.
 
 ## Lab suggestions
 
-Implementation: `server/hypothesis_labs.py` (`hypothesis-labs/1.2.0`).
+Implementation: `server/hypothesis_labs.py` (`hypothesis-labs/1.3.0`).
 
 The endpoint writes nothing to the ledger. It asks the local model two questions at
 temperature 0, with the hypothesis, its notes, and the active confirmed
 conditions and medications: whether the hypothesis is usually checked with
-lab tests (and how it is usually diagnosed), and, if so, which lab tests,
-which way each usually reads if the hypothesis is true, and any listed
-condition or medication that moves the test that way by itself. The call site
+lab tests (and how it is usually diagnosed), and which lab tests, which way
+each usually reads if the hypothesis is true, and any listed condition or
+medication that moves the test that way by itself. The second question is
+asked either way; for a hypothesis usually diagnosed without lab tests the
+response sets `lab_tests_used` to false and the panel says so above the list.
+The questions stay separate because a single prompt with a "none" option made
+the model list nothing. The call site
 `hypothesis_labs` is not on the Breeze allowlist, so it always stays local.
 
 The model never sees lab values. Named tests are matched to LabResult rows by
@@ -109,7 +113,7 @@ built on the stored evidence it reads just before saving.
 
 ### Stored lookups and the queue
 
-The model's answers (the triage answer and, when asked, the test list) are
+The model's answers (the triage answer and the test list) are
 stored per hypothesis in `app_settings` under `hypothesis_labs:<id>`, with a
 fingerprint of the method, the model and the prompt. A later request with the
 same fingerprint reuses them and makes no model call; values, dates, flags and
@@ -120,15 +124,13 @@ lookup runs per hypothesis at a time; a panel request and the queue wait for
 each other and share the stored answer.
 
 The queue looks up every proposed or under-review hypothesis with no current
-stored answer, one at a time, as its own task. The scheduler starts it every
-5 minutes (only while background sync is enabled), the Settings page starts it
+stored answer, one at a time, as its own task. The scheduler starts it every 5
+minutes (only while background sync is enabled), the Settings page starts it
 after adding a hypothesis, and a dashboard addition opens its panel, which
-looks it up directly. The queue asks only the triage question for hypotheses
-usually diagnosed without lab tests; "look anyway" adds the test list on
-request. A failed lookup waits an hour before the queue tries it again. Each
-pass deletes stored answers for hypotheses that are no longer open. The stored
-answers are derived data: deleting them only means the next lookup asks the
-model again.
+looks it up directly. A failed lookup waits an hour before the queue tries it
+again. Each pass deletes stored answers for hypotheses that are no longer
+open. The stored answers are derived data: deleting them only means the next
+lookup asks the model again.
 
 ## Product surfaces
 

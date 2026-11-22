@@ -90,13 +90,10 @@ export default function LabSuggestions({ hypothesis, onSaved, onClose }) {
   const [choices, setChoices] = useState({});
   const [saving, setSaving] = useState(false);
 
-  const run = useCallback(async (anyway = false) => {
+  const run = useCallback(async () => {
     setState({ loading: true, error: "", result: null });
     try {
-      const result = await api(
-        `/api/hypotheses/${hypothesis.id}/lab-suggestions${anyway ? "?anyway=true" : ""}`,
-        { method: "POST" },
-      );
+      const result = await api(`/api/hypotheses/${hypothesis.id}/lab-suggestions`, { method: "POST" });
       const initial = {};
       // Nothing starts ticked: the owner decides what goes into the record.
       for (const item of result.labs || []) initial[`lab:${item.evidence.source_id}`] = { checked: false, role: item.suggested_role || "" };
@@ -164,12 +161,10 @@ export default function LabSuggestions({ hypothesis, onSaved, onClose }) {
       )}
 
       {result && result.lab_tests_used === false && (
-        <div className="space-y-2 text-xs">
-          <p>
-            Usually diagnosed by {result.usually_checked_by || "history and examination"}, not lab tests.
-          </p>
-          <Button size="sm" variant="outline" onClick={() => run(true)}>Look for lab tests anyway</Button>
-        </div>
+        <p className="text-xs">
+          Usually diagnosed by {result.usually_checked_by || "history and examination"}, not lab tests
+          {labs.length || missing.length ? ", so these results may not settle it." : "."}
+        </p>
       )}
 
       {result && result.lab_tests_used !== false && !labs.length && !missing.length && (
