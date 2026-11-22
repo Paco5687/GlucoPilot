@@ -10,20 +10,34 @@ analyte (the key the Companion's same-draw matching uses); every value, unit,
 date and flag in a suggestion comes from LabResult rows, read the way the
 Visit Report reads them. Named tests with no match become "not on file" items.
 
-Nothing is written here: the owner reviews the suggestions and saves the ones
-they keep as an ordinary evidence revision.
+The model's answers are stored per hypothesis (app_settings, key
+"hypothesis_labs:<id>"), keyed by a fingerprint of the method, the model and
+the prompt. Each read rebuilds the suggestions from the stored answers and the
+current lab rows and evidence, so new lab results and saved evidence show up
+without another model call. A changed title, description, condition list,
+medication list or model makes a new fingerprint, and the lookup runs again.
+
+A background queue looks up every open hypothesis that has no current answer,
+one at a time; the scheduler starts it every few minutes and the Settings page
+starts it after adding a hypothesis. Nothing goes into the hypothesis ledger
+here: the owner reviews the suggestions and saves the ones they keep as an
+ordinary evidence revision.
 """
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import logging
 import re
-from datetime import date
+import time
+from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from . import llm
+from . import db, llm
 from .auth import require_admin
 from .conditions import get_conditions
 from .config import OWNER_EMAIL
@@ -48,6 +62,9 @@ MAX_NOT_ON_FILE = 6
 MAX_ALIASES = 4
 EARLIER_SHOWN = 3
 DIRECTIONS = ("high", "low", "positive", "negative", "any")
+STORE_PREFIX = "hypothesis_labs:"
+OPEN_STATUSES = ("proposed", "under_review")
+RETRY_AFTER = 3600  # seconds before the queue retries a failed lookup
 # Reported grades that mean "inside the range" even though they are not the
 # word "normal" (functional-medicine panels). Other grades stay undecided.
 _NORMAL_FLAGS = {"normal", "n", "negative", "within_range", "optimal", "within_luteal_range"}
@@ -337,41 +354,104 @@ def _clean(value: Any, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
-async def suggest(hypothesis_id: str, *, skip_triage: bool = False) -> dict[str, Any]:
-    """Lab suggestions for one hypothesis. skip_triage asks for tests even when
-    the model would call the hypothesis one that is diagnosed without labs."""
-    hypothesis = SqliteHypothesisRepository().get(hypothesis_id)
-    if not hypothesis:
-        raise HTTPException(status_code=404, detail="hypothesis not found")
-    catalog = _catalog()
-    by_key: dict[str, list[dict[str, Any]]] = {}
-    for entry in catalog:
-        by_key.setdefault(analyte_key(entry["name"]), []).append(entry)
+def _context() -> tuple[list[str], list[str]]:
+    """Active conditions and medications, as the prompt lists them."""
     conditions = [str(c["name"]) for c in get_conditions() if c.get("status") == "active" and c.get("name")]
     medications = [
         " ".join(part for part in (str(m["name"]), str(m.get("dose") or "")) if part)
         for m in get_medications()
         if m.get("status") == "active" and m.get("name")
     ]
-    header = _header(hypothesis["title"], hypothesis.get("description") or "", conditions, medications)
-    triage = await llm.invoke_llm(_triage_prompt(header), TRIAGE_SCHEMA, max_tokens=200, site=SITE, temperature=0)
-    if not isinstance(triage, dict):
-        raise HTTPException(status_code=502, detail="The model returned an unreadable answer.")
-    checked_by = _clean(triage.get("usually_checked_by"), 200)
-    if not skip_triage and str(triage.get("lab_tests_used")).strip().lower() in ("false", "no", "0"):
-        return {
-            "method": METHOD,
-            "lab_tests_used": False,
-            "usually_checked_by": checked_by,
-            "labs": [],
-            "not_on_file": [],
-            "tests_on_file": len(catalog),
-        }
-    raw = await llm.invoke_llm(_tests_prompt(header), TESTS_SCHEMA, max_tokens=1500, site=SITE, temperature=0)
-    if not isinstance(raw, dict):
-        raise HTTPException(status_code=502, detail="The model returned an unreadable answer.")
-    context_words = _context_words(conditions + medications)
+    return conditions, medications
 
+
+def _model_id() -> str:
+    provider = db.config_value("llm_provider", "anthropic").strip().lower()
+    if provider in ("local", "breeze"):  # this site never leaves the local model
+        return f"{provider}:{db.config_value('local_llm_model', llm.LOCAL_MODEL_DEFAULT)}"
+    return provider
+
+
+def _fingerprint(header: str) -> str:
+    return hashlib.sha256(f"{METHOD}\n{_model_id()}\n{header}".encode()).hexdigest()[:24]
+
+
+def _uses_labs(triage: dict[str, Any]) -> bool:
+    return str(triage.get("lab_tests_used")).strip().lower() not in ("false", "no", "0")
+
+
+def _stored(hypothesis_id: str, fingerprint: str) -> dict[str, Any] | None:
+    """The stored model answers for this hypothesis, if they are current."""
+    raw = db.get_setting(STORE_PREFIX + hypothesis_id)
+    try:
+        record = json.loads(raw) if raw else None
+    except ValueError:
+        return None
+    if not isinstance(record, dict) or record.get("fingerprint") != fingerprint:
+        return None
+    if not isinstance(record.get("triage"), dict):
+        return None
+    return record
+
+
+def _needs_tests(record: dict[str, Any], skip_triage: bool) -> bool:
+    return record.get("tests") is None and (skip_triage or _uses_labs(record["triage"]))
+
+
+# One lookup per hypothesis at a time: the panel and the queue wait for each
+# other and then read the same stored answers.
+_locks: dict[str, asyncio.Lock] = {}
+
+
+async def _answers(hypothesis_id: str, header: str, *, skip_triage: bool) -> dict[str, Any]:
+    fingerprint = _fingerprint(header)
+    async with _locks.setdefault(hypothesis_id, asyncio.Lock()):
+        record = _stored(hypothesis_id, fingerprint)
+        if record and not _needs_tests(record, skip_triage):
+            return record
+        record = record or {"fingerprint": fingerprint, "triage": None, "tests": None}
+        if record["triage"] is None:
+            triage = await llm.invoke_llm(_triage_prompt(header), TRIAGE_SCHEMA, max_tokens=200, site=SITE, temperature=0)
+            if not isinstance(triage, dict):
+                raise HTTPException(status_code=502, detail="The model returned an unreadable answer.")
+            record["triage"] = {
+                "lab_tests_used": _uses_labs(triage),
+                "usually_checked_by": _clean(triage.get("usually_checked_by"), 200),
+            }
+        if _needs_tests(record, skip_triage):
+            raw = await llm.invoke_llm(_tests_prompt(header), TESTS_SCHEMA, max_tokens=1500, site=SITE, temperature=0)
+            if not isinstance(raw, dict):
+                raise HTTPException(status_code=502, detail="The model returned an unreadable answer.")
+            tests = raw.get("tests") if isinstance(raw.get("tests"), list) else []
+            record["tests"] = [item for item in tests[: MAX_TESTS * 2] if isinstance(item, dict)]
+        record["looked_up_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        db.set_setting(STORE_PREFIX + hypothesis_id, json.dumps(record))
+        return record
+
+
+def _build(
+    hypothesis: dict[str, Any],
+    record: dict[str, Any],
+    catalog: list[dict[str, Any]],
+    context_words: set[str],
+    *,
+    skip_triage: bool,
+) -> dict[str, Any]:
+    """Suggestions from stored model answers, the lab rows on file and the
+    hypothesis's current evidence."""
+    triage = record["triage"]
+    base = {
+        "method": METHOD,
+        "usually_checked_by": triage.get("usually_checked_by") or "",
+        "tests_on_file": len(catalog),
+        "looked_up_at": record.get("looked_up_at"),
+    }
+    if record.get("tests") is None or (not skip_triage and not _uses_labs(triage)):
+        return {**base, "lab_tests_used": False, "labs": [], "not_on_file": []}
+
+    by_key: dict[str, list[dict[str, Any]]] = {}
+    for entry in catalog:
+        by_key.setdefault(analyte_key(entry["name"]), []).append(entry)
     evidence = hypothesis.get("evidence") or []
     existing_ids = {item.get("source_id") for item in evidence if item.get("source_id")}
     existing_text = " ".join(str(item.get("summary") or "") for item in evidence).lower()
@@ -379,9 +459,7 @@ async def suggest(hypothesis_id: str, *, skip_triage: bool = False) -> dict[str,
     not_on_file: list[dict[str, Any]] = []
     used_keys: set[str] = set()
     missing_names: set[str] = set()
-    for item in (raw.get("tests") or [])[: MAX_TESTS * 2]:
-        if not isinstance(item, dict):
-            continue
+    for item in record["tests"][: MAX_TESTS * 2]:
         test = _clean(item.get("test"), 120)
         if not test:
             continue
@@ -427,18 +505,139 @@ async def suggest(hypothesis_id: str, *, skip_triage: bool = False) -> dict[str,
                     "source_link": {},
                 },
             })
+    return {**base, "lab_tests_used": True, "labs": labs, "not_on_file": not_on_file}
 
-    log.info("hypothesis lab suggestions: %d labs, %d not on file", len(labs), len(not_on_file))
-    return {
-        "method": METHOD,
-        "lab_tests_used": True,
-        "usually_checked_by": checked_by,
-        "labs": labs,
-        "not_on_file": not_on_file,
-        "tests_on_file": len(catalog),
-    }
+
+async def suggest(hypothesis_id: str, *, skip_triage: bool = False) -> dict[str, Any]:
+    """Lab suggestions for one hypothesis. skip_triage asks for tests even when
+    the model would call the hypothesis one that is diagnosed without labs."""
+    hypothesis = SqliteHypothesisRepository().get(hypothesis_id)
+    if not hypothesis:
+        raise HTTPException(status_code=404, detail="hypothesis not found")
+    conditions, medications = _context()
+    header = _header(hypothesis["title"], hypothesis.get("description") or "", conditions, medications)
+    record = await _answers(hypothesis_id, header, skip_triage=skip_triage)
+    result = _build(hypothesis, record, _catalog(), _context_words(conditions + medications), skip_triage=skip_triage)
+    log.info("hypothesis lab suggestions: %d labs, %d not on file", len(result["labs"]), len(result["not_on_file"]))
+    return result
+
+
+# ── Queue ────────────────────────────────────────────────────────────────────
+
+_queue_task: asyncio.Task | None = None
+_failed_at: dict[str, float] = {}
+
+
+def _open_hypotheses() -> list[dict[str, Any]]:
+    return [h for h in SqliteHypothesisRepository().list() if h["status"] in OPEN_STATUSES]
+
+
+def _lookups() -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
+    """Each open hypothesis with its current stored answers, or None."""
+    conditions, medications = _context()
+    return [
+        (h, _stored(h["id"], _fingerprint(_header(h["title"], h.get("description") or "", conditions, medications))))
+        for h in _open_hypotheses()
+    ]
+
+
+def _due(hypothesis_id: str) -> bool:
+    return time.monotonic() - _failed_at.get(hypothesis_id, float("-inf")) >= RETRY_AFTER
+
+
+def _prune(keep: set[str]) -> None:
+    """Drop stored answers for hypotheses that are no longer open."""
+    with db.connect() as connection:
+        keys = [row["key"] for row in connection.execute(
+            "SELECT key FROM app_settings WHERE key LIKE ?", (STORE_PREFIX + "%",)
+        )]
+        stale = [(key,) for key in keys if key.removeprefix(STORE_PREFIX) not in keep]
+        if stale:
+            connection.executemany("DELETE FROM app_settings WHERE key=?", stale)
+
+
+async def run_queue() -> dict[str, int]:
+    """Look up every open hypothesis that has no current stored answers."""
+    done = failed = 0
+    lookups = _lookups()
+    for hypothesis, record in lookups:
+        if record is not None or not _due(hypothesis["id"]):
+            continue
+        try:
+            await suggest(hypothesis["id"])
+            _failed_at.pop(hypothesis["id"], None)
+            done += 1
+        except Exception as err:  # the next one may still work; this one waits RETRY_AFTER
+            _failed_at[hypothesis["id"]] = time.monotonic()
+            failed += 1
+            log.warning("hypothesis lab lookup failed: %s", err)
+    # Read again: a hypothesis added while the queue ran keeps its answers.
+    _prune({hypothesis["id"] for hypothesis in _open_hypotheses()})
+    if done or failed:
+        log.info("hypothesis lab queue: %d looked up, %d failed", done, failed)
+    return {"done": done, "failed": failed}
+
+
+async def _run_queue_logged() -> None:
+    try:
+        await run_queue()
+    except Exception as err:
+        log.warning("hypothesis lab queue stopped: %s", err)
+
+
+def queue_running() -> bool:
+    return _queue_task is not None and not _queue_task.done()
+
+
+def start_queue() -> bool:
+    """Start the queue in the background unless it is running or has nothing
+    to do. Returns whether it started."""
+    global _queue_task
+    if queue_running():
+        return False
+    if not any(record is None and _due(h["id"]) for h, record in _lookups()):
+        return False
+    _queue_task = asyncio.get_running_loop().create_task(_run_queue_logged())
+    return True
+
+
+def _status() -> dict[str, Any]:
+    lookups = _lookups()
+    catalog = _catalog() if any(record for _, record in lookups) else []
+    conditions, medications = _context()
+    words = _context_words(conditions + medications)
+    ready: dict[str, dict[str, Any]] = {}
+    pending: list[str] = []
+    for hypothesis, record in lookups:
+        if record is None:
+            pending.append(hypothesis["id"])
+            continue
+        # A lookup the owner already ran "anyway" counts its tests.
+        result = _build(hypothesis, record, catalog, words, skip_triage=record.get("tests") is not None)
+        ready[hypothesis["id"]] = {
+            "lab_tests_used": _uses_labs(record["triage"]),
+            "labs": sum(not item["already_added"] for item in result["labs"]),
+            "not_on_file": sum(not item["already_added"] for item in result["not_on_file"]),
+            "looked_up_at": record.get("looked_up_at"),
+        }
+    return {"running": queue_running(), "ready": ready, "pending": pending}
 
 
 @router.post("/api/hypotheses/{hypothesis_id}/lab-suggestions", dependencies=[Depends(require_admin)])
 async def lab_suggestions(hypothesis_id: str, anyway: bool = False):
     return await suggest(hypothesis_id, skip_triage=anyway)
+
+
+# Not under /api/hypotheses/: that prefix's /{hypothesis_id} route would
+# take these paths.
+@router.get("/api/hypothesis-labs", dependencies=[Depends(require_admin)])
+def lab_lookup_status():
+    """Which open hypotheses have stored lab lookups, with counts of labs not
+    yet in their evidence, and which are still waiting."""
+    return _status()
+
+
+@router.post("/api/hypothesis-labs/queue", dependencies=[Depends(require_admin)])
+async def queue_lab_lookups():
+    start_queue()
+    return _status()

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import HypothesesSettings from "./HypothesesSettings";
 
@@ -78,6 +78,36 @@ describe("guarded hypothesis settings", () => {
     expect(screen.getByText(/Missing evidence is not counted as evidence against/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Record clinician confirmation" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Record clinician ruling" })).toBeTruthy();
+  });
+
+  it("queues a lab lookup for a new hypothesis and shows stored counts", async () => {
+    const created = { ...hypothesis, id: "hyp_new", title: "Synthetic new hypothesis", status: "proposed", evidence: [] };
+    const fetchMock = vi.fn(async (path, options = {}) => {
+      if (path.startsWith("/api/hypothesis-labs")) {
+        return {
+          ok: true,
+          json: async () => ({
+            running: false,
+            ready: { hyp_synthetic: { lab_tests_used: true, labs: 2, not_on_file: 0, looked_up_at: "2026-11-22T00:00:00Z" } },
+            pending: [],
+          }),
+        };
+      }
+      if (options.method === "POST") return { ok: true, json: async () => created };
+      return { ok: true, json: async () => ({ hypotheses: [hypothesis], can_edit: true }) };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<HypothesesSettings />);
+
+    expect(await screen.findByText("2 to review")).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText("Hypothesis to investigate"), { target: { value: "Synthetic new hypothesis" } });
+    fireEvent.click(screen.getByRole("button", { name: /Add hypothesis/ }));
+
+    expect(await screen.findByText("Synthetic new hypothesis")).toBeTruthy();
+    await waitFor(() => expect(
+      fetchMock.mock.calls.some(([path, init]) => path === "/api/hypothesis-labs/queue" && init?.method === "POST"),
+    ).toBe(true));
   });
 
   it("keeps provider sessions read-only", async () => {

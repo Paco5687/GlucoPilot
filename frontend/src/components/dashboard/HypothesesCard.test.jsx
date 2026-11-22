@@ -41,6 +41,17 @@ function listResponse(hypotheses, canEdit) {
   return { ok: true, json: async () => ({ hypotheses, can_edit: canEdit }) };
 }
 
+const noLookups = { running: false, ready: {}, pending: [] };
+
+// Answers by path: the hypothesis list, the stored lab lookups, and a create.
+function server(hypotheses, canEdit, { lookups = noLookups, created = null } = {}) {
+  return vi.fn(async (path, options = {}) => {
+    if (path.startsWith("/api/hypothesis-labs")) return { ok: true, json: async () => lookups };
+    if (options.method === "POST") return { ok: true, json: async () => created };
+    return listResponse(hypotheses, canEdit);
+  });
+}
+
 function renderCard() {
   return render(<MemoryRouter><HypothesesCard /></MemoryRouter>);
 }
@@ -53,7 +64,7 @@ describe("dashboard hypotheses card", () => {
   });
 
   it("lists open hypotheses with what would confirm them and leaves decided ones to Settings", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(listResponse([reviewing, proposed, confirmed], true)));
+    vi.stubGlobal("fetch", server([reviewing, proposed, confirmed], true));
 
     renderCard();
 
@@ -74,9 +85,7 @@ describe("dashboard hypotheses card", () => {
 
   it("records a new patient hypothesis through the ledger API", async () => {
     const created = { ...base, id: "hyp_new", title: "Synthetic new question", status: "proposed" };
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(listResponse([reviewing], true))
-      .mockResolvedValueOnce({ ok: true, json: async () => created });
+    const fetchMock = server([reviewing], true, { created });
     vi.stubGlobal("fetch", fetchMock);
 
     renderCard();
@@ -87,9 +96,8 @@ describe("dashboard hypotheses card", () => {
     fireEvent.click(screen.getByRole("button", { name: /Add hypothesis/ }));
 
     expect(await screen.findByText("Synthetic new question")).toBeTruthy();
-    const [path, options] = fetchMock.mock.calls[1];
+    const [path, options] = fetchMock.mock.calls.find(([, init]) => init?.method === "POST");
     expect(path).toBe("/api/hypotheses");
-    expect(options.method).toBe("POST");
     expect(JSON.parse(options.body)).toEqual({
       title: "Synthetic new question",
       description: "Synthetic reason",
@@ -101,7 +109,9 @@ describe("dashboard hypotheses card", () => {
   });
 
   it("opens lab suggestions for an existing hypothesis", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(listResponse([proposed, reviewing], true)));
+    const fetchMock = server([proposed, reviewing], true);
+    vi.stubGlobal("fetch", fetchMock);
+    const lookupReads = () => fetchMock.mock.calls.filter(([path]) => path === "/api/hypothesis-labs").length;
 
     renderCard();
     const buttons = await screen.findAllByRole("button", { name: /Find labs/ });
@@ -110,12 +120,34 @@ describe("dashboard hypotheses card", () => {
 
     expect(screen.getByText("Lab panel for Synthetic adrenal question")).toBeTruthy();
     expect(screen.getAllByRole("button", { name: /Find labs/ })).toHaveLength(1);
+    const before = lookupReads();
     fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
     expect(screen.queryByText(/Lab panel for/)).toBeNull();
+    // Closing re-reads the counts, which saving may have changed.
+    await waitFor(() => expect(lookupReads()).toBe(before + 1));
+  });
+
+  it("shows how many stored labs are left to review and which are still being checked", async () => {
+    const untested = { ...base, id: "hyp_untested", title: "Synthetic untested question", status: "proposed" };
+    const lookups = {
+      running: true,
+      ready: {
+        hyp_open: { lab_tests_used: true, labs: 3, not_on_file: 1, looked_up_at: "2026-11-22T00:00:00Z" },
+        hyp_untested: { lab_tests_used: true, labs: 0, not_on_file: 4, looked_up_at: "2026-11-22T00:00:00Z" },
+      },
+      pending: ["hyp_review"],
+    };
+    vi.stubGlobal("fetch", server([proposed, reviewing, untested], true, { lookups }));
+
+    renderCard();
+
+    expect(await screen.findByText("3 to review")).toBeTruthy();
+    expect(screen.getByText("4 not on file")).toBeTruthy();
+    expect(screen.getByText("Checking labs…")).toBeTruthy();
   });
 
   it("opens the add form when nothing is recorded yet", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(listResponse([], true)));
+    vi.stubGlobal("fetch", server([], true));
 
     renderCard();
 
@@ -125,7 +157,8 @@ describe("dashboard hypotheses card", () => {
   });
 
   it("shows provider sessions the list without edit controls", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(listResponse([proposed], false)));
+    const fetchMock = server([proposed], false);
+    vi.stubGlobal("fetch", fetchMock);
 
     renderCard();
 
@@ -134,10 +167,11 @@ describe("dashboard hypotheses card", () => {
     expect(screen.queryByLabelText("What might be wrong?")).toBeNull();
     expect(screen.queryByRole("link", { name: /Health hypotheses/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Find labs/ })).toBeNull();
+    expect(fetchMock.mock.calls.some(([path]) => path.startsWith("/api/hypothesis-labs"))).toBe(false);
   });
 
   it("renders nothing for provider sessions with no open hypotheses", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(listResponse([confirmed], false));
+    const fetchMock = server([confirmed], false);
     vi.stubGlobal("fetch", fetchMock);
 
     const view = renderCard();

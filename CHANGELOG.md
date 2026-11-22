@@ -20,6 +20,13 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   flag comes from the lab records. For conditions usually diagnosed without lab
   tests it says so, with an option to look anyway. Nothing is saved until the
   owner ticks items and picks Supports or Against for each lab.
+- **Lab lookups queued for every open hypothesis** — the app looks up lab
+  suggestions for each open hypothesis in the background, one at a time, and
+  keeps the model's answers, so "Find labs" opens at once. Each hypothesis shows
+  how many labs on file are not yet in its evidence ("3 to review") or how many
+  suggested tests have no result on file. New lab results appear without
+  another lookup; a changed hypothesis, condition list, medication list or
+  model triggers one.
 - **Install as an app** — GlucoPilot has a web app manifest, icons and a
   service worker, so "Install app" on Android (and Add to Home Screen on iOS)
   opens it in its own window, starting on the dashboard, with the blood-drop

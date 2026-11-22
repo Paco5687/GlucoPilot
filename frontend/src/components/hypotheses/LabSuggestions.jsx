@@ -221,7 +221,8 @@ export default function LabSuggestions({ hypothesis, onSaved, onClose }) {
 
       {result && (labs.length > 0 || missing.length > 0) && (
         <p className="text-[11px] text-muted-foreground">
-          The local model picked these tests. Values, dates and flags come from your lab records.
+          The local model picked these tests{result.looked_up_at ? ` on ${result.looked_up_at.slice(0, 10)}` : ""}.
+          {" "}Values, dates and flags come from your lab records.
         </p>
       )}
 

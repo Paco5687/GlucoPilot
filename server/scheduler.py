@@ -9,6 +9,8 @@ Every 10 minutes: Tandem Source pump sync (if verified) — Control-IQ adjusts
                   and its phone app uploads opportunistically, so short polls
                   keep the basal trace near-live.
 Every hour:       Oura sync, last 2 days (if connected).
+Every 5 minutes:  start the hypothesis lab lookup queue in its own task when an
+                  open hypothesis has no stored lookup (never blocks a tick).
 
 All syncs are incremental and idempotent; failures are logged and retried on
 the next tick. Disable with SYNC_ENABLED=false.
@@ -19,7 +21,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from . import cycle_inference, db, dexcom, dexcom_share, fitbit, glooko, google_health, health_summary, insights, nightscout, oura, patterns, tandem
+from . import cycle_inference, db, dexcom, dexcom_share, fitbit, glooko, google_health, health_summary, hypothesis_labs, insights, nightscout, oura, patterns, tandem
 from .config import OWNER_EMAIL, env_bool
 from .connector_provenance import run_connector
 
@@ -37,6 +39,7 @@ GOOGLE_HEALTH_HR_INTERVAL = 2 * 60  # intraday HR — poll often; Fitbit cloud l
 CYCLE_INFERENCE_INTERVAL = 24 * 3600
 TANDEM_INTERVAL = 10 * 60
 GLOOKO_INTERVAL = 6 * 3600  # the pump uploads to Glooko ~once a night; 4×/day catches it without hammering the API
+HYPOTHESIS_LABS_INTERVAL = 5 * 60
 
 # "Never run" is -inf, not 0.0: time.monotonic() counts from host boot, so a
 # 0.0 start made every job wait one full interval after a reboot (the 6-hour
@@ -56,6 +59,7 @@ _last_run = {key: float("-inf") for key in (
     "health_summary",
     "patterns",
     "insights",
+    "hypothesis_labs",
 )}
 
 HEALTH_SUMMARY_INTERVAL = 7 * 24 * 3600  # weekly, tracked by wall-clock (survives restarts)
@@ -261,6 +265,15 @@ async def _tick() -> None:
             log.info("health summary regenerated")
         except Exception as err:
             log.warning("health summary failed: %s", err)
+
+    if now - _last_run["hypothesis_labs"] >= HYPOTHESIS_LABS_INTERVAL:
+        _last_run["hypothesis_labs"] = now
+        try:
+            # Runs as its own task: a full pass is minutes of model calls.
+            if hypothesis_labs.start_queue():
+                log.info("hypothesis lab queue started")
+        except Exception as err:
+            log.warning("hypothesis lab queue could not start: %s", err)
 
     for name, cursor, job in WEEKLY_ANALYSES:
         if now - _last_run[name] >= WEEKLY_RETRY and _weekly_due(cursor) and _has_glucose():
