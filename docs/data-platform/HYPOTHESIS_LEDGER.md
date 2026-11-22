@@ -48,6 +48,7 @@ The dedicated API surface is:
 | `POST /api/hypotheses` | admin | Create a tentative proposal. The request cannot choose a later status. |
 | `PUT /api/hypotheses/{id}/evidence` | admin | Append a complete evidence revision and confidence event. |
 | `POST /api/hypotheses/{id}/transition` | admin | Apply a guarded lifecycle transition; terminal decisions require clinician attribution. |
+| `POST /api/hypotheses/{id}/lab-suggestions` | admin | Suggest lab evidence (read-only; see below). `?anyway=true` skips the lab-tests-used check. |
 
 ## Evidence state and audit score
 
@@ -79,8 +80,35 @@ product determines the evidence state. Each revision stores a canonical
 SHA-256 input version. Event before/after states make score changes
 attributable to the exact evidence revision and reason.
 
+## Lab suggestions
+
+Implementation: `server/hypothesis_labs.py` (`hypothesis-labs/1.2.0`).
+
+The endpoint writes nothing. It asks the local model two questions at
+temperature 0, with the hypothesis, its notes, and the active confirmed
+conditions and medications: whether the hypothesis is usually checked with
+lab tests (and how it is usually diagnosed), and, if so, which lab tests,
+which way each usually reads if the hypothesis is true, and any listed
+condition or medication that moves the test that way by itself. The call site
+`hypothesis_labs` is not on the Breeze allowlist, so it always stays local.
+
+The model never sees lab values. Named tests are matched to LabResult rows by
+`analyte_key` (exact, then ignoring spaces, then allowing assay-variant words
+such as "hs"); rows are filtered and de-duplicated as the Visit Report does.
+Each match becomes a suggested `entity` evidence item for its latest draw,
+linked to the source document, with a summary built from the stored value,
+unit, date, flag and reference range. The suggested role follows the expected
+direction and the result's flag; it is left undecided when the flag is not a
+standard one, the direction is "any", or a listed condition or medication
+could produce the result. Unmatched named tests (imaging and panels excluded)
+become suggested `missing` items. The owner ticks items and picks a role for
+each lab; the client saves them with the existing evidence-revision route,
+built on the stored evidence it reads just before saving.
+
 ## Product surfaces
 
+- The dashboard's Hypotheses card lists open hypotheses and adds new ones; a
+  new entry opens its lab suggestions, and each open entry has "Find labs".
 - Settings shows hypotheses in a “not a diagnosis” ledger separate from
   confirmed conditions, with a qualitative evidence state and all three
   evidence roles.

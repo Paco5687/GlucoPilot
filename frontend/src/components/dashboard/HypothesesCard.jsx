@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Beaker, Loader2, Plus } from "lucide-react";
+import { Beaker, FlaskConical, Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import LabSuggestions from "@/components/hypotheses/LabSuggestions";
 
 // Dashboard view of the hypothesis ledger: things that may be wrong and still
 // need a diagnosis. It reads and writes the same /api/hypotheses ledger as
-// Settings. Evidence and clinician decisions stay in Settings, where the full
-// review controls live.
+// Settings. A new hypothesis opens its lab suggestions straight away; picked
+// labs are saved as evidence. Clinician decisions stay in Settings, where the
+// full review controls live.
 
 const OPEN = new Set(["proposed", "under_review"]);
 
@@ -52,6 +54,7 @@ export default function HypothesesCard() {
   const [why, setWhy] = useState("");
   const [confirmBy, setConfirmBy] = useState("");
   const [saving, setSaving] = useState(false);
+  const [labsFor, setLabsFor] = useState(null);
 
   useEffect(() => {
     let active = true;
@@ -84,6 +87,7 @@ export default function HypothesesCard() {
         }),
       });
       setItems((current) => [created, ...current]);
+      setLabsFor(created.id);
       setTitle("");
       setWhy("");
       setConfirmBy("");
@@ -93,6 +97,10 @@ export default function HypothesesCard() {
       toast.error(error.message);
     }
     setSaving(false);
+  }
+
+  function replace(updated) {
+    setItems((current) => current.map((item) => (item.id === updated.id ? updated : item)));
   }
 
   if (!loaded) return null;
@@ -136,7 +144,21 @@ export default function HypothesesCard() {
                     <span className="text-muted-foreground">To confirm or rule out:</span> {item.suggested_verification}
                   </p>
                 )}
-                <EvidenceLine item={item} />
+                <div className="flex flex-wrap items-center gap-3">
+                  <EvidenceLine item={item} />
+                  {canEdit && labsFor !== item.id && (
+                    <button
+                      type="button"
+                      onClick={() => setLabsFor(item.id)}
+                      className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+                    >
+                      <FlaskConical className="w-3 h-3" /> Find labs
+                    </button>
+                  )}
+                </div>
+                {canEdit && labsFor === item.id && (
+                  <LabSuggestions hypothesis={item} onSaved={replace} onClose={() => setLabsFor(null)} />
+                )}
               </li>
             );
           })}

@@ -7,6 +7,19 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Hypotheses on the dashboard** — a card lists open hypotheses (possible
+  problems that still need a diagnosis) with why each is suspected and what
+  would confirm or rule it out, and the owner adds new ones there. Entries go
+  into the hypothesis ledger, so they also appear in Settings and the Visit
+  Report.
+- **Lab suggestions for hypotheses** — adding a hypothesis, or "Find labs" on an
+  open one (dashboard or Settings), lists the lab results on file that bear on
+  it and the usual tests with no result on file. The local model names the
+  tests, which way each usually reads if the hypothesis is true, and any listed
+  condition or medication that moves the test by itself; every value, date and
+  flag comes from the lab records. For conditions usually diagnosed without lab
+  tests it says so, with an option to look anyway. Nothing is saved until the
+  owner ticks items and picks Supports or Against for each lab.
 - **Install as an app** — GlucoPilot has a web app manifest, icons and a
   service worker, so "Install app" on Android (and Add to Home Screen on iOS)
   opens it in its own window, starting on the dashboard, with the blood-drop

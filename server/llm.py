@@ -275,6 +275,7 @@ async def _invoke_local(
     images: list[str] | None = None,
     url_override: str | None = None,
     model_override: str | None = None,
+    temperature: float | None = None,
 ) -> Any:
     raw_url = url_override or config_value("local_llm_url", LOCAL_URL_DEFAULT)
     model = model_override or config_value("local_llm_model", LOCAL_MODEL_DEFAULT)
@@ -300,6 +301,8 @@ async def _invoke_local(
     }
     if response_json_schema:
         payload["response_format"] = {"type": "json_object"}
+    if temperature is not None:
+        payload["temperature"] = temperature
 
     client, base_url = _local_client_and_base(raw_url)
     async with client:
@@ -344,6 +347,7 @@ async def _dispatch_local_text(
     max_tokens: int,
     images: list[str] | None,
     tier: str,
+    temperature: float | None = None,
 ) -> Any:
     """The existing local provider behaviour, exactly — including the quality
     tier diversion. Shared by provider=local and by hybrid Breeze routing when
@@ -353,9 +357,10 @@ async def _dispatch_local_text(
         q_model = config_value("quality_llm_model")
         if q_url and q_model:
             return await _invoke_local(
-                prompt, response_json_schema, max_tokens, None, url_override=q_url, model_override=q_model
+                prompt, response_json_schema, max_tokens, None, url_override=q_url, model_override=q_model,
+                temperature=temperature,
             )
-    return await _invoke_local(prompt, response_json_schema, max_tokens, images)
+    return await _invoke_local(prompt, response_json_schema, max_tokens, images, temperature=temperature)
 
 
 async def invoke_llm(
@@ -365,6 +370,7 @@ async def invoke_llm(
     images: list[str] | None = None,
     tier: str = "default",
     site: str = "",
+    temperature: float | None = None,
 ) -> Any:
     """images: list of "media_type|base64" strings (e.g. "image/png|iVBOR...").
 
@@ -380,6 +386,10 @@ async def invoke_llm(
     Breeze; everything else — including an unspecified site — uses the existing
     local providers. The decision is made before any inference request; a
     failure after a Breeze request has begun surfaces without retry or fallback.
+
+    temperature, when given, is sent to the local model (provider=local, or a
+    hybrid call that stays local); other providers keep their defaults. None
+    leaves every provider's default untouched.
     """
     provider = config_value("llm_provider", "anthropic").strip().lower()
     if provider == "breeze":
@@ -397,9 +407,9 @@ async def invoke_llm(
                 max_tokens,
                 prompt_tokens=details.get("prompt_tokens"),
             )
-        return await _dispatch_local_text(prompt, response_json_schema, max_tokens, images, tier)
+        return await _dispatch_local_text(prompt, response_json_schema, max_tokens, images, tier, temperature)
     if provider == "local":
-        return await _dispatch_local_text(prompt, response_json_schema, max_tokens, images, tier)
+        return await _dispatch_local_text(prompt, response_json_schema, max_tokens, images, tier, temperature)
     if provider == "openai":
         return await _invoke_openai(prompt, response_json_schema, max_tokens, images)
     return await _invoke_anthropic(prompt, response_json_schema, max_tokens, images)
