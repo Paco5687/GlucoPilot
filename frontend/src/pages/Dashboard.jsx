@@ -16,6 +16,7 @@ import LiveHeartRate from "../components/dashboard/LiveHeartRate";
 import FingerstickLogger from "../components/dashboard/FingerstickLogger";
 import FoodLogger from "../components/food/FoodLogger";
 import SymptomNudge from "../components/dashboard/SymptomNudge";
+import HypothesesCard from "../components/dashboard/HypothesesCard";
 import GlucoseOuraOverlay from "../components/dashboard/GlucoseOuraOverlay";
 import CorrelationCards from "../components/dashboard/CorrelationCards";
 import ContradictionPanel from "../components/ContradictionPanel";
@@ -177,6 +178,8 @@ export default function Dashboard() {
       {!isViewingShared && <FoodLogger onLogged={load} />}
 
       {!isViewingShared && <FingerstickLogger onAdded={loadFingersticks} />}
+
+      <HypothesesCard />
 
       <TreatmentTimeline treatments={filteredTreatments} />
 

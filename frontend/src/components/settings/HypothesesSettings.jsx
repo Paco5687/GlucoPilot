@@ -257,6 +257,14 @@ export default function HypothesesSettings() {
 
   useEffect(() => { load(); }, []);
 
+  // The dashboard's Hypotheses card links here as /settings#hypotheses. The
+  // card renders only after loading, so scroll once it exists.
+  useEffect(() => {
+    if (!loading && window.location.hash === "#hypotheses") {
+      document.getElementById("hypotheses")?.scrollIntoView({ block: "start" });
+    }
+  }, [loading]);
+
   function replace(updated) {
     setItems((current) => current.map((item) => item.id === updated.id ? updated : item));
   }
@@ -323,7 +331,7 @@ export default function HypothesesSettings() {
   if (loading) return null;
 
   return (
-    <div className="bg-card rounded-xl border border-amber-200 p-5 space-y-4">
+    <div id="hypotheses" className="bg-card rounded-xl border border-amber-200 p-5 space-y-4 scroll-mt-4">
       <div className="flex items-start gap-2">
         <Beaker className="w-5 h-5 text-amber-700 mt-0.5" />
         <div>

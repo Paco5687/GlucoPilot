@@ -33,6 +33,7 @@ vi.mock("../components/dashboard/WearablesPanel", () => ({ default: () => null }
 vi.mock("../components/dashboard/LiveHeartRate", () => ({ default: () => null }));
 vi.mock("../components/dashboard/FingerstickLogger", () => ({ default: () => null }));
 vi.mock("../components/dashboard/SymptomNudge", () => ({ default: () => null }));
+vi.mock("../components/dashboard/HypothesesCard", () => ({ default: () => null }));
 vi.mock("../components/dashboard/GlucoseOuraOverlay", () => ({ default: () => null }));
 vi.mock("../components/dashboard/CorrelationCards", () => ({ default: () => null }));
 vi.mock("../components/ContradictionPanel", () => ({ default: () => null }));
