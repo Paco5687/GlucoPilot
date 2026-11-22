@@ -48,7 +48,7 @@ ENTITY_FIELDS = {
         "GlucoseReading": ("timestamp", "value", "trend", "source"),
         "FingerstickReading": ("timestamp", "value", "context"),
         "Treatment": ("timestamp", "type", "amount", "carbs", "duration"),
-        "LabResult": ("test_name", "value", "unit", "reference_range", "flag", "collected_date", "verification_status"),
+        "LabResult": ("test_name", "value", "original_value", "unit", "reference_range", "flag", "collected_date", "verification_status"),
         "PeriodLog": ("date", "flow", "phase", "symptoms"),
         "OuraDaily": ("date", "sleep_score", "readiness_score", "activity_score", "hrv", "resting_heart_rate"),
         "FitbitDaily": ("date", "steps", "resting_heart_rate", "sleep_minutes"),

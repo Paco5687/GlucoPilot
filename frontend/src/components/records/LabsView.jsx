@@ -4,6 +4,7 @@ import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, ReferenceArea, CartesianGrid,
 } from "recharts";
 import { FlaskConical, AlertTriangle, Search, List, LineChart as LineIcon, Grid3x3, ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
+import { censorSign, isNotAResult, valueText } from "@/lib/labValue";
 
 const ABNORMAL = new Set(["high", "low", "critical", "abnormal"]);
 
@@ -198,9 +199,12 @@ function variantOf(name, familyBase, unit) {
 
 // --- data prep -------------------------------------------------------------
 
-function isAbnormal(flag, value, lo, hi) {
+// sign: a below/above-limit result's "<"/">" — its number is a limit, not a
+// measurement, so only the lab's own flag can call it abnormal.
+function isAbnormal(flag, value, lo, hi, sign = "") {
   const f = (flag || "").toLowerCase();
   if (ABNORMAL.has(f)) return f;
+  if (sign) return "";
   if (value != null && lo != null && value < lo) return "low";
   if (value != null && hi != null && value > hi) return "high";
   return "";
@@ -213,7 +217,7 @@ function useFamilies(labs, units) {
     //    and shown in the selected unit system.
     const byVariant = new Map();
     for (const lab of labs) {
-      if (lab.value == null || !lab.test_name || lab.verification_status === "rejected") continue;
+      if (lab.value == null || !lab.test_name || lab.verification_status === "rejected" || isNotAResult(lab)) continue;
       const c = convertLab(lab, units);
       const bucketUnit = c ? c.bucketUnit : unitKey(lab.unit);
       const point = c ? { ...lab, value: c.value, unit: c.unit, reference_low: c.reference_low, reference_high: c.reference_high } : lab;
@@ -237,7 +241,7 @@ function useFamilies(labs, units) {
       variants.push({
         name, points, latest, refLow, refHigh,
         unit: normUnit(latest.unit),
-        abnormal: isAbnormal(latest.flag, latest.value, refLow, refHigh),
+        abnormal: isAbnormal(latest.flag, latest.value, refLow, refHigh, censorSign(latest)),
         count: points.length,
         lastDate: latest.collected_date || "",
         category: latest.category || "Other",
@@ -309,7 +313,7 @@ function flagBadge(abn) {
 }
 
 function LabTrend({ a }) {
-  const data = a.points.map((p) => ({ date: p.collected_date, value: p.value, flag: p.flag, unit: p.unit }));
+  const data = a.points.map((p) => ({ date: p.collected_date, value: p.value, flag: p.flag, unit: p.unit, sign: censorSign(p) }));
   const values = a.points.map((p) => p.value).concat(a.refLow ?? [], a.refHigh ?? []);
   const min = Math.min(...values), max = Math.max(...values);
   const pad = (max - min) * 0.15 || Math.abs(max) * 0.1 || 1;
@@ -324,11 +328,15 @@ function LabTrend({ a }) {
           )}
           <XAxis dataKey="date" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} />
           <YAxis domain={[Math.floor((min - pad) * 100) / 100, Math.ceil((max + pad) * 100) / 100]} tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" tickLine={false} width={44} />
-          <Tooltip formatter={(v, _n, item) => [`${v} ${item?.payload?.unit || ""}`, a.name]} contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+          <Tooltip formatter={(v, _n, item) => [`${item?.payload?.sign || ""}${v} ${item?.payload?.unit || ""}`, a.name]} contentStyle={{ fontSize: 12, borderRadius: 8 }} />
           <Line type="monotone" dataKey="value" stroke="hsl(var(--primary))" strokeWidth={2}
             dot={({ cx, cy, payload, index }) => {
-              const bad = isAbnormal(payload.flag, payload.value, a.refLow, a.refHigh);
-              return <circle key={index} cx={cx} cy={cy} r={4} fill={bad ? "#dc2626" : "hsl(var(--primary))"} stroke="hsl(var(--card))" strokeWidth={2} />;
+              const bad = isAbnormal(payload.flag, payload.value, a.refLow, a.refHigh, payload.sign);
+              const color = bad ? "#dc2626" : "hsl(var(--primary))";
+              // Hollow: a "<55" sits at its limit, not at a measured value.
+              return payload.sign
+                ? <circle key={index} cx={cx} cy={cy} r={3.5} fill="hsl(var(--card))" stroke={color} strokeWidth={2} />
+                : <circle key={index} cx={cx} cy={cy} r={4} fill={color} stroke="hsl(var(--card))" strokeWidth={2} />;
             }} />
         </LineChart>
       </ResponsiveContainer>
@@ -353,7 +361,7 @@ function VariantRow({ v, expanded, onToggle, showLabel }) {
         </span>
         <Sparkline points={v.points} color={v.abnormal ? "#dc2626" : "hsl(var(--primary))"} />
         <span className="w-24 text-right text-sm font-medium tabular-nums">
-          {v.latest.value}<span className="text-[10px] text-muted-foreground ml-0.5">{v.unit}</span>
+          {valueText(v.latest)}<span className="text-[10px] text-muted-foreground ml-0.5">{v.unit}</span>
         </span>
         <span className="w-24 text-right text-[11px] text-muted-foreground tabular-nums hidden sm:block">
           {v.refLow != null && v.refHigh != null ? `${v.refLow}–${v.refHigh}` : "—"}
@@ -443,7 +451,7 @@ function ChartsView({ families }) {
               </p>
             </div>
             <div className="text-right">
-              <div className="text-lg font-bold tabular-nums">{a.latest.value}<span className="text-xs font-normal text-muted-foreground ml-1">{a.unit}</span></div>
+              <div className="text-lg font-bold tabular-nums">{valueText(a.latest)}<span className="text-xs font-normal text-muted-foreground ml-1">{a.unit}</span></div>
               {flagBadge(a.abnormal)}
             </div>
           </div>
@@ -464,7 +472,7 @@ function MatrixView({ families }) {
         const m = String(p.collected_date).slice(0, 7);
         if (m.length !== 7) continue;
         monthSet.add(m);
-        cells.set(m, { value: p.value, abn: isAbnormal(p.flag, p.value, a.refLow, a.refHigh), date: p.collected_date });
+        cells.set(m, { value: valueText(p), abn: isAbnormal(p.flag, p.value, a.refLow, a.refHigh, censorSign(p)), date: p.collected_date });
       }
       return { a, cells };
     });

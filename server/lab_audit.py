@@ -974,6 +974,118 @@ def _reference_bounds(lab: dict[str, Any]) -> tuple[float | None, float | None, 
     return None
 
 
+_CENSORED = re.compile(r"^\s*(<=|>=|=<|=>|≤|≥|<|>)\s*(-?\d+(?:\.\d+)?)")
+_CENSOR_OPERATORS = {"<": "<", "<=": "≤", "=<": "≤", "≤": "≤", ">": ">", ">=": "≥", "=>": "≥", "≥": "≥"}
+
+
+def censored(lab: dict[str, Any]) -> tuple[str, float] | None:
+    """('<', 55.0) for a result the lab printed as "<55": below the assay's
+    reporting limit, not a measured 55. None for an ordinary result.
+
+    The operator comes from ``original_value`` (the value as printed); the
+    number is the row's numeric ``value`` when it has one, so it stays in the
+    same unit as the reference range. Operators are '<', '≤', '>' or '≥'.
+    """
+    printed = lab.get("original_value")
+    if printed is None:
+        printed = lab.get("value_text")
+    match = _CENSORED.match(_text(printed))
+    if not match:
+        return None
+    number = _finite(lab.get("value"))
+    if number is None:
+        number = _finite(match[2])
+    if number is None:
+        return None
+    return _CENSOR_OPERATORS[match[1]], number
+
+
+def value_prefix(lab: dict[str, Any]) -> str:
+    """The comparison sign to print before a result's number ("<" for "<55")."""
+    bound = censored(lab)
+    return bound[0] if bound else ""
+
+
+def display_value(lab: dict[str, Any]) -> Any:
+    """The result as a reader should see it: "<55" for a below-limit result,
+    otherwise the stored value unchanged."""
+    bound = censored(lab)
+    if not bound:
+        return lab.get("value")
+    return f"{bound[0]}{bound[1]:g}"
+
+
+def censored_note(lab: dict[str, Any]) -> str | None:
+    """One sentence a language model reads beside a below/above-limit result,
+    so "<55" next to a 55 cutoff is not taken for a borderline 55."""
+    bound = censored(lab)
+    if not bound:
+        return None
+    side = "below" if bound[0] in ("<", "≤") else "above"
+    return (
+        f"The lab reported {display_value(lab)}: {side} the assay's reporting limit, "
+        f"not a measured {bound[1]:g}."
+    )
+
+
+NOT_A_RESULT = "not_a_result"
+
+
+def not_a_result_issue(printed: str) -> dict[str, str]:
+    """The validation issue for a row whose source printed a status such as
+    "IN PROGRESS" where an older extraction stored the number 0."""
+    return _issue(NOT_A_RESULT, "invalid", f"The source printed {printed} here, not a result.")
+
+
+def not_a_result(lab: dict[str, Any]) -> str | None:
+    """What the source printed instead of a result ("IN PROGRESS"), for a row
+    marked with ``NOT_A_RESULT``; None for an ordinary row."""
+    issues = lab.get("validation_issues")
+    if isinstance(issues, list) and any(isinstance(issue, dict) and issue.get("code") == NOT_A_RESULT for issue in issues):
+        return _text(lab.get("original_value")) or "no result"
+    return None
+
+
+def with_display_value(lab: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    """``data`` (a model-facing copy of ``lab``) with a below/above-limit
+    value printed as reported and explained in ``value_note``, and a stored 0
+    that was never a result shown as what the source printed."""
+    if status := not_a_result(lab):
+        data["value"] = status
+        data["value_note"] = f"The source printed {status} here: no result was reported."
+    elif note := censored_note(lab):
+        data["value"] = display_value(lab)
+        data["value_note"] = note
+    return data
+
+
+def _censored_range_flag(operator: str, limit: float, bounds: tuple[float | None, float | None, bool, bool]) -> str | None:
+    """Place a below/above-limit result against a reference range, or None
+    when the limit leaves it undecided.
+
+    A "<x" result is "normal" when x sits at or under the upper limit. It is
+    never called low: older extractions stored a "<14" reference range as a
+    lower limit of 14, and the true value is unknown below x anyway. A ">x"
+    result is "high" when x sits at or over the upper limit, and "normal"
+    when there is no upper limit and x clears the lower one.
+    """
+    low, high, low_exclusive, high_exclusive = bounds
+    if operator in ("<", "≤"):
+        if high is None or (low is not None and low > 0):
+            return None
+        # value < x (or <= x); the range calls it high when value > H (or >= H).
+        within = limit <= high if operator == "<" or not high_exclusive else limit < high
+        return "normal" if within else None
+    # value > x (or >= x)
+    if high is not None:
+        above = limit >= high if operator == ">" or high_exclusive else limit > high
+        return "high" if above else None
+    if low is None:
+        return None
+    clears = limit >= low if operator == ">" or not low_exclusive else limit > low
+    return "normal" if clears else None
+
+
 def range_flag(lab: dict[str, Any]) -> str | None:
     """'high', 'low' or 'normal' from the numeric value against its reference
     range; None when the row has no numeric value or no usable range."""
@@ -981,6 +1093,8 @@ def range_flag(lab: dict[str, Any]) -> str | None:
     bounds = _reference_bounds(lab)
     if value is None or bounds is None:
         return None
+    if bound := censored(lab):
+        return _censored_range_flag(bound[0], bound[1], bounds)
     low, high, low_exclusive, high_exclusive = bounds
     if high is not None and (value >= high if high_exclusive else value > high):
         return "high"

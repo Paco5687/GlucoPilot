@@ -15,6 +15,7 @@ from typing import Any
 from .contradictions import refresh_current as refresh_contradictions
 from .diagnostics import reasoning_context as diagnostic_context
 from .evidence_bundle import EvidenceBundleQuery, EvidenceDomain, build_bundle
+from .lab_audit import with_display_value as lab_with_display_value
 
 
 CONTEXT_VERSION = "clinical-evidence-context/1.0.0"
@@ -172,11 +173,14 @@ def _public_item(item: dict[str, Any]) -> dict[str, Any]:
 
 def _reasoning_data(item: dict[str, Any]) -> dict[str, Any]:
     data = item.get("data") if isinstance(item.get("data"), dict) else {}
-    return {
+    output = {
         key: data[key]
         for key in sorted(_REASONING_DATA_FIELDS)
         if key in data
     }
+    if item.get("entity_type") == "LabResult":
+        lab_with_display_value(data, output)
+    return output
 
 
 def _claims(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

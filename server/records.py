@@ -372,7 +372,12 @@ def _computed_range_note(labs: list[dict]) -> tuple[str, int, int]:
     out_of_range: list[dict] = []
     evaluated = 0
     for lab in labs:
-        status = _range_status(lab.get("value"), lab.get("reference_low"), lab.get("reference_high"))
+        if lab_audit.censored(lab):
+            # "<55" is below 55, not 55: only the censoring-aware rule can place it.
+            flag = lab_audit.range_flag(lab)
+            status = None if flag is None else "in_range" if flag == "normal" else flag
+        else:
+            status = _range_status(lab.get("value"), lab.get("reference_low"), lab.get("reference_high"))
         if status is None:
             continue
         evaluated += 1
@@ -387,7 +392,7 @@ def _computed_range_note(labs: list[dict]) -> tuple[str, int, int]:
             evaluated,
         )
     details = ", ".join(
-        f"{lab.get('test_name') or 'unnamed'} {_num(float(lab['value']))}"
+        f"{lab.get('test_name') or 'unnamed'} {lab_audit.value_prefix(lab)}{_num(float(lab['value']))}"
         + (f" {lab['unit']}" if lab.get("unit") else "")
         + f" (ref {_num(float(lab['reference_low'])) if lab.get('reference_low') is not None else '—'}"
         + f"–{_num(float(lab['reference_high'])) if lab.get('reference_high') is not None else '—'})"

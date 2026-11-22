@@ -19,7 +19,7 @@ import logging
 import time
 from datetime import datetime, timezone
 
-from . import cycle_inference, db, dexcom, dexcom_share, fitbit, glooko, google_health, health_summary, insights, nightscout, oura, patterns, tandem
+from . import cycle_inference, db, dexcom, dexcom_share, fitbit, glooko, google_health, health_summary, insights, lab_censored_backfill, nightscout, oura, patterns, tandem
 from .config import OWNER_EMAIL, env_bool
 from .connector_provenance import run_connector
 
@@ -285,6 +285,11 @@ def _sync_enabled() -> bool:
 async def run() -> None:
     # Let the app settle before the first sync pass.
     await asyncio.sleep(10)
+    try:
+        # One-time: put back the "<" older lab extractions dropped ("<55" → 55).
+        await asyncio.to_thread(lab_censored_backfill.ensure_backfilled)
+    except Exception as err:
+        log.error("lab below-limit repair failed: %s", err)
     while True:
         try:
             if _sync_enabled():

@@ -14,6 +14,7 @@ from .contradictions import refresh_current as refresh_contradictions
 from .diagnostics import reasoning_context as diagnostic_context
 from .evidence_bundle import EvidenceBundleQuery, EvidenceDomain, build_bundle
 from .clinical_reviews import companion_context as clinical_review_context
+from .lab_audit import with_display_value as lab_with_display_value
 
 
 CONTRACT_VERSION = "companion-evidence-context/1.0.0"
@@ -448,6 +449,9 @@ def _reasoning_data(item: dict[str, Any]) -> dict[str, Any]:
                 output.pop(key, None)
         if note := _flag_note(data):
             output["flag_note"] = note
+        # "<55" is below the lab's reporting limit; shown as 55 beside a 55
+        # cutoff it reads as a borderline result.
+        lab_with_display_value(data, output)
     return output
 
 
