@@ -3,13 +3,15 @@ import { useSearchParams } from "react-router-dom";
 import { base44 } from "@/api/base44Client";
 import { useAuth } from "@/lib/AuthContext";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import SafetyBanner from "../components/SafetyBanner";
 import RecordUploadQueue from "../components/records/RecordUploadQueue";
 import LabsView from "../components/records/LabsView";
 import MedicalRecordReview from "../components/records/MedicalRecordReview";
+import { labNamesByRecord, matchDocument, searchTerms } from "../components/records/documentSearch";
 import ContradictionPanel from "../components/ContradictionPanel";
-import { FolderHeart, Loader2, FileText, FlaskConical, Trash2, ExternalLink, RefreshCw } from "lucide-react";
+import { FolderHeart, Loader2, FileText, FlaskConical, Trash2, ExternalLink, RefreshCw, Search, X } from "lucide-react";
 import { toast } from "sonner";
 
 const TABS = ["labs", "documents"];
@@ -43,6 +45,7 @@ export default function Records() {
   const [loading, setLoading] = useState(true);
   const [reprocessingId, setReprocessingId] = useState(null);
   const [retryingAll, setRetryingAll] = useState(false);
+  const [docQuery, setDocQuery] = useState("");
   const [searchParams, setSearchParams] = useSearchParams();
   // Without ?tab=, open on lab results when there are any, else on documents.
   // Decided once, so a reload after an upload never switches tabs under the user.
@@ -52,6 +55,14 @@ export default function Records() {
   const failedCount = records.filter((r) => r.status === "failed").length;
   const reviewCount = records.filter((r) => r.status === "needs_review").length;
   const labCount = useMemo(() => labs.filter(isShownLab).length, [labs]);
+  const labNames = useMemo(() => labNamesByRecord(labs), [labs]);
+  const searching = docQuery.trim() !== "";
+  const shownRecords = useMemo(() => {
+    const terms = searchTerms(docQuery);
+    return records
+      .map((rec) => ({ rec, ...matchDocument(rec, labNames.get(rec.id), terms) }))
+      .filter((r) => r.match);
+  }, [records, labNames, docQuery]);
   const requestedTab = searchParams.get("tab");
   const tab = TABS.includes(requestedTab) ? requestedTab : defaultTab;
 
@@ -201,14 +212,41 @@ export default function Records() {
           {isAdmin && <RecordUploadQueue onComplete={load} />}
 
           {records.length > 0 && (
-            <div className="flex items-center justify-between gap-3 min-h-8">
-              <p className="text-xs text-muted-foreground">Newest first, by the date each document was taken.</p>
-              {isAdmin && failedCount > 0 && (
-                <Button variant="outline" size="sm" onClick={handleRetryAllFailed} disabled={retryingAll} className="gap-1.5 text-xs">
-                  {retryingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-                  Retry all failed ({failedCount})
-                </Button>
-              )}
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="relative flex-1 min-w-[200px]">
+                  <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    value={docQuery}
+                    onChange={(e) => setDocQuery(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Escape") setDocQuery(""); }}
+                    placeholder="Search documents, dates or lab tests (e.g. TSH)…"
+                    aria-label="Search documents"
+                    className="pl-8 pr-8 h-9 text-sm"
+                  />
+                  {docQuery && (
+                    <button
+                      onClick={() => setDocQuery("")}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-muted-foreground hover:text-foreground"
+                      title="Clear search"
+                      aria-label="Clear search"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+                {isAdmin && failedCount > 0 && (
+                  <Button variant="outline" size="sm" onClick={handleRetryAllFailed} disabled={retryingAll} className="gap-1.5 text-xs h-9">
+                    {retryingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                    Retry all failed ({failedCount})
+                  </Button>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground" aria-live="polite">
+                {searching
+                  ? `${shownRecords.length} of ${records.length} document${records.length === 1 ? "" : "s"} match.`
+                  : "Newest first, by the date each document was taken."}
+              </p>
             </div>
           )}
 
@@ -216,8 +254,10 @@ export default function Records() {
             <Loading />
           ) : records.length === 0 ? (
             <p className="text-sm text-muted-foreground">No documents yet.</p>
+          ) : shownRecords.length === 0 ? (
+            <p className="text-sm text-muted-foreground py-6 text-center">No documents match “{docQuery.trim()}”.</p>
           ) : (
-            records.map((rec) => (
+            shownRecords.map(({ rec, labs: matchedLabs }) => (
               <div key={rec.id} className="bg-card rounded-xl border border-border p-4 flex items-start gap-3">
                 <FileText className="w-5 h-5 text-muted-foreground flex-shrink-0 mt-0.5" />
                 <div className="flex-1 min-w-0">
@@ -240,6 +280,12 @@ export default function Records() {
                   )}
                   {rec.lab_count != null && (
                     <p className="text-xs text-muted-foreground mt-1">{rec.lab_count} lab results extracted</p>
+                  )}
+                  {matchedLabs.length > 0 && (
+                    <p className="text-xs text-primary mt-1">
+                      Matching tests: {matchedLabs.slice(0, 6).join(", ")}
+                      {matchedLabs.length > 6 ? ` and ${matchedLabs.length - 6} more` : ""}
+                    </p>
                   )}
                 </div>
                 <div className="flex items-center gap-1 flex-shrink-0">
