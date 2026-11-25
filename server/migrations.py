@@ -2505,6 +2505,35 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        24,
+        "login_events",
+        # Sign-in audit log: logins (successful and failed), logouts, provider
+        # invite acceptances and provider password resets, so the owner can see
+        # which providers use their access and how often. Append-only;
+        # server/login_log.py prunes rows past the retention window.
+        (
+            Statement(
+                """
+                CREATE TABLE login_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    occurred_at TEXT NOT NULL,
+                    event TEXT NOT NULL CHECK(event IN (
+                        'login', 'login_failed', 'logout', 'invite_accepted', 'password_reset'
+                    )),
+                    role TEXT CHECK(role IS NULL OR role IN ('admin', 'provider')),
+                    username TEXT,
+                    client_ip TEXT,
+                    user_agent TEXT
+                )
+                """
+            ),
+            Statement("CREATE INDEX login_events_occurred_at ON login_events(occurred_at)"),
+            Statement(
+                "CREATE INDEX login_events_account ON login_events(role, username, event, occurred_at)"
+            ),
+        ),
+    ),
 )
 
 
