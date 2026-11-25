@@ -1,14 +1,40 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { useSearchParams } from "react-router-dom";
 import { base44 } from "@/api/base44Client";
 import { useAuth } from "@/lib/AuthContext";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import SafetyBanner from "../components/SafetyBanner";
 import RecordUploadQueue from "../components/records/RecordUploadQueue";
 import LabsView from "../components/records/LabsView";
 import MedicalRecordReview from "../components/records/MedicalRecordReview";
 import ContradictionPanel from "../components/ContradictionPanel";
-import { FolderHeart, Loader2, FileText, Trash2, ExternalLink, RefreshCw, ChevronDown, ChevronRight } from "lucide-react";
+import { FolderHeart, Loader2, FileText, FlaskConical, Trash2, ExternalLink, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
+
+const TABS = ["labs", "documents"];
+
+// The same rows LabsView charts: a value, a name, and not rejected in review.
+const isShownLab = (lab) => lab.value != null && lab.test_name && lab.verification_status !== "rejected";
+
+// A count badge for a tab. On phones only the number shows, so both tabs fit on
+// one line; the label stays readable to screen readers and in the tooltip.
+function Pill({ tone, count, label }) {
+  const cls = tone === "red" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700";
+  return (
+    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium tabular-nums ${cls}`} title={`${count} ${label}`}>
+      {count}<span className="sr-only sm:not-sr-only"> {label}</span>
+    </span>
+  );
+}
+
+function Loading() {
+  return (
+    <div className="flex items-center gap-2 text-muted-foreground text-sm py-6">
+      <Loader2 className="w-4 h-4 animate-spin" /> Loading…
+    </div>
+  );
+}
 
 export default function Records() {
   const { isAdmin } = useAuth();
@@ -17,8 +43,25 @@ export default function Records() {
   const [loading, setLoading] = useState(true);
   const [reprocessingId, setReprocessingId] = useState(null);
   const [retryingAll, setRetryingAll] = useState(false);
-  const [docsOpen, setDocsOpen] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  // Without ?tab=, open on lab results when there are any, else on documents.
+  // Decided once, so a reload after an upload never switches tabs under the user.
+  const [defaultTab, setDefaultTab] = useState("labs");
+  const defaultChosen = useRef(false);
+
   const failedCount = records.filter((r) => r.status === "failed").length;
+  const reviewCount = records.filter((r) => r.status === "needs_review").length;
+  const labCount = useMemo(() => labs.filter(isShownLab).length, [labs]);
+  const requestedTab = searchParams.get("tab");
+  const tab = TABS.includes(requestedTab) ? requestedTab : defaultTab;
+
+  function selectTab(next) {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      params.set("tab", next);
+      return params;
+    }, { replace: true });
+  }
 
   useEffect(() => {
     load();
@@ -38,6 +81,10 @@ export default function Records() {
       );
       setRecords(recs);
       setLabs(labRows);
+      if (!defaultChosen.current) {
+        defaultChosen.current = true;
+        setDefaultTab(labRows.some(isShownLab) ? "labs" : "documents");
+      }
     } catch {
       // keep whatever we had
     }
@@ -95,6 +142,8 @@ export default function Records() {
     }
   }
 
+  const firstLoad = loading && !records.length && !labs.length;
+
   return (
     <div className="space-y-6">
       <SafetyBanner />
@@ -110,87 +159,115 @@ export default function Records() {
         <FolderHeart className="w-6 h-6 text-primary" />
       </div>
 
+      {/* Stays above the tabs: open contradictions are shown whichever tab is selected. */}
       <ContradictionPanel domains={["labs", "hormone_timing", "source_revision"]} title="Record and lab contradictions" />
 
-      {/* Upload queue (admin only) */}
-      {isAdmin && <RecordUploadQueue onComplete={load} />}
+      <Tabs value={tab} onValueChange={selectTab}>
+        <TabsList className="h-auto max-w-full overflow-x-auto justify-start">
+          <TabsTrigger value="labs" className="gap-2 px-3 py-1.5">
+            <FlaskConical className="w-4 h-4 hidden sm:block" /> Lab results
+            {!firstLoad && <span className="text-xs tabular-nums text-muted-foreground">{labCount}</span>}
+          </TabsTrigger>
+          <TabsTrigger value="documents" className="gap-2 px-3 py-1.5">
+            <FileText className="w-4 h-4 hidden sm:block" /> Documents
+            {!firstLoad && <span className="text-xs tabular-nums text-muted-foreground">{records.length}</span>}
+            {failedCount > 0 && <Pill tone="red" count={failedCount} label="failed" />}
+            {reviewCount > 0 && <Pill tone="amber" count={reviewCount} label="to review" />}
+          </TabsTrigger>
+        </TabsList>
 
-      {/* Lab trends — switchable Index / Charts / Matrix views with filters */}
-      <LabsView labs={labs} />
-
-      {/* Documents — collapsed by default so the source files don't bury the trends */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <button onClick={() => setDocsOpen((o) => !o)} className="font-semibold text-base flex items-center gap-2 hover:text-primary">
-            {docsOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            <FileText className="w-4 h-4 text-primary" /> Documents
-            {!loading && <span className="text-xs font-normal text-muted-foreground">{records.length}</span>}
-            {failedCount > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">{failedCount} failed</span>}
-          </button>
-          {isAdmin && docsOpen && failedCount > 0 && (
-            <Button variant="outline" size="sm" onClick={handleRetryAllFailed} disabled={retryingAll} className="gap-1.5 text-xs">
-              {retryingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-              Retry all failed ({failedCount})
-            </Button>
+        {/* Both panels stay mounted so an upload in progress, lab filters and open
+            charts survive switching tabs. */}
+        <TabsContent value="labs" forceMount className="mt-4 data-[state=inactive]:hidden">
+          {firstLoad ? (
+            <Loading />
+          ) : labCount === 0 ? (
+            <div className="bg-card rounded-xl border border-dashed border-border p-8 text-center">
+              <FlaskConical className="w-6 h-6 mx-auto text-muted-foreground" />
+              <p className="text-sm font-medium mt-2">No lab results yet</p>
+              <p className="text-xs text-muted-foreground mt-1">Lab values appear here after a lab report is uploaded and extracted.</p>
+              {isAdmin && (
+                <Button variant="outline" size="sm" className="mt-3" onClick={() => selectTab("documents")}>
+                  Upload a lab report
+                </Button>
+              )}
+            </div>
+          ) : (
+            <LabsView labs={labs} />
           )}
-        </div>
-        {!docsOpen ? null : loading ? (
-          <div className="flex items-center gap-2 text-muted-foreground text-sm">
-            <Loader2 className="w-4 h-4 animate-spin" /> Loading…
-          </div>
-        ) : records.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No documents yet.</p>
-        ) : (
-          records.map((rec) => (
-            <div key={rec.id} className="bg-card rounded-xl border border-border p-4 flex items-start gap-3">
-              <FileText className="w-5 h-5 text-muted-foreground flex-shrink-0 mt-0.5" />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-medium text-sm" title={rec.filename}>{rec.title || rec.filename}</span>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">
-                    {rec.doc_type || rec.status}
-                  </span>
-                  {rec.record_date && <span className="text-xs text-muted-foreground">taken {rec.record_date}</span>}
-                  {rec.status === "failed" && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">failed</span>
+        </TabsContent>
+
+        <TabsContent value="documents" forceMount className="mt-4 space-y-3 data-[state=inactive]:hidden">
+          {isAdmin && <RecordUploadQueue onComplete={load} />}
+
+          {records.length > 0 && (
+            <div className="flex items-center justify-between gap-3 min-h-8">
+              <p className="text-xs text-muted-foreground">Newest first, by the date each document was taken.</p>
+              {isAdmin && failedCount > 0 && (
+                <Button variant="outline" size="sm" onClick={handleRetryAllFailed} disabled={retryingAll} className="gap-1.5 text-xs">
+                  {retryingAll ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                  Retry all failed ({failedCount})
+                </Button>
+              )}
+            </div>
+          )}
+
+          {firstLoad ? (
+            <Loading />
+          ) : records.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No documents yet.</p>
+          ) : (
+            records.map((rec) => (
+              <div key={rec.id} className="bg-card rounded-xl border border-border p-4 flex items-start gap-3">
+                <FileText className="w-5 h-5 text-muted-foreground flex-shrink-0 mt-0.5" />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-medium text-sm" title={rec.filename}>{rec.title || rec.filename}</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">
+                      {rec.doc_type || rec.status}
+                    </span>
+                    {rec.record_date && <span className="text-xs text-muted-foreground">taken {rec.record_date}</span>}
+                    {rec.status === "failed" && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">failed</span>
+                    )}
+                    {rec.status === "needs_review" && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">needs review</span>
+                    )}
+                  </div>
+                  {rec.summary && <p className="text-sm text-muted-foreground mt-1 leading-relaxed">{rec.summary}</p>}
+                  {rec.status === "needs_review" && rec.error && (
+                    <p className="text-xs text-amber-700 mt-1">{rec.error}</p>
                   )}
-                  {rec.status === "needs_review" && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">needs review</span>
+                  {rec.lab_count != null && (
+                    <p className="text-xs text-muted-foreground mt-1">{rec.lab_count} lab results extracted</p>
                   )}
                 </div>
-                {rec.summary && <p className="text-sm text-muted-foreground mt-1 leading-relaxed">{rec.summary}</p>}
-                {rec.status === "needs_review" && rec.error && (
-                  <p className="text-xs text-amber-700 mt-1">{rec.error}</p>
-                )}
-                {rec.lab_count != null && (
-                  <p className="text-xs text-muted-foreground mt-1">{rec.lab_count} lab results extracted</p>
-                )}
-              </div>
-              <div className="flex items-center gap-1 flex-shrink-0">
-                {(rec.status === "processed" || rec.status === "needs_review") && (
-                  <MedicalRecordReview record={rec} isAdmin={isAdmin} onChanged={load} />
-                )}
-                {isAdmin && (
-                  <button
-                    onClick={() => handleReprocess(rec)}
-                    disabled={reprocessingId === rec.id}
-                    className="p-2 rounded-lg hover:bg-accent text-primary disabled:opacity-50"
-                    title={rec.status === "failed" ? "Retry extraction" : "Reprocess document"}
-                  >
-                    <RefreshCw className={`w-4 h-4 ${reprocessingId === rec.id ? "animate-spin" : ""}`} />
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  {(rec.status === "processed" || rec.status === "needs_review") && (
+                    <MedicalRecordReview record={rec} isAdmin={isAdmin} onChanged={load} />
+                  )}
+                  {isAdmin && (
+                    <button
+                      onClick={() => handleReprocess(rec)}
+                      disabled={reprocessingId === rec.id}
+                      className="p-2 rounded-lg hover:bg-accent text-primary disabled:opacity-50"
+                      title={rec.status === "failed" ? "Retry extraction" : "Reprocess document"}
+                    >
+                      <RefreshCw className={`w-4 h-4 ${reprocessingId === rec.id ? "animate-spin" : ""}`} />
+                    </button>
+                  )}
+                  <a href={`/api/records/file/${rec.id}`} target="_blank" rel="noreferrer" className="p-2 rounded-lg hover:bg-accent text-muted-foreground" title="Open original">
+                    <ExternalLink className="w-4 h-4" />
+                  </a>
+                  <button onClick={() => handleDelete(rec)} className="p-2 rounded-lg hover:bg-accent text-destructive" title="Delete">
+                    <Trash2 className="w-4 h-4" />
                   </button>
-                )}
-                <a href={`/api/records/file/${rec.id}`} target="_blank" rel="noreferrer" className="p-2 rounded-lg hover:bg-accent text-muted-foreground" title="Open original">
-                  <ExternalLink className="w-4 h-4" />
-                </a>
-                <button onClick={() => handleDelete(rec)} className="p-2 rounded-lg hover:bg-accent text-destructive" title="Delete">
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                </div>
               </div>
-            </div>
-          ))
-        )}
-      </div>
+            ))
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
