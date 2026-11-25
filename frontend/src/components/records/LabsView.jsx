@@ -3,7 +3,7 @@ import { Input } from "@/components/ui/input";
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, ReferenceArea, CartesianGrid,
 } from "recharts";
-import { FlaskConical, AlertTriangle, Search, List, LineChart as LineIcon, Grid3x3, ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
+import { AlertTriangle, Search, List, LineChart as LineIcon, Grid3x3, ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 
 const ABNORMAL = new Set(["high", "low", "critical", "abnormal"]);
 
@@ -565,11 +565,10 @@ export default function LabsView({ labs }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <h2 className="font-semibold text-base flex items-center gap-2">
-          <FlaskConical className="w-4 h-4 text-primary" /> Lab trends
-          <span className="text-xs font-normal text-muted-foreground">{families.length} analytes · {analyteCount} tests</span>
+        <p className="text-sm text-muted-foreground flex items-center gap-2">
+          {families.length} analytes · {analyteCount} tests
           {abnormalCount > 0 && <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-medium">{abnormalCount} out of range</span>}
-        </h2>
+        </p>
         <div className="flex items-center gap-2">
           {convertible && (
             <div className="flex rounded-lg border border-border overflow-hidden" title="Show convertible labs in conventional (US) or SI units">
